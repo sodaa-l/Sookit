@@ -1,0 +1,33 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# 运行时数据（用户配置、缓存）
+config/
+
+# 内嵌二进制工具（ffmpeg、aria2c 等）
+tools/
+
+# 测试残留（只忽略根目录的一次性脚本，避免误伤 __init__.py）
+test_out.txt
+test_result.txt
+/_*.py
+
+# 本地笔记（不入库）
+new_feature.txt
+
+# CodeBuddy 项目数据（工作记忆、计划文档等）
+.codebuddy/
+
+# 调试截图
+让这个箱子居中*.jpeg
+
+# 本地启动脚本（不入库，启动方式见 README：uv run sookit）
+/启动音视频工具箱.bat
