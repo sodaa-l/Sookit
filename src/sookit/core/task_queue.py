@@ -358,6 +358,14 @@ class TaskQueueManager(QObject):
             del self.completed_tasks[task_id]
             self.task_removed.emit(task_id)
             self._save_completed_tasks()
+
+    def remove_failed_task(self, task_id: str):
+        """从活跃列表中移除指定的 FAILED 任务（供监控页等清理失败任务用）"""
+        task = self.active_tasks.get(task_id)
+        if not task or task.status != TaskStatus.FAILED:
+            return
+        self._cancelled_task_ids.discard(task_id)
+        self._remove_active_task(task_id)
     
     def _save_completed_tasks(self):
         """持久化已完成任务列表到 JSON 文件"""
@@ -404,28 +412,44 @@ class ProgressParser:
         解析 yt-dlp 输出
         原生下载器: [download]   5.2% of   50.21MiB at  2.50MiB/s ETA 00:19
         aria2c:     [aria2c] Downloaded 5.2% of 50.21MiB at 2.50MiB/s ETA 00:19
-        返回: {"progress": 5.2, "speed": "2.50MiB/s", "eta": "00:19"}
+        aria2c 原生: [#a1b2c3 0.1MiB/50.2MiB(5%) CN:2 DL:1.2MiB/s ETA:00:19]
+        返回: {"progress": 5.2, "speed": "1.2MiB/s", "eta": "00:19"}
         """
-        # 匹配进度百分比（兼容 aria2c 等外部下载器的进度行）
+        # 匹配进度百分比（兼容 yt-dlp 原生 [download] / aria2c 包装 [aria2c] 等前缀格式）
         progress_match = re.search(
             r'\[(?:download|aria2c|NativeDownloader|wget|curl)\]\s+'
             r'(?:Downloaded\s+)?(\d+\.?\d*)%', line)
-        if not progress_match:
-            return None
-        
-        result = {"progress": float(progress_match.group(1))}
-        
-        # 匹配速度
-        speed_match = re.search(r'at\s+(\d+\.?\d*\w+/s)', line)
-        if speed_match:
-            result["speed"] = speed_match.group(1)
-        
-        # 匹配 ETA
-        eta_match = re.search(r'ETA\s+(\d+:\d+)', line)
-        if eta_match:
-            result["eta"] = eta_match.group(1)
-        
-        return result
+        if progress_match:
+            result = {"progress": float(progress_match.group(1))}
+
+            # 匹配速度（yt-dlp/包装格式: at 2.50MiB/s）
+            speed_match = re.search(r'at\s+(\d+\.?\d*\w+/s)', line)
+            if speed_match:
+                result["speed"] = speed_match.group(1)
+
+            # 匹配 ETA（yt-dlp/包装格式: ETA 00:19）
+            eta_match = re.search(r'ETA\s+(\d+:\d+)', line)
+            if eta_match:
+                result["eta"] = eta_match.group(1)
+
+            return result
+
+        # 回退：aria2c 原生进度行格式（[#<gid> 已下载/总大小(XX%) CN:x DL:速度 ETA:时间]），gid 为十六进制字符串
+        aria2c_match = re.search(
+            r'\[\#[0-9a-fA-F]+[^\n]*?\((\d+(?:\.\d+)?)%\)', line)
+        if aria2c_match:
+            result = {"progress": float(aria2c_match.group(1))}
+            # aria2c 原生速度格式: DL:1.2MiB/s
+            speed_match = re.search(r'DL:\s*(\d+\.?\d*\w+/s)', line)
+            if speed_match:
+                result["speed"] = speed_match.group(1)
+            # aria2c 原生 ETA 格式: ETA:00:19
+            eta_match = re.search(r'ETA:\s*(\d+:\d+)', line)
+            if eta_match:
+                result["eta"] = eta_match.group(1)
+            return result
+
+        return None
     
     @staticmethod
     def parse_ffmpeg_output(line: str, total_duration: float = None) -> dict:

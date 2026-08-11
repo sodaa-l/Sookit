@@ -1,6 +1,7 @@
 """
 直播 / Premiere 自动监控 页面
 """
+import math
 import os
 import time
 
@@ -13,6 +14,8 @@ from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
 import qfluentwidgets as qfw
 
 from sookit.core.functions import Functions, is_ytdlp_available, extract_youtube_id, fetch_youtube_metadata, load_download_config, DEFAULT_OUTPUT_DIR, ensure_output_dir
+from sookit.core.youtube_utils import build_thumbnails
+from sookit.core.task_queue import TaskQueueManager, TaskType
 from sookit.core.workers import MonitorWorker
 from sookit.pages.base import PageBase
 
@@ -97,6 +100,13 @@ class MonitorPage(PageBase):
         self.interval_combo.currentIndexChanged.connect(self._on_interval_changed)
         self.remote_cb.stateChanged.connect(self._on_remote_changed)
         self.out_dir.textChanged.connect(self._on_out_dir_changed)
+
+        # 连接任务队列信号，同步下载完成/失败状态
+        mgr = TaskQueueManager.instance()
+        mgr.task_completed.connect(self._on_queue_task_completed)
+        mgr.task_failed.connect(self._on_queue_task_failed)
+        # 连接队列下载日志，使本页监控任务的下载过程显示到监控页终端
+        mgr.task_log.connect(self._on_queue_task_log)
 
     def _is_channel_url(self, url):
         parts = url.lower().split('/')
@@ -223,6 +233,17 @@ class MonitorPage(PageBase):
         worker.start()
 
     def _on_initial_sniff(self, task_id, url, out_dir, title, row, info):
+        # 用真实视频标题更新第 1 列（单条 URL 添加时此处 title 原本是链接），并同步元信息
+        real_title = info.get('title') or title
+        item = self.task_table.item(row, 1)
+        if item:
+            item.setText(real_title)
+        if task_id in self._task_info:
+            self._task_info[task_id]['title'] = real_title
+            self._task_info[task_id]['duration'] = info.get('duration', '')
+        if task_id in self._task_titles:
+            self._task_titles[task_id] = real_title
+
         status = info.get('live_status', 'unknown')
         scheduled = info.get('scheduled_start_time')
         now = time.time()
@@ -235,8 +256,11 @@ class MonitorPage(PageBase):
             else:
                 self.log(f"[{task_id}] 检测到预定首播，距开始还有 {int(wait_secs)} 秒")
 
-            self.task_table.item(row, 0).setText(
-                f"等待中 ({int(wait_secs//60)}分{int(wait_secs%60)}秒)")
+            if wait_secs > 60:
+                init_text = f"等待中（剩余 {math.ceil(wait_secs / 60)} 分钟）"
+            else:
+                init_text = f"等待中（剩余 {int(wait_secs)} 秒）"
+            self.task_table.item(row, 0).setText(init_text)
 
             start_btn = qfw.PushButton("立即开始")
             start_btn.setFixedWidth(80)
@@ -259,7 +283,7 @@ class MonitorPage(PageBase):
             count_timer = QTimer(self)
             count_timer.timeout.connect(
                 lambda: self._update_countdown(task_id, row, scheduled))
-            count_timer.start(10000)
+            count_timer.start(1000)
             self._countdown_timers[task_id] = count_timer
         else:
             self._start_monitor_now(task_id, url, out_dir, title)
@@ -272,10 +296,14 @@ class MonitorPage(PageBase):
         if remaining <= 0:
             self._countdown_timers.pop(task_id, None)
             return
-        mins = int(remaining // 60)
-        secs = int(remaining % 60)
-        self.task_table.item(self._task_rows[task_id], 0).setText(
-            f"等待中 ({mins}分{secs}秒)")
+        if remaining > 60:
+            text = f"等待中（剩余 {math.ceil(remaining / 60)} 分钟）"
+        else:
+            text = f"等待中（剩余 {int(remaining)} 秒）"
+        item = self.task_table.item(self._task_rows[task_id], 0)
+        if item.text() == text:
+            return
+        item.setText(text)
 
     def _start_monitor_now(self, task_id, url, out_dir, title=None):
         if task_id in self._workers:
@@ -318,9 +346,90 @@ class MonitorPage(PageBase):
         worker.log_signal.connect(lambda msg: self.log(msg))
         worker.status_signal.connect(self._update_task_status)
         worker.done_signal.connect(self._on_monitor_done)
+        worker.download_ready.connect(self._on_download_ready)
         self._workers[task_id] = worker
         worker.start()
         self.log(f"[{task_id}] 开始监控 -> {title or url}")
+
+    def _on_download_ready(self, task_id, url, out_dir, format_spec, config, info=None):
+        """MonitorWorker 检测到可下载时，把下载任务提交给全局任务队列"""
+        # 停止并移除该 MonitorWorker（防重复提交）
+        if task_id in self._workers:
+            worker = self._workers.pop(task_id)
+            worker.stop()
+            worker.wait(2000)
+
+        info = info or {}
+        title = info.get('title') or self._task_info.get(task_id, {}).get('title') or url
+        # 用检测到的真实标题回写，保证下载任务标题与界面一致
+        if task_id in self._task_info:
+            self._task_info[task_id]['title'] = title
+            self._task_info[task_id]['duration'] = info.get('duration', '')
+        if task_id in self._task_titles:
+            self._task_titles[task_id] = title
+        # 同步更新表格第 1 列（显示标题而非链接）
+        if task_id in self._task_rows:
+            item = self.task_table.item(self._task_rows[task_id], 1)
+            if item:
+                item.setText(title)
+        self.task_table.item(self._task_rows[task_id], 0).setText("下载中")
+
+        # 替换操作按钮：下载阶段改为"取消"（取消队列任务）
+        btn_widget = self.task_table.cellWidget(self._task_rows[task_id], 2)
+        if btn_widget:
+            layout = btn_widget.layout()
+            for i in range(layout.count()):
+                item = layout.itemAt(i)
+                if item and item.widget() and isinstance(item.widget(), qfw.PushButton):
+                    w = item.widget()
+                    if w.text() == "删除":
+                        w.setText("取消")
+                        w.clicked.disconnect()
+                        w.clicked.connect(
+                            lambda checked=False, tid=task_id: self._cancel_download(tid))
+                        break
+
+        # 构建完整元数据，使队列卡片能展示标题/封面/频道/时长（参考嗅探页 youtube_page.py）
+        metadata = {
+            'title': title,
+            'channel': info.get('channel', ''),
+            'duration': info.get('duration', ''),
+            'cover_url': '',
+            'url': url,
+            'format_spec': format_spec,
+            'out_dir': out_dir,
+        }
+        # 封面 URL：用视频 ID 生成（嗅探页同款用法）
+        video_id = extract_youtube_id(url)
+        if video_id:
+            thumbs = build_thumbnails(video_id)
+            if thumbs:
+                metadata['cover_url'] = thumbs[0]['url']
+
+        mgr = TaskQueueManager.instance()
+        task = mgr.add_task(
+            task_type=TaskType.YTDLP,
+            title=title,
+            func=Functions.download_youtube,
+            args=(url, format_spec, out_dir, config.get('remote', False),
+                  config.get('concurrent_fragments', 4),
+                  config.get('use_aria2c', True),
+                  config.get('aria2c_connections', 16)),
+            metadata=metadata,
+        )
+        # 记录监控任务 -> 队列任务的映射
+        self._task_info[task_id]['queue_task_id'] = task.task_id
+        self.log(f"[{task_id}] 已提交下载任务到队列: {title}")
+
+    def _cancel_download(self, task_id):
+        """下载阶段取消：取消队列下载任务并移除监控行"""
+        info = self._task_info.get(task_id)
+        queue_id = info.get('queue_task_id') if info else None
+        if queue_id:
+            TaskQueueManager.instance().cancel_task(queue_id)
+            self.log(f"[{task_id}] 已请求取消队列下载任务")
+        # 移除监控行（内部会清映射并触发队列 cancel_task，任务已移除则安全返回）
+        self._remove_task(task_id)
 
     def stop_all_workers(self):
         """停止所有监控 worker（供主窗口退出时调用）"""
@@ -335,17 +444,104 @@ class MonitorPage(PageBase):
             self.task_table.item(row, 0).setText(status)
 
     def _on_monitor_done(self, task_id, success):
-        if task_id in self._task_rows:
-            row = self._task_rows[task_id]
-            self.task_table.item(row, 0).setText("已完成" if success else "失败")
-        if success and task_id in self._task_info:
-            info = self._task_info[task_id]
-            self._download_best_thumbnail(task_id, info['url'], info['out_dir'], info['title'])
-        else:
+        """MonitorWorker 结束（现在仅用于轮询阶段的异常终止）"""
+        if not success:
+            if task_id in self._task_rows:
+                row = self._task_rows[task_id]
+                self.task_table.item(row, 0).setText("失败")
             qfw.InfoBar.error(parent=self, title="监控任务失败", content=f"任务 [{task_id}] 执行失败")
         self._workers.pop(task_id, None)
         if not self._workers:
             self._check_auto_action()
+
+    def _monitor_id_by_queue(self, queue_task_id):
+        """根据队列任务 ID 反查监控 task_id（未找到返回 None）"""
+        for tid, info in self._task_info.items():
+            if info.get('queue_task_id') == queue_task_id:
+                return tid
+        return None
+
+    def _on_queue_task_log(self, queue_task_id, msg):
+        """把本页监控任务的队列下载日志转发到监控页终端"""
+        tid = self._monitor_id_by_queue(queue_task_id)
+        if tid is not None:
+            self.log(msg)
+
+    def _on_queue_task_completed(self, task):
+        """队列下载完成：同步监控表格状态并触发封面下载"""
+        tid = self._monitor_id_by_queue(task.task_id)
+        if tid is None:
+            return
+        if tid in self._task_rows:
+            self.task_table.item(self._task_rows[tid], 0).setText("已完成")
+            # 操作按钮由"取消"恢复为"删除"
+            btn_widget = self.task_table.cellWidget(self._task_rows[tid], 2)
+            if btn_widget:
+                layout = btn_widget.layout()
+                for i in range(layout.count()):
+                    item = layout.itemAt(i)
+                    if item and item.widget() and isinstance(item.widget(), qfw.PushButton):
+                        w = item.widget()
+                        if w.text() == "取消":
+                            w.setText("删除")
+                            w.clicked.disconnect()
+                            w.clicked.connect(
+                                lambda checked=False, t=tid: self._remove_task(t))
+                            break
+        info = self._task_info.get(tid)
+        if info:
+            self._download_best_thumbnail(tid, info['url'], info['out_dir'], info['title'])
+        self.log(f"[{tid}] 队列下载完成")
+        if not self._workers:
+            self._check_auto_action()
+
+    def _on_queue_task_failed(self, task):
+        """队列下载失败：清理旧失败任务、显示等待重试、重启 MonitorWorker 按 interval 自动重试"""
+        tid = self._monitor_id_by_queue(task.task_id)
+        # 先清除映射，避免 remove_failed_task 触发的 task_removed 误删监控行
+        if tid is not None:
+            self._task_info[tid].pop('queue_task_id', None)
+        # 清理旧 FAILED 队列任务，避免残留卡片
+        TaskQueueManager.instance().remove_failed_task(task.task_id)
+        if tid is None:
+            return
+        if tid in self._task_rows:
+            self.task_table.item(self._task_rows[tid], 0).setText("等待重试")
+            # 操作按钮由"取消"恢复为"删除"
+            btn_widget = self.task_table.cellWidget(self._task_rows[tid], 2)
+            if btn_widget:
+                layout = btn_widget.layout()
+                for i in range(layout.count()):
+                    item = layout.itemAt(i)
+                    if item and item.widget() and isinstance(item.widget(), qfw.PushButton):
+                        w = item.widget()
+                        if w.text() == "取消":
+                            w.setText("删除")
+                            w.clicked.disconnect()
+                            w.clicked.connect(
+                                lambda checked=False, t=tid: self._remove_task(t))
+                            break
+        # 重启 MonitorWorker 继续轮询（等待一个 interval 再重新检测）
+        info = self._task_info.get(tid)
+        if not info:
+            return
+        # 清除旧的 queue_task_id，重新进入监控
+        info.pop('queue_task_id', None)
+        interval = 30 if self.interval_combo.currentIndex() == 0 else 60
+        remote = self.remote_cb.isChecked()
+        download_config = load_download_config()
+        worker = MonitorWorker(
+            tid, info['url'], info['out_dir'], interval, remote,
+            download_config['concurrent_fragments'],
+            download_config['use_aria2c'],
+            download_config['aria2c_connections'])
+        worker.log_signal.connect(lambda msg: self.log(msg))
+        worker.status_signal.connect(self._update_task_status)
+        worker.done_signal.connect(self._on_monitor_done)
+        worker.download_ready.connect(self._on_download_ready)
+        self._workers[tid] = worker
+        worker.start()
+        self.log(f"[{tid}] 下载失败，等待重试，{interval}秒后重新检测")
 
     def _download_best_thumbnail(self, task_id, url, out_dir, title):
         class CoverWorker(QThread):
@@ -407,6 +603,11 @@ class MonitorPage(PageBase):
             self._workers[task_id].stop()
             self._workers[task_id].wait(3000)
             del self._workers[task_id]
+        # 若已进入下载阶段（存在队列任务），联动取消队列下载
+        info = self._task_info.get(task_id)
+        queue_id = info.get('queue_task_id') if info else None
+        if queue_id:
+            TaskQueueManager.instance().cancel_task(queue_id)
         if task_id in self._task_rows:
             row = self._task_rows[task_id]
             self.task_table.removeRow(row)

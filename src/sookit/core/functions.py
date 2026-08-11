@@ -440,6 +440,7 @@ class Functions:
             return {
                 'live_status': ls,
                 'title': info.get('title', ''),
+                'channel': info.get('channel') or info.get('uploader') or '',
                 'is_live': info.get('is_live', False),
                 'duration': info.get('duration'),
                 'scheduled_start_time': info.get('scheduled_start_time'),

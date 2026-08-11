@@ -84,6 +84,9 @@ class MonitorWorker(QThread):
     log_signal = pyqtSignal(str)
     status_signal = pyqtSignal(str, str)
     done_signal = pyqtSignal(str, bool)
+    # 检测到可下载时发出，由监控页提交到全局任务队列
+    download_ready = pyqtSignal(str, str, str, str, dict, dict)
+    #                      task_id, url, output_dir, format_spec, download_config, info
 
     def __init__(self, task_id, url, output_dir, interval, remote_components,
                  concurrent_fragments=4, use_aria2c=True, aria2c_connections=16):
@@ -97,19 +100,9 @@ class MonitorWorker(QThread):
         self.use_aria2c = use_aria2c
         self.aria2c_connections = aria2c_connections
         self._stop_flag = False
-        self._process = None  # 存储子进程引用
-        self._process_lock = threading.Lock()  # 保护 _process 的读写
 
     def stop(self):
         self._stop_flag = True
-        # 如果有正在运行的子进程，终止它
-        with self._process_lock:
-            if self._process is not None:
-                try:
-                    self._process.terminate()
-                    self._process = None
-                except Exception:
-                    pass
 
     def update_interval(self, interval):
         """动态更新轮询间隔"""
@@ -136,38 +129,20 @@ class MonitorWorker(QThread):
                 status = info.get('live_status', 'unknown')
 
                 if status in ('was_live', 'post_live', 'not_live'):
-                    self.log_signal.emit(f"[{self.task_id}] 可下载，开始下载最高画质...")
+                    self.log_signal.emit(f"[{self.task_id}] 可下载，提交下载任务...")
                     self.status_signal.emit(self.task_id, '下载中')
-                    try:
-                        # 使用 on_process_created 回调立即保存子进程引用
-                        def on_process_created(process):
-                            with self._process_lock:
-                                self._process = process
-                        Functions.download_youtube(
-                            self.url, 'bestvideo+bestaudio/best',
-                            self.output_dir, self.remote,
-                            concurrent_fragments=self.concurrent_fragments,
-                            use_aria2c=self.use_aria2c,
-                            aria2c_connections=self.aria2c_connections,
-                            log=self.log_signal.emit,
-                            on_process_created=on_process_created)
-                        # 下载完成后清理引用
-                        with self._process_lock:
-                            self._process = None
-                        self.log_signal.emit(f"[{self.task_id}] 下载完成!")
-                        self.done_signal.emit(self.task_id, True)
-                        return
-                    except Exception as e:
-                        # 如果被终止则不重试
-                        if self._stop_flag:
-                            self.log_signal.emit(f"[{self.task_id}] 下载已取消")
-                            self.done_signal.emit(self.task_id, False)
-                            return
-                        # 下载失败（如 premiere 刚结束还在处理中），不递增 retries，
-                        # 直接等待一轮后重新检测状态
-                        self.log_signal.emit(
-                            f"[{self.task_id}] 下载失败: {e}，{self.interval}秒后重试")
-                        self.status_signal.emit(self.task_id, '等待重试')
+                    config = {
+                        'format_spec': 'bestvideo+bestaudio/best',
+                        'concurrent_fragments': self.concurrent_fragments,
+                        'use_aria2c': self.use_aria2c,
+                        'aria2c_connections': self.aria2c_connections,
+                        'remote': self.remote,
+                    }
+                    self.download_ready.emit(
+                        self.task_id, self.url, self.output_dir,
+                        'bestvideo+bestaudio/best', config, info)
+                    # 立即结束，防止重复提交
+                    return
 
                 elif status == 'is_live':
                     self.log_signal.emit(f"[{self.task_id}] 正在直播中，{self.interval}秒后重试")

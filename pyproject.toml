@@ -1,6 +1,6 @@
 [project]
 name = "sookit"
-version = "260805.1"
+version = "260811.1"
 description = "Sookit - 一个基于 PyQt6 + QFluentWidgets 的 Windows 桌面工具，集成 FFmpeg 与 yt-dlp，支持视频裁切、字幕烧录、音频提取/覆盖、帧提取、图片转视频、M3U8 下载、YouTube 嗅探下载、X Space 下载、直播监控等功能"
 readme = "README.md"
 license = "GPL-3.0-or-later"

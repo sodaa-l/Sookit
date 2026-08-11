@@ -158,7 +158,11 @@ class TaskCardBase(qfw.CardWidget):
     def update_progress(self, progress: float, speed: str, eta: str):
         """更新进度"""
         self.progress_bar.setValue(int(progress))
-        self.percent_label.setText(f"{progress:.1f}%")
+        # RUNNING 且进度为 0.0 时显示"准备中"，避免 0.0% 假象
+        if self.task.status == TaskStatus.RUNNING and progress == 0.0:
+            self.percent_label.setText("准备中")
+        else:
+            self.percent_label.setText(f"{progress:.1f}%")
         self.speed_label.setText(f"速度: {speed}" if speed else "")
         self.eta_label.setText(f"ETA: {eta}" if eta else "")
     
@@ -183,6 +187,9 @@ class TaskCardBase(qfw.CardWidget):
             self.progress_bar.setCustomBarColor(theme_color, theme_color)
             self.progress_bar.setVisible(True)
             self.percent_label.setVisible(True)
+            # RUNNING 且进度为 0.0 时显示"准备中"，避免 0.0% 假象
+            if self.task.progress == 0.0:
+                self.percent_label.setText("准备中")
             self.pause_btn.setIcon(FluentIcon.PAUSE)
             self.pause_btn.setToolTip("暂停")
             self.pause_btn.setEnabled(True)
@@ -232,7 +239,7 @@ class TaskCardBase(qfw.CardWidget):
         elif status == TaskStatus.WAITING:
             # 等待中
             self.progress_bar.setValue(0)
-            self.percent_label.setText("0%")
+            self.percent_label.setText("等待中")
             self.speed_label.setVisible(False)
             self.eta_label.setVisible(False)
             self.status_label.setText("等待中")
