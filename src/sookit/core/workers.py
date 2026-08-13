@@ -24,7 +24,8 @@ class SingleCmdWorker(QObject):
 
     def run(self):
         try:
-            r = subprocess.run(self.cmd, capture_output=True, text=True, timeout=20)
+            r = subprocess.run(self.cmd, capture_output=True, text=True, timeout=20,
+                               creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0)
             raw = (r.stdout + "\n" + r.stderr).strip()
             if self.parser:
                 out = self.parser(raw)

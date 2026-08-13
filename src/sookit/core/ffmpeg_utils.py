@@ -11,6 +11,13 @@ from shutil import which
 
 from sookit.paths import get_tools_dir
 
+# Windows 下抑制控制台子程序（yt-dlp/ffmpeg/aria2c）弹出黑色命令行窗口。
+# CREATE_NO_WINDOW = 0x08000000，与 CREATE_NEW_PROCESS_GROUP 组合使用。
+if sys.platform == "win32":
+    _PROC_FLAGS = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
+else:
+    _PROC_FLAGS = 0
+
 
 # ---------- FFmpeg / ffprobe 路径 ----------
 
@@ -40,7 +47,8 @@ def get_video_duration(video_path, log=None):
             ffprobe = "ffprobe"
         cmd = [ffprobe, '-v', 'error', '-show_entries', 'format=duration',
                '-of', 'default=noprint_wrappers=1:nokey=1', video_path]
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30,
+                                creationflags=_PROC_FLAGS)
         if result.returncode == 0 and result.stdout.strip():
             return float(result.stdout.strip())
     except Exception as e:
@@ -74,7 +82,7 @@ def run_ffmpeg(cmd_list, log_callback, process_ref=None):
             cmd_list, shell=False,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             universal_newlines=True, encoding='utf-8', errors='replace',
-            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == 'win32' else 0
+            creationflags=_PROC_FLAGS
         )
         if process_ref is not None:
             process_ref.append(process)
@@ -112,7 +120,7 @@ def run_ytdlp(cmd_list, log_callback, process_ref=None, on_process_created=None)
             cmd_list, shell=False,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             universal_newlines=True, encoding='utf-8', errors='replace',
-            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == 'win32' else 0,
+            creationflags=_PROC_FLAGS,
             env=env
         )
         if process_ref is not None:
@@ -206,7 +214,8 @@ def extract_video_frame(video_path):
             '-v', 'error',
             '-'
         ]
-        result = subprocess.run(cmd, capture_output=True, timeout=30)
+        result = subprocess.run(cmd, capture_output=True, timeout=30,
+                                creationflags=_PROC_FLAGS)
         if result.returncode == 0 and result.stdout:
             return result.stdout
     except Exception:
@@ -222,7 +231,8 @@ def check_aria2c():
     
     try:
         result = subprocess.run([aria2c_path, '--version'], 
-                              capture_output=True, text=True, timeout=5)
+                              capture_output=True, text=True, timeout=5,
+                              creationflags=_PROC_FLAGS)
         if result.returncode == 0:
             for line in result.stdout.split('\n'):
                 if line.startswith('aria2 version'):

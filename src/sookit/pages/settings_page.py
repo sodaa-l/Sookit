@@ -543,6 +543,6 @@ class SettingsPage(QWidget):
             qfw.InfoBar.error(parent=self, title="错误",
                               content=f"yt-dlp 安装失败: {err}",
                               orient=Qt.Orientation.Horizontal,
-                              isClosable=True)
+                              isClosable=True, duration=-1)
         # 刷新版本
         QTimer.singleShot(1000, self._check_versions)

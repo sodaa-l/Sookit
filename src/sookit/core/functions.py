@@ -33,7 +33,8 @@ def _run_ytdlp_json(url, *extra_args, timeout=180):
     try:
         result = subprocess.run(
             cmd, capture_output=True, text=True,
-            encoding='utf-8', errors='replace', timeout=timeout, env=env)
+            encoding='utf-8', errors='replace', timeout=timeout, env=env,
+            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0)
     except FileNotFoundError:
         raise RuntimeError("未找到 yt-dlp，请在设置页下载安装")
     if result.returncode != 0:
