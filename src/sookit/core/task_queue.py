@@ -11,11 +11,11 @@ import threading
 from enum import Enum
 from PyQt6.QtCore import QObject, pyqtSignal
 
-from sookit.paths import get_data_dir
+from sookit.paths import get_cover_dir, get_data_dir
 
 
 # ---------- 封面缓存目录 ----------
-COVER_CACHE_DIR = str(get_data_dir() / 'covers')
+COVER_CACHE_DIR = str(get_cover_dir())
 
 
 

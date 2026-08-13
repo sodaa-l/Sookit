@@ -33,16 +33,42 @@ def main():
 
     # 依赖检查通过后，再导入主窗口（避免包 import 时产生 sys.exit 副作用）
     from sookit import APP_NAME
-    from sookit.paths import get_icon_path
+    from sookit.paths import get_icon_path, get_log_dir
     from sookit.main_window import MainWindow
 
-    # 配置日志
+    # 配置日志：同时输出到 stderr（开发态可见）和日志文件（%LOCALAPPDATA%\Sookit\log\sookit.log，便于发布后排查）
     import logging
+    from logging.handlers import RotatingFileHandler
+
+    _handlers = [logging.StreamHandler()]
+    try:
+        _log_dir = get_log_dir()
+        _log_dir.mkdir(parents=True, exist_ok=True)
+        _handlers.append(
+            RotatingFileHandler(
+                _log_dir / "sookit.log",
+                maxBytes=1 * 1024 * 1024,
+                backupCount=3,
+                encoding="utf-8",
+            )
+        )
+    except OSError:
+        pass  # 日志目录不可用时仅保留控制台输出，不影响程序启动
+
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
         datefmt="%H:%M:%S",
+        handlers=_handlers,
     )
+
+    # 未捕获异常写入日志，保证崩溃也能留痕
+    def _excepthook(exc_type, exc_value, exc_tb):
+        logging.getLogger("Sookit").critical(
+            "未捕获异常", exc_info=(exc_type, exc_value, exc_tb)
+        )
+
+    sys.excepthook = _excepthook
 
     QApplication.setHighDpiScaleFactorRoundingPolicy(
         Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)

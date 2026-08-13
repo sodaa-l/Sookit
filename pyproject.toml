@@ -20,3 +20,8 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/sookit"]
+
+[dependency-groups]
+dev = [
+    "pyinstaller>=6.22.0",
+]

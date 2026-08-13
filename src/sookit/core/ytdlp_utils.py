@@ -18,7 +18,7 @@ import urllib.request
 from pathlib import Path
 from shutil import which as _which
 
-from sookit.paths import get_tools_dir
+from sookit.paths import get_ytdlp_dir
 
 # ---------- 下载源 ----------
 YTDLP_URL = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe"
@@ -30,7 +30,7 @@ _UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
 # ---------- 路径 ----------
 
 def _ytdlp_dir() -> Path:
-    return get_tools_dir() / "yt-dlp"
+    return get_ytdlp_dir()
 
 
 def get_ytdlp_exe_path() -> Path:
