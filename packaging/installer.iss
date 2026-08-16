@@ -3,7 +3,7 @@
 ; 安装目录: Program Files\Sookit；运行时数据在 %APPDATA%/%LOCALAPPDATA%；yt-dlp 自动下载到 %LOCALAPPDATA%
 
 #define MyAppName "Sookit"
-#define MyAppVersion "260816.3"
+#define MyAppVersion "260816.4"
 #define MyAppPublisher "sodaa-l"
 #define MyAppExeName "Sookit.exe"
 #define MyAppId "{{F3A8B7C2-5E4D-4A2B-9C1E-8B7D6A5F4E3D}"
@@ -35,14 +35,21 @@ PrivilegesRequired=admin
 Name: "chinesesimplified"; MessagesFile: "ChineseSimplified.isl"
 
 [Tasks]
-Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
+Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
+Name: "startmenuicon"; Description: "添加到开始菜单"; GroupDescription: "{cm:AdditionalIcons}"
 
 [Files]
 Source: "..\dist\Sookit\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
+Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: startmenuicon
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
+
+; 卸载时同时删除用户运行时数据（配置、日志、封面缓存、yt-dlp 工具等）
+; {userappdata} = %APPDATA%，{localappdata} = %LOCALAPPDATA%
+[UninstallDelete]
+Type: filesandordirs; Name: "{userappdata}\{#MyAppName}"
+Type: filesandordirs; Name: "{localappdata}\{#MyAppName}"

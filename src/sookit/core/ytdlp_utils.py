@@ -10,11 +10,14 @@ yt-dlp 集中管理：来源解析、命令组装、内置安装与更新。
 - 下载安装/更新全部写入项目 tools/ 目录，不修改 PATH、不写注册表。
 """
 
+import ctypes
 import json
 import os
 import re
 import shutil
 import subprocess
+import sys
+import time
 import zipfile
 import urllib.error
 import urllib.request
@@ -37,6 +40,23 @@ _UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
 
 def _ytdlp_dir() -> Path:
     return get_ytdlp_dir()
+
+
+def is_ytdlp_dir_writable() -> bool:
+    """yt-dlp 目标目录当前是否可写（决定下载是否需要提权）。
+
+    打包态装在 Program Files 时该目录只读 → 返回 False，主进程需以
+    管理员子进程方式下载；源码态/可写目录 → True，可直接下载。
+    """
+    d = _ytdlp_dir()
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+        probe = d / ".sookit_write_test"
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink()
+        return True
+    except OSError:
+        return False
 
 
 def get_ytdlp_exe_path() -> Path:
@@ -423,3 +443,85 @@ def download_ytdlp_bundle(progress_cb=None, check_latest=True) -> str:
     if y == "up_to_date" and d == "up_to_date":
         return "up_to_date"
     return "updated"
+
+
+# ---------- 提权下载（写入只读的程序目录） ----------
+
+def admin_update_result_path() -> str:
+    """提权子进程写结果、主进程读取的临时结果文件路径（临时目录，用户可写）"""
+    import tempfile
+    return os.path.join(tempfile.gettempdir(), "sookit_ytdlp_admin_result.json")
+
+
+def run_ytdlp_admin_update(result_path: str) -> int:
+    """以管理员权限运行的 yt-dlp + Deno 下载/更新入口（提权子进程调用）。
+
+    顺序执行 download_ytdlp 与 download_deno（各自独立判断、互不干扰），
+    把结果写 JSON 到 result_path 供主进程读取。返回 0=全部成功，1=有失败。
+    本函数无 Qt/UI 依赖，可在无界面环境下运行。
+    """
+    def _comp(name, fn):
+        ok, status, err = True, "up_to_date", ""
+        try:
+            status = fn(lambda _t: None)
+        except Exception as e:  # noqa: BLE001
+            ok, err = False, str(e)
+        return {"name": name, "ok": ok, "status": status, "error": err}
+
+    yt = _comp("yt-dlp", download_ytdlp)
+    deno = _comp("Deno", download_deno)
+    try:
+        Path(result_path).write_text(
+            json.dumps({"yt": yt, "deno": deno}, ensure_ascii=False),
+            encoding="utf-8")
+    except OSError:
+        pass
+    return 0 if yt["ok"] and deno["ok"] else 1
+
+
+def _runas_update(exe: str) -> None:
+    """用 ShellExecute 'runas' 以管理员身份启动 exe 执行更新。
+
+    返回 >32 表示成功；<=32 为错误（5=用户取消/拒绝，30=路径错误等）。
+    """
+    res = ctypes.windll.shell32.ShellExecuteW(
+        None, "runas", exe, "--update-ytdlp-admin", None, 1)
+    if res <= 32:
+        raise RuntimeError(f"管理员授权失败或已取消 (code={res})")
+
+
+def download_ytdlp_admin(progress_cb=None, timeout: float = 180) -> tuple:
+    """当 yt-dlp 目录不可写时，触发管理员子进程下载并等待结果（供后台线程调用）。
+
+    返回与 download_ytdlp/download_deno 组合一致的
+    (yt_ok, yt_status, yt_err, deno_ok, deno_status, deno_err)。
+
+    流程：清空旧结果 → runas 以管理员重启 Sookit.exe(--update-ytdlp-admin) →
+    轮询临时结果文件直到出现（超时由 timeout 控制）→ 读取并返回。
+    """
+    result_path = admin_update_result_path()
+    try:
+        Path(result_path).unlink(missing_ok=True)
+    except OSError:
+        pass
+    if progress_cb:
+        progress_cb("请求管理员权限以写入程序目录…")
+    _runas_update(sys.executable)
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        p = Path(result_path)
+        if p.is_file():
+            try:
+                data = json.loads(p.read_text(encoding="utf-8"))
+                yt = data.get("yt", {})
+                deno = data.get("deno", {})
+                return (yt.get("ok"), yt.get("status", "failed"),
+                        yt.get("error", ""),
+                        deno.get("ok"), deno.get("status", "failed"),
+                        deno.get("error", ""))
+            except Exception:  # noqa: BLE001
+                return (False, "failed", "读取提权结果失败",
+                        False, "failed", "读取提权结果失败")
+        time.sleep(0.3)
+    return (False, "failed", "等待管理员下载超时",
+            False, "failed", "等待管理员下载超时")

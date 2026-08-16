@@ -47,10 +47,12 @@ def get_log_dir() -> Path:
 def get_ytdlp_dir() -> Path:
     """yt-dlp 安装目录（含 deno 运行时）。
 
-    装到 %LOCALAPPDATA% 而非程序目录：yt-dlp 首次使用需自动下载，
-    Program Files 下无写权限，故放到用户可写目录。
+    随二进制工具一起放在程序目录（get_tools_dir()/yt-dlp）：
+    - 源码态 = 项目根 tools/yt-dlp（可写，直接下载）
+    - 打包态 = 程序目录 tools/yt-dlp（Program Files 下只读；写入需提权，
+      由下载流程检测目录不可写时以管理员子进程完成）
     """
-    return Path(os.environ.get("VIDEOTOOLBOX_YTDLP_DIR", _localappdata_dir() / "tools" / "yt-dlp"))
+    return Path(os.environ.get("VIDEOTOOLBOX_YTDLP_DIR", get_tools_dir() / "yt-dlp"))
 
 
 def get_tools_dir() -> Path:
