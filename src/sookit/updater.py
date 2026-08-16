@@ -11,8 +11,10 @@ sookit/updater.py
 """
 
 import json
+import os
 import re
 import sys
+import traceback
 from pathlib import Path
 
 from PyQt6.QtCore import Qt, QThread, QObject, pyqtSignal, QTimer
@@ -24,6 +26,37 @@ from sookit.core.ytdlp_utils import download_ytdlp, download_deno
 from sookit.paths import get_tools_dir
 
 _PCT_RE = re.compile(r"(\d+)")
+
+# ---------- 日志与结果兜底（保证进程无论成败都留下痕迹，Sookit 不会永久等待） ----------
+
+
+def _log_path() -> Path:
+    """日志写到 %LOCALAPPDATA%\\Sookit\\log\\updater.log（普通用户可写）。"""
+    try:
+        base = os.environ.get("LOCALAPPDATA") or str(Path.home())
+        log_dir = Path(base) / "Sookit" / "log"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        return log_dir / "updater.log"
+    except OSError:
+        return Path.home() / "updater.log"
+
+
+def _log(msg: str) -> None:
+    """追加一行日志（失败静默，不影响主流程）。"""
+    try:
+        with open(_log_path(), "a", encoding="utf-8") as f:
+            f.write(msg + "\n")
+    except OSError:
+        pass
+
+
+def _write_result(result_path: str, data: dict) -> None:
+    """写结果文件；失败时退而写日志，保证 Sookit 能感知失败而非永久等待。"""
+    try:
+        Path(result_path).write_text(
+            json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    except OSError:
+        _log(f"[FATAL] 结果文件写入失败: {result_path}")
 
 
 class _DownloadWorker(QObject):
@@ -127,11 +160,8 @@ class UpdaterDialog(QDialog):
         if self._finished:
             return
         self._finished = True
-        try:
-            Path(self._result_path).write_text(
-                json.dumps(self._result, ensure_ascii=False), encoding="utf-8")
-        except OSError:
-            pass
+        _log(f"[DONE] 下载器结束, result_path={self._result_path}, result={self._result}")
+        _write_result(self._result_path, self._result)
         self.accept()
 
     def closeEvent(self, e):
@@ -153,11 +183,32 @@ def _parse_result_path() -> str:
 
 
 def main() -> int:
-    """updater.exe 独立入口：构建 qfw 窗口跑下载，写结果文件后退出。"""
+    """updater.exe 独立入口：构建 qfw 窗口跑下载，写结果文件后退出。
+
+    全程 try 兜底：任何阶段异常都记录日志并写结果文件（含 traceback），
+    保证 Sookit 能拿到结果而非永久等待。
+    """
     result_path = _parse_result_path()
-    app = QApplication(sys.argv)
-    app.setStyle("Fusion")
-    dialog = UpdaterDialog(result_path)
-    dialog.start()
-    dialog.show()
-    return app.exec()
+    _log(f"[START] updater 启动, argv={sys.argv}, result_path={result_path}")
+    try:
+        app = QApplication(sys.argv)
+        app.setStyle("Fusion")
+        dialog = UpdaterDialog(result_path)
+        dialog.start()
+        dialog.show()
+        _log("[START] GUI 已显示, 开始下载")
+        return app.exec()
+    except Exception as e:  # noqa: BLE001
+        _log("[FATAL] updater 启动失败:\n" + traceback.format_exc())
+        _write_result(result_path, {
+            "yt": {"name": "yt-dlp", "ok": False, "status": "failed",
+                   "error": f"updater 启动失败: {e}"},
+            "deno": {"name": "Deno", "ok": False, "status": "failed",
+                     "error": f"updater 启动失败: {e}"},
+            "fatal": traceback.format_exc(),
+        })
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
