@@ -8,6 +8,8 @@ import re
 import time
 import urllib.request
 
+from sookit.core.utils import get_certifi_ssl_context
+
 
 # ---------- YouTube 视频 ID 提取 ----------
 
@@ -79,7 +81,7 @@ def fetch_youtube_metadata(video_id):
             'AppleWebKit/537.36 (KHTML, like Gecko) '
             'Chrome/120.0.0.0 Safari/537.36')})
     try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
+        with urllib.request.urlopen(req, timeout=15, context=get_certifi_ssl_context()) as resp:
             html = resp.read().decode('utf-8', errors='replace')
     except Exception:
         return None

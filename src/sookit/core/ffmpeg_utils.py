@@ -101,6 +101,28 @@ def run_ffmpeg(cmd_list, log_callback, process_ref=None):
         raise RuntimeError(f"ffmpeg 执行失败: {e}")
 
 
+def _build_ytdlp_error(returncode, error_lines):
+    """根据 yt-dlp 的 ERROR 输出构造可读的失败信息。
+
+    若检测到「Sign in to confirm」（YouTube 未登录/被反爬拦截），
+    给出明确提示；否则返回通用信息 + 摘要一条 ERROR 行。
+    """
+    joined = " ".join(error_lines).lower()
+    if "sign in to confirm" in joined:
+        return (
+            "YouTube 要求登录确认（未登录/被反爬拦截）：建议导入 Cookies 后重试。"
+            f"yt-dlp 退出码: {returncode}"
+        )
+    detail = ""
+    if error_lines:
+        # 取第一条 ERROR 行作为摘要，避免过长
+        for el in error_lines:
+            if el.lower().startswith("error"):
+                detail = f" 错误: {el[:200]}"
+                break
+    return f"yt-dlp 退出码: {returncode}，目标文件不存在或不完整{detail}"
+
+
 def run_ytdlp(cmd_list, log_callback, process_ref=None, on_process_created=None):
     try:
         # 创建临时文件用于 --print-to-file 输出最终路径
@@ -128,12 +150,20 @@ def run_ytdlp(cmd_list, log_callback, process_ref=None, on_process_created=None)
         if on_process_created is not None:
             on_process_created(process)
         _last_dest = None
+        _error_lines = []   # 收集 yt-dlp 的 ERROR 输出行，用于失败时给出具体原因
         while True:
             line = process.stdout.readline()
             if not line and process.poll() is not None:
                 break
             if line and log_callback:
                 log_callback(line.strip())
+            if line:
+                ls = line.strip()
+                if ls.lower().startswith("error") or ": error" in ls.lower() or ls.lower().startswith("warning"):
+                    # ERROR/WARNING 行收集（去重、去重绘控制字符）
+                    clean = ls.replace("\r", "")
+                    if clean and clean not in _error_lines:
+                        _error_lines.append(clean)
             # 从输出中提取目标文件路径（备选方案）
             if line:
                 for prefix in ('[download] Destination: ',
@@ -169,13 +199,20 @@ def run_ytdlp(cmd_list, log_callback, process_ref=None, on_process_created=None)
                 if log_callback:
                     log_callback(f"⚠ yt-dlp 退出码: {process.returncode}（但目标文件存在，视为成功）")
             else:
-                raise RuntimeError(
-                    f"yt-dlp 退出码: {process.returncode}，目标文件不存在或不完整")
+                raise RuntimeError(_build_ytdlp_error(process.returncode, _error_lines))
         return output_path if output_path else True
     except KeyboardInterrupt:
         raise
     except Exception as e:
-        raise RuntimeError(f"yt-dlp 执行失败: {e}")
+        # 收集到的 ERROR 行里若包含登录/反爬特征，优先给出明确提示
+        msg = str(e)
+        if _error_lines:
+            for el in _error_lines:
+                if "sign in to confirm" in el.lower():
+                    raise RuntimeError(
+                        "YouTube 要求登录确认（未登录/被反爬拦截）：建议导入 Cookies 后重试"
+                    ) from e
+        raise RuntimeError(f"yt-dlp 执行失败: {msg}")
 
 
 # ---------- aria2c ----------

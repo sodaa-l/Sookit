@@ -156,10 +156,21 @@ class QueuePage(PageBase):
         self.completed_flow_layout.insertWidget(0, thumb_card)
     
     def _on_task_failed(self, task: Task):
-        """任务失败 - 保留在进行中列表"""
+        """任务失败 - 保留在进行中列表 + 弹常显错误提示（需手动关闭）"""
         card = self._active_cards.get(task.task_id)
         if card:
             card.update_status(TaskStatus.FAILED)
+        # 弹常显错误 InfoBar，提醒用户失败原因（不自动消失）
+        title = task.title or "下载任务失败"
+        content = task.error or "任务执行失败，请查看日志"
+        # content 可能较长，截断显示
+        if len(content) > 200:
+            content = content[:200] + "…"
+        qfw.InfoBar.error(
+            parent=self, title=title,
+            content=content,
+            orient=Qt.Orientation.Horizontal,
+            isClosable=True, duration=-1)
     
     def _on_task_removed(self, task_id: str):
         """任务移除（取消 / 删除已完成）"""

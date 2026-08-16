@@ -27,6 +27,8 @@ from sookit.core.functions import (
     extract_youtube_id, build_thumbnails, is_ytdlp_available,
     fetch_youtube_metadata, get_video_duration, run_ffmpeg, run_ytdlp,
     load_theme_color, load_close_action, DEFAULT_OUTPUT_DIR, ensure_output_dir,
+    check_latest_version, get_current_version, get_ignored_version,
+    set_ignored_version, download_installer,
 )
 
 # ---------- 从 core.workers 导入工作线程 ----------
@@ -65,8 +67,9 @@ class MainWindow(qfw.FluentWindow):
             )
 
         # 检查 yt-dlp 可用性（可选依赖，PATH 全局或内置 tools/ 均可，缺失时 YouTube 功能不可用）
+        self._ytdlp_warning_bar = None
         if not is_ytdlp_available():
-            bar = qfw.InfoBar.warning(
+            self._ytdlp_warning_bar = qfw.InfoBar.warning(
                 parent=self,
                 title="警告",
                 content="未找到 yt-dlp！YouTube 相关功能将不可用，请前往设置页下载安装。",
@@ -76,7 +79,7 @@ class MainWindow(qfw.FluentWindow):
             )
             btn = qfw.PushButton("前往设置")
             btn.clicked.connect(lambda: self.switchTo(self.settings_page))
-            bar.addWidget(btn)
+            self._ytdlp_warning_bar.addWidget(btn)
 
         # 创建各页面
         self.youtube_page = YouTubePage(self)
@@ -139,6 +142,9 @@ class MainWindow(qfw.FluentWindow):
         # 延时创建任务队列 Badge（确保导航界面已完全初始化）
         QTimer.singleShot(0, self._setup_queue_badge)
 
+        # 延时自动检查更新（避免阻塞启动渲染；release 未上传/查询失败时静默跳过）
+        QTimer.singleShot(2000, self._check_update_at_startup)
+
     def _setup_queue_badge(self):
         """创建任务队列的 InfoBadge（显示"进行中"任务数）"""
         from sookit.core.task_queue import TaskQueueManager
@@ -197,3 +203,197 @@ class MainWindow(qfw.FluentWindow):
         # 停止直播监控的 workers
         self.monitor_page.stop_all_workers()
         QApplication.instance().quit()
+
+    def refresh_ytdlp_status(self):
+        """yt-dlp 装好后统一刷新各页「未找到 yt-dlp」提示（关闭已显示/已初始化的 warning infobar）"""
+        if self._ytdlp_warning_bar is not None and is_ytdlp_available():
+            try:
+                self._ytdlp_warning_bar.close()
+            except Exception:
+                pass
+            self._ytdlp_warning_bar = None
+        for page in (self.youtube_page, self.monitor_page, self.xspace_page):
+            if page is not None and hasattr(page, "refresh_ytdlp_status"):
+                try:
+                    page.refresh_ytdlp_status()
+                except Exception:
+                    pass
+
+    # ========== 自动更新 ==========
+
+    def _info_parent(self):
+        """返回当前内容区页面作为 InfoBar 的 parent（定位在标题栏下方），
+        使提示位置与其他页面（如 yt-dlp 更新）一致；内容区为空时回退主窗口。"""
+        page = self.stackedWidget.currentWidget()
+        return page if page is not None else self
+
+    def _run_check_update_async(self, done_cb):
+        """后台线程查询是否有新版本，结果回主线程交给 done_cb(latest|None)。"""
+        class _CheckWorker(QObject):
+            done = pyqtSignal(object)
+            def run(s):
+                try:
+                    s.done.emit(check_latest_version())
+                except Exception:
+                    s.done.emit(None)
+
+        thread = QThread(self)
+        w = _CheckWorker()
+        w.moveToThread(thread)
+        thread.started.connect(w.run)
+        w.done.connect(done_cb)
+        w.done.connect(thread.quit)
+        w.done.connect(w.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.start()
+        self._check_worker = w
+        self._check_thread = thread
+
+    def _check_update_at_startup(self):
+        """启动时后台查询是否有新版本，有则弹 Dialog 引导更新（查询失败静默跳过）"""
+        self._run_check_update_async(self._on_startup_check_done)
+
+    @pyqtSlot(object)
+    def _on_startup_check_done(self, latest):
+        """启动检查结果：有新版 → 弹更新 Dialog（无新版/失败静默）"""
+        if latest:
+            self.prompt_update(latest)
+
+    def check_update_manual(self):
+        """手动检查更新（设置页按钮调用）：后台查询，有新版弹 Dialog，无新版提示已最新。"""
+        self._run_check_update_async(self._on_manual_check_done)
+
+    @pyqtSlot(object)
+    def _on_manual_check_done(self, latest):
+        """手动检查结果：有新版弹 Dialog，无新版提示已是最新"""
+        if latest:
+            self.prompt_update(latest)
+        else:
+            qfw.InfoBar.info(
+                parent=self._info_parent(), title="已是最新版本",
+                content=f"当前已是最新版本（{get_current_version()}）",
+                orient=Qt.Orientation.Horizontal, isClosable=True, duration=5000)
+
+    def prompt_update(self, latest: str):
+        """弹出「发现新版本」Dialog（更新/忽略此版本/取消）。latest 须为已查询到的版本号。"""
+        if not latest:
+            return
+
+        dialog = qfw.MessageBox(
+            "发现新版本",
+            f"当前版本：{get_current_version()}\n最新版本：{latest}\n\n"
+            "是否下载安装器进行更新？下载后需手动运行安装器完成覆盖安装。",
+            self)
+        dialog.yesButton.setText("更新")
+        dialog.cancelButton.setText("取消")
+
+        # 在按钮区追加「忽略此版本」按钮：点击后持久化忽略并关闭 Dialog
+        self._ignore_handled = False
+        ignore_btn = qfw.PushButton("忽略此版本")
+
+        def _on_ignore():
+            self._ignore_handled = True
+            set_ignored_version(latest)
+            try:
+                dialog.reject()
+            except Exception:
+                dialog.close()
+            qfw.InfoBar.info(
+                parent=self._info_parent(), title="已忽略",
+                content=f"已忽略版本 {latest}，将在出现更新版本后重新提醒。",
+                orient=Qt.Orientation.Horizontal, isClosable=True, duration=5000)
+
+        ignore_btn.clicked.connect(_on_ignore)
+        dialog.addWidget(ignore_btn)
+
+        if dialog.exec():
+            # 点「更新」
+            self._do_update(latest)
+        elif not self._ignore_handled:
+            # 点「取消」或关闭 → 不做任何事
+            pass
+
+    def _do_update(self, latest: str):
+        """后台下载安装器，进度经 InfoBar 回显，完成后提示路径 + 打开按钮"""
+        self._update_infobar = qfw.InfoBar.info(
+            parent=self._info_parent(), title="正在下载更新",
+            content=f"正在下载 Sookit {latest} 安装器…",
+            orient=Qt.Orientation.Horizontal, isClosable=False, duration=-1)
+
+        class _DownloadWorker(QObject):
+            progress = pyqtSignal(str)
+            done = pyqtSignal(object)
+            def run(s):
+                try:
+                    path = download_installer(latest, lambda t: s.progress.emit(t))
+                    s.done.emit(("ok", str(path)))
+                except Exception as e:  # noqa: BLE001
+                    s.done.emit(("error", str(e)))
+
+        thread = QThread(self)
+        w = _DownloadWorker()
+        w.moveToThread(thread)
+        thread.started.connect(w.run)
+        w.progress.connect(self._on_update_progress)
+        w.done.connect(self._on_update_download_done)
+        w.done.connect(thread.quit)
+        w.done.connect(w.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.start()
+        self._update_dl_worker = w
+        self._update_dl_thread = thread
+
+    @pyqtSlot(str)
+    def _on_update_progress(self, text: str):
+        """下载进度 → 更新 InfoBar 内容"""
+        if getattr(self, "_update_infobar", None) is not None:
+            self._update_infobar.setContent(text)
+
+    @pyqtSlot(object)
+    def _on_update_download_done(self, result):
+        """下载完成：成功提示路径 + 打开按钮；失败弹错误"""
+        if getattr(self, "_update_infobar", None) is not None:
+            try:
+                self._update_infobar.close()
+            except Exception:
+                pass
+            self._update_infobar = None
+        status, payload = result
+        if status != "ok":
+            qfw.InfoBar.error(
+                parent=self._info_parent(), title="更新失败",
+                content=f"安装器下载失败：{payload}",
+                orient=Qt.Orientation.Vertical, isClosable=True, duration=-1)
+            return
+        path = payload
+        bar = qfw.InfoBar.success(
+            parent=self._info_parent(), title="下载完成",
+            content=f"安装器已保存到：\n{path}\n\n请运行安装器完成更新（覆盖安装，需管理员权限）。",
+            orient=Qt.Orientation.Vertical, isClosable=True, duration=-1)
+        open_btn = qfw.PushButton("打开文件")
+        open_btn.clicked.connect(lambda: self._open_file(path))
+        bar.addWidget(open_btn)
+        folder_btn = qfw.PushButton("打开所在文件夹")
+        folder_btn.clicked.connect(lambda: self._open_folder(path))
+        bar.addWidget(folder_btn)
+
+    def _open_file(self, path: str):
+        """用系统默认程序打开文件（运行安装器）"""
+        try:
+            os.startfile(path)  # Windows 专用
+        except Exception as e:  # noqa: BLE001
+            qfw.InfoBar.warning(
+                parent=self._info_parent(), title="无法打开",
+                content=f"{e}", orient=Qt.Orientation.Horizontal,
+                isClosable=True, duration=6000)
+
+    def _open_folder(self, path: str):
+        """在资源管理器中定位文件"""
+        import subprocess
+        try:
+            subprocess.Popen(["explorer", "/select,", str(path)])
+        except Exception as e:  # noqa: BLE001
+            qfw.InfoBar.warning(
+                parent=self._info_parent(), title="无法打开",
+                content=f"{e}", orient=Qt.Orientation.Horizontal,
+                isClosable=True, duration=6000)

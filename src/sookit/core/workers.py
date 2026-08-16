@@ -90,7 +90,7 @@ class MonitorWorker(QThread):
     #                      task_id, url, output_dir, format_spec, download_config, info
 
     def __init__(self, task_id, url, output_dir, interval, remote_components,
-                 concurrent_fragments=4, use_aria2c=True, aria2c_connections=16):
+                 concurrent_fragments=10, use_aria2c=True, aria2c_connections=16):
         super().__init__()
         self.task_id = task_id
         self.url = url
@@ -194,6 +194,7 @@ class TaskWorker(QThread):
         self._cancelled = False
         self._process = None
         self._process_lock = threading.Lock()
+        self.error = ""              # 任务失败时的错误信息（供 task_queue / UI 弹窗）
 
     def pause(self):
         """暂停任务 (Windows: NtSuspendProcess)"""
@@ -293,5 +294,6 @@ class TaskWorker(QThread):
                 self.finished_signal.emit(True)
         except Exception as e:
             if not self._cancelled:
+                self.error = str(e)
                 self.log_signal.emit(f"错误: {e}")
                 self.finished_signal.emit(False)

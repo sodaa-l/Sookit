@@ -62,10 +62,18 @@ from sookit.core.config import (
     THEME_COLORS, DEFAULT_THEME_COLOR, load_theme_color, save_theme_color,
     set_autostart, is_autostart,
 )
+from sookit.core.utils import get_certifi_ssl_context
 from sookit.core.ytdlp_utils import (
     get_ytdlp_cmd, get_ytdlp_source, is_ytdlp_available,
     get_ytdlp_deno_path, build_ytdlp_cmd, download_ytdlp_bundle,
-    get_ytdlp_exe_path,
+    download_ytdlp, download_deno, get_ytdlp_exe_path,
+    get_ytdlp_current_version, get_deno_current_version,
+    get_ytdlp_latest_version, get_deno_latest_version,
+)
+from sookit.core.updater import (
+    is_newer, get_current_version, get_latest_version,
+    check_latest_version, get_ignored_version, set_ignored_version,
+    download_installer,
 )
 
 # deprecated: import 时快照，请改用 is_ytdlp_available()（动态检测，内置版安装后无需重启即生效）
@@ -405,7 +413,7 @@ class Functions:
 
     @staticmethod
     def download_youtube(url, format_spec, output_dir, remote_components, 
-                        concurrent_fragments=4, use_aria2c=True, aria2c_connections=16,
+                        concurrent_fragments=10, use_aria2c=True, aria2c_connections=16,
                         log=None, process_ref=None, on_process_created=None):
         Functions._check_ytdlp()
         output_template = os.path.join(output_dir, '%(title)s.%(ext)s')
@@ -494,7 +502,14 @@ class Functions:
     def download_thumbnail(cover_url, output_path, log=None):
         try:
             if log: log(f"下载封面: {cover_url}")
-            urllib.request.urlretrieve(cover_url, output_path)
+            req = urllib.request.Request(cover_url, headers={'User-Agent': 'Mozilla/5.0'})
+            with urllib.request.urlopen(req, timeout=15, context=get_certifi_ssl_context()) as resp, \
+                    open(output_path, "wb") as f:
+                while True:
+                    chunk = resp.read(64 * 1024)
+                    if not chunk:
+                        break
+                    f.write(chunk)
             if log: log(f"封面已保存: {output_path}")
             return True
         except Exception as e:

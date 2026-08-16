@@ -12,13 +12,15 @@ from PyQt6.QtCore import Qt, QThread, QObject, pyqtSignal, pyqtSlot, QTimer
 import qfluentwidgets as qfw
 
 from sookit.core.functions import (
-    is_ytdlp_available, get_ytdlp_source, build_ytdlp_cmd, download_ytdlp_bundle,
+    is_ytdlp_available, get_ytdlp_source, build_ytdlp_cmd,
+    download_ytdlp, download_deno,
+    get_ytdlp_current_version, get_deno_current_version,
     check_ffmpeg, check_aria2c, load_download_config, save_download_config,
     load_theme_color, save_theme_color, THEME_COLORS, get_ffmpeg_path,
     set_autostart, is_autostart, load_close_action, save_close_action,
     load_task_complete_action, save_task_complete_action,
 )
-from sookit.core.utils import get_scrollbar_style
+from sookit.core.utils import get_scrollbar_style, get_certifi_ssl_context
 from sookit import APP_NAME, APP_VERSION
 
 
@@ -31,6 +33,9 @@ class SettingsPage(QWidget):
         self._yt_current_ver = ""
         self._yt_update_checked = False
         self._update_progress = None
+        # yt-dlp / Deno 版本检测结果（None=尚未返回；""=未安装/获取失败）
+        self._yt_ver = None
+        self._deno_ver = None
         self._init_ui()
         self._connect_signals()
         QTimer.singleShot(200, self._check_versions)
@@ -215,6 +220,9 @@ class SettingsPage(QWidget):
         about_lay = QHBoxLayout(about_card)
         about_lay.setContentsMargins(15, 12, 15, 12)
         about_lay.addWidget(qfw.BodyLabel(f"{APP_NAME} {APP_VERSION}"))
+        about_lay.addStretch()
+        self.check_update_btn = qfw.PrimaryPushButton("检查更新")
+        about_lay.addWidget(self.check_update_btn)
         layout.addWidget(about_card)
 
         self.ff_card = qfw.CardWidget(self)
@@ -250,6 +258,8 @@ class SettingsPage(QWidget):
         self.close_action_combo.currentIndexChanged.connect(self._on_close_action_changed)
         # 任务完成后信号连接
         self.task_complete_combo.currentIndexChanged.connect(self._on_task_complete_changed)
+        # 检查更新按钮信号连接
+        self.check_update_btn.clicked.connect(self._on_check_update)
 
     def _on_theme_changed(self, idx):
         mapping = {0: qfw.Theme.LIGHT, 1: qfw.Theme.DARK, 2: qfw.Theme.AUTO}
@@ -299,6 +309,22 @@ class SettingsPage(QWidget):
         self._last_task_complete_idx = index
         save_task_complete_action(index)
 
+    def _on_check_update(self):
+        """「检查更新」按钮：复用主窗口更新流程（后台查询 → 弹 Dialog）"""
+        win = self.window()
+        if win is not None and hasattr(win, "check_update_manual"):
+            self.check_update_btn.setEnabled(False)
+            # 手动检查完成后恢复按钮可用
+            try:
+                win.check_update_manual()
+            finally:
+                self.check_update_btn.setEnabled(True)
+        else:
+            qfw.InfoBar.info(parent=self, title="提示",
+                             content="未找到主窗口，无法检查更新",
+                             orient=Qt.Orientation.Horizontal,
+                             isClosable=True, duration=5000)
+
     @staticmethod
     def _parse_ytdlp_version(text: str) -> str:
         """yt-dlp 版本：第一非空行"""
@@ -315,9 +341,12 @@ class SettingsPage(QWidget):
         return m.group(1) if m else ""
 
     def _check_versions(self):
-        """并行检测三个工具的版本"""
+        """并行检测工具的版本（yt-dlp 与 Deno 并行）"""
         self._version_threads = []
         self._version_workers = []   # 保活 worker，防止 GC
+        self._yt_ver = None
+        self._deno_ver = None
+        source = get_ytdlp_source()
         # yt-dlp（PATH 全局或内置 tools/ 均可）
         if is_ytdlp_available():
             w = self._create_worker(build_ytdlp_cmd("--version"), self._parse_ytdlp_version)
@@ -325,8 +354,19 @@ class SettingsPage(QWidget):
                 self._version_workers.append(w)
                 w.finished.connect(self._on_yt_version)
                 w.thread().start()
+            # 内置 yt-dlp 时才需检测 Deno（PATH 全局版不管 Deno，按需求）
+            if source == "tools":
+                dw = self._create_deno_worker()
+                if dw:
+                    self._version_workers.append(dw)
+                    dw.finished.connect(self._on_deno_version)
+                    dw.thread().start()
+                else:
+                    # worker 创建失败兜底：当作未检测到 Deno，避免版本标签卡在等待
+                    self._deno_ver = ""
         else:
-            self.yt_label.setText("yt-dlp  —  未安装")
+            self._yt_ver = ""
+            self._render_yt_label()
         # ffmpeg（版本信息在 stderr）
         if check_ffmpeg():
             # 检查是否使用内嵌版本
@@ -396,19 +436,61 @@ class SettingsPage(QWidget):
         except Exception:
             return None
 
+    def _create_deno_worker(self):
+        """创建后台线程 worker 检测内置 Deno 版本，返回 worker 对象"""
+        try:
+            thread = QThread(self)
+
+            class _DenoWorker(QObject):
+                finished = pyqtSignal(object)
+                def run(s):
+                    s.finished.emit(get_deno_current_version())
+
+            worker = _DenoWorker()
+            worker.moveToThread(thread)
+            thread.started.connect(worker.run)
+            worker.finished.connect(thread.quit)
+            worker.finished.connect(worker.deleteLater)
+            thread.finished.connect(thread.deleteLater)
+            self._version_threads.append(thread)
+            return worker
+        except Exception:
+            return None
+
     @pyqtSlot(object)
     def _on_yt_version(self, v):
-        source = get_ytdlp_source()
-        src_txt = "内置" if source == "tools" else ("PATH" if source == "path" else "")
-        if v:
-            prefix = f"yt-dlp（{src_txt}）" if src_txt else "yt-dlp"
-            self.yt_label.setText(f"{prefix}  —  {v}")
-        else:
-            self.yt_label.setText("yt-dlp  —  未安装")
+        self._yt_ver = v if v else ""
+        self._render_yt_label()
         # 版本检测完成后，顺便查 PyPI 是否有新版（仅一次）
         if v and not self._yt_update_checked:
             self._yt_update_checked = True
             self._check_yt_update_needed(v)
+
+    @pyqtSlot(object)
+    def _on_deno_version(self, v):
+        self._deno_ver = v if v else ""
+        self._render_yt_label()
+
+    def _render_yt_label(self):
+        """组合渲染 yt-dlp 版本标签。
+
+        - PATH 来源：只显示 yt-dlp（不管 Deno）
+        - 内置来源：显示 yt-dlp + Deno（Deno 缺失显示「未安装」）
+        - 未安装：显示「未安装」
+        """
+        source = get_ytdlp_source()
+        if source == "tools":
+            # 内置来源：需 yt-dlp 与 Deno 版本都检测完才渲染
+            if self._yt_ver is None or self._deno_ver is None:
+                return
+            yt_txt = self._yt_ver if self._yt_ver else "未知"
+            deno_txt = self._deno_ver if self._deno_ver else "未安装"
+            self.yt_label.setText(f"yt-dlp（内置）  —  {yt_txt} / Deno  —  {deno_txt}")
+        elif source == "path":
+            yt_txt = self._yt_ver if self._yt_ver else "未知"
+            self.yt_label.setText(f"yt-dlp（PATH）  —  {yt_txt}")
+        else:
+            self.yt_label.setText("yt-dlp  —  未安装")
 
     @pyqtSlot(object)
     def _on_ff_version(self, v):
@@ -424,7 +506,7 @@ class SettingsPage(QWidget):
             def run(s):
                 try:
                     url = "https://pypi.org/pypi/yt-dlp/json"
-                    with urllib.request.urlopen(url, timeout=10) as resp:
+                    with urllib.request.urlopen(url, timeout=10, context=get_certifi_ssl_context()) as resp:
                         data = json.loads(resp.read().decode())
                     s.done.emit(data.get("info", {}).get("version", ""))
                 except Exception:
@@ -496,16 +578,25 @@ class SettingsPage(QWidget):
         self._start_ytdlp_download()
 
     def _start_ytdlp_download(self):
-        """后台线程流式下载 yt-dlp.exe（+ 缺失时下载 Deno），进度经 yt_label 文字回显"""
+        """后台线程顺序下载/更新 yt-dlp 与 Deno（各自独立判断、互不干扰），
+        进度经 yt_label 文字回显。返回 (yt_ok, yt_status, yt_err, deno_ok, deno_status, deno_err)"""
         class _YtdlpDownloadWorker(QObject):
             progress = pyqtSignal(str)
-            done = pyqtSignal(object)  # (ok: bool, error: str)
+            done = pyqtSignal(object)
             def run(s):
+                # ---- yt-dlp（独立判断/下载，失败不影响 Deno）----
+                yt_ok, yt_status, yt_err = True, "up_to_date", ""
                 try:
-                    download_ytdlp_bundle(lambda text: s.progress.emit(text))
-                    s.done.emit((True, ""))
+                    yt_status = download_ytdlp(lambda t: s.progress.emit(t))
                 except Exception as e:
-                    s.done.emit((False, str(e)))
+                    yt_ok, yt_err = False, str(e)
+                # ---- Deno（独立判断/下载，失败不影响 yt-dlp）----
+                deno_ok, deno_status, deno_err = True, "up_to_date", ""
+                try:
+                    deno_status = download_deno(lambda t: s.progress.emit(t))
+                except Exception as e:
+                    deno_ok, deno_err = False, str(e)
+                s.done.emit((yt_ok, yt_status, yt_err, deno_ok, deno_status, deno_err))
 
         thread = QThread(self)
         w = _YtdlpDownloadWorker()
@@ -527,22 +618,48 @@ class SettingsPage(QWidget):
 
     @pyqtSlot(object)
     def _on_ytdlp_download_done(self, result):
-        ok, err = result
+        yt_ok, yt_status, yt_err, deno_ok, deno_status, deno_err = result
         if self._update_progress:
             self._update_progress.close()
             self._update_progress = None
         self.yt_btn.setEnabled(True)
         self.yt_btn.setText("下载/更新")
-        if ok:
+
+        # 组装各组件状态描述
+        def _comp_state(name, ok, status):
+            if not ok:
+                return f"{name} 失败"
+            return f"{name} 已更新" if status == "updated" else f"{name} 已最新"
+
+        yt_state = _comp_state("yt-dlp", yt_ok, yt_status)
+        deno_state = _comp_state("Deno", deno_ok, deno_status)
+        any_updated = (yt_ok and yt_status == "updated") or (deno_ok and deno_status == "updated")
+        all_up_to_date = (yt_ok and yt_status == "up_to_date") and (deno_ok and deno_status == "up_to_date")
+        any_failed = not yt_ok or not deno_ok
+
+        if all_up_to_date:
+            # 两者都已最新
+            self.yt_label.setText("yt-dlp / Deno  —  已是最新版本")
+            qfw.InfoBar.info(parent=self, title="提示",
+                             content="yt-dlp 与 Deno 均已是最新版本，无需更新",
+                             orient=Qt.Orientation.Horizontal,
+                             isClosable=True, duration=5000)
+        elif any_failed:
+            self.yt_label.setText("yt-dlp / Deno  —  更新异常")
+            qfw.InfoBar.error(parent=self, title="部分更新失败",
+                              content=f"yt-dlp: {yt_state}\nDeno: {deno_state}"
+                                      + (f"\n\nyt-dlp 错误: {yt_err}" if not yt_ok else "")
+                                      + (f"\nDeno 错误: {deno_err}" if not deno_ok else ""),
+                              orient=Qt.Orientation.Vertical,
+                              isClosable=True, duration=-1)
+        elif any_updated:
             qfw.InfoBar.success(parent=self, title="完成",
-                                content="yt-dlp 安装成功（内置版本）",
+                                content=f"{yt_state}；{deno_state}",
                                 orient=Qt.Orientation.Horizontal,
                                 isClosable=True, duration=5000)
-        else:
-            self.yt_label.setText("yt-dlp  —  安装失败")
-            qfw.InfoBar.error(parent=self, title="错误",
-                              content=f"yt-dlp 安装失败: {err}",
-                              orient=Qt.Orientation.Horizontal,
-                              isClosable=True, duration=-1)
+            # 装好后刷新主窗口及各页面「未找到 yt-dlp」提示（修复2）
+            win = self.window()
+            if win is not None and hasattr(win, "refresh_ytdlp_status"):
+                win.refresh_ytdlp_status()
         # 刷新版本
         QTimer.singleShot(1000, self._check_versions)

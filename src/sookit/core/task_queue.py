@@ -56,6 +56,7 @@ class Task:
         self.eta = ""                # 预计完成时间
         self.worker = None           # TaskWorker 实例
         self.output_path = ""        # 输出文件路径（用于打开文件夹）
+        self.error = ""              # 失败时的错误信息（供 UI 弹窗提示）
         
         # yt-dlp 专用元数据
         self.channel = metadata.get("channel", "") if metadata else ""
@@ -322,6 +323,9 @@ class TaskQueueManager(QObject):
             task.status = TaskStatus.FAILED
             task.speed = ""
             task.eta = ""
+            # 记录失败原因，供 UI 弹窗提示
+            if task.worker is not None:
+                task.error = getattr(task.worker, 'error', "") or task.error
             self.task_updated.emit(task)
             self.task_failed.emit(task)
             # 失败任务保留在活跃列表中显示

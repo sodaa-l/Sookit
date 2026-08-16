@@ -17,6 +17,7 @@ from PyQt6.QtGui import QDesktopServices
 
 from sookit.core.task_queue import Task, TaskType, TaskStatus
 from sookit.core.ffmpeg_utils import format_duration
+from sookit.core.utils import get_certifi_ssl_context
 
 
 # ---------- 任务卡片基类 ----------
@@ -358,7 +359,7 @@ class YtDlpTaskCard(TaskCardBase):
             def run(self):
                 try:
                     req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-                    with urllib.request.urlopen(req, timeout=10) as resp:
+                    with urllib.request.urlopen(req, timeout=10, context=get_certifi_ssl_context()) as resp:
                         data = resp.read()
                     if data:
                         self.loaded.emit(data)
@@ -588,7 +589,7 @@ class CoverAreaWidget(QWidget):
                     req = urllib.request.Request(
                         self.task.cover_url,
                         headers={'User-Agent': 'Mozilla/5.0'})
-                    with urllib.request.urlopen(req, timeout=10) as resp:
+                    with urllib.request.urlopen(req, timeout=10, context=get_certifi_ssl_context()) as resp:
                         data = resp.read()
                     if data:
                         self2.loaded.emit(data)

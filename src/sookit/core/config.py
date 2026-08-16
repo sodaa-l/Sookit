@@ -62,7 +62,7 @@ def load_download_config():
     config = load_config()
     download_config = config.get('download', {})
     return {
-        'concurrent_fragments': download_config.get('concurrent_fragments', 4),
+        'concurrent_fragments': download_config.get('concurrent_fragments', 10),
         'use_aria2c': download_config.get('use_aria2c', True),
         'aria2c_connections': download_config.get('aria2c_connections', 16),
     }
@@ -81,7 +81,7 @@ def load_close_action():
     """加载关闭行为配置: 0=最小化至托盘, 1=直接退出"""
     config = load_config()
     general = config.get('general', {})
-    return general.get('close_action', 0)
+    return general.get('close_action', 1)
 
 
 def save_close_action(action: int):
@@ -184,3 +184,21 @@ def is_autostart() -> bool:
         return True
     except (FileNotFoundError, OSError):
         return False
+
+
+# ---------- 自动更新忽略版本 ----------
+
+def load_ignored_update_version():
+    """加载用户忽略的更新版本号（'ignore_update_version' 键），未设置返回空串"""
+    config = load_config()
+    update = config.get('update', {})
+    return update.get('ignore_version', '')
+
+
+def save_ignored_update_version(version: str):
+    """保存用户忽略的更新版本号（'update.ignore_version' 键）"""
+    config = load_config()
+    if 'update' not in config:
+        config['update'] = {}
+    config['update']['ignore_version'] = version
+    save_config(config)

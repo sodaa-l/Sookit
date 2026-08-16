@@ -23,6 +23,7 @@ from sookit.core.functions import (
 from sookit.widgets.cover_image import CoverImageWidget
 from sookit.pages.base import PageBase
 from sookit.core.task_queue import TaskType
+from sookit.core.utils import get_certifi_ssl_context
 
 
 class YouTubePage(PageBase):
@@ -42,6 +43,7 @@ class YouTubePage(PageBase):
         self._cover_loader_worker = None
         self._cover_download_worker = None
         self._cover_data = None  # 封面原始字节数据（供任务队列复用）
+        self._ytdlp_warning_bar = None  # 「未找到 yt-dlp」常驻 infobar，装好后关闭
 
         # ---- 主布局 ----
         layout = QVBoxLayout(self)
@@ -55,7 +57,7 @@ class YouTubePage(PageBase):
 
         # 检查 yt-dlp 可用性（PATH 全局或内置 tools/ 均可）
         if not is_ytdlp_available():
-            qfw.InfoBar.warning(
+            self._ytdlp_warning_bar = qfw.InfoBar.warning(
                 parent=self, title="依赖缺失",
                 content="未找到 yt-dlp，YouTube 功能不可用。请前往设置页下载安装",
                 orient=Qt.Orientation.Horizontal, isClosable=True, duration=-1
@@ -132,8 +134,6 @@ class YouTubePage(PageBase):
         download_dir_row.addWidget(browse_btn)
         left_layout.addLayout(download_dir_row)
 
-
-
         # ====== 右面板：格式表格 + 下载控制 ======
         right_panel = QWidget()
         right_layout = QVBoxLayout(right_panel)
@@ -167,9 +167,6 @@ class YouTubePage(PageBase):
         self._fix_format_table_columns()
         right_layout.addWidget(self.format_table, stretch=1)
 
-        # 下载控制行
-
-
         # 下载按钮
         self.download_btn = qfw.PrimaryPushButton("▶ 下载选中格式")
         self.download_btn.setFixedWidth(240)
@@ -186,6 +183,31 @@ class YouTubePage(PageBase):
 
         # 日志区域
         self._setup_log_area(layout)
+
+        # 监听队列下载失败，弹常显错误提示（需手动关闭）
+        from sookit.core.task_queue import TaskQueueManager
+        TaskQueueManager.instance().task_failed.connect(self._on_queue_task_failed)
+
+    def refresh_ytdlp_status(self):
+        """yt-dlp 装好后重新检测：若已可用则关闭「未找到 yt-dlp」提示"""
+        if self._ytdlp_warning_bar is not None and is_ytdlp_available():
+            try:
+                self._ytdlp_warning_bar.close()
+            except Exception:
+                pass
+            self._ytdlp_warning_bar = None
+
+    def _on_queue_task_failed(self, task):
+        """队列下载失败 → 弹常显错误提示（不自动消失，需手动关闭）"""
+        title = task.title or "下载任务失败"
+        content = task.error or "任务执行失败，请查看日志"
+        if len(content) > 200:
+            content = content[:200] + "…"
+        qfw.InfoBar.error(
+            parent=self, title=title,
+            content=content,
+            orient=Qt.Orientation.Horizontal,
+            isClosable=True, duration=-1)
 
     # -------- 嗅探 --------
     def do_sniff(self):
@@ -416,7 +438,7 @@ class YouTubePage(PageBase):
                     req = urllib.request.Request(
                         cover_url,
                         headers={'User-Agent': 'Mozilla/5.0'})
-                    with urllib.request.urlopen(req, timeout=15) as resp:
+                    with urllib.request.urlopen(req, timeout=15, context=get_certifi_ssl_context()) as resp:
                         data = resp.read()
                     if data:
                         self.loaded.emit(data)

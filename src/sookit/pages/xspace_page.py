@@ -24,8 +24,9 @@ class XSpacePage(PageBase):
         layout.addSpacing(10)
 
         # 检查 yt-dlp 可用性（PATH 全局或内置 tools/ 均可）
+        self._ytdlp_warning_bar = None
         if not is_ytdlp_available():
-            qfw.InfoBar.warning(
+            self._ytdlp_warning_bar = qfw.InfoBar.warning(
                 parent=self, title="依赖缺失",
                 content="未找到 yt-dlp，X Space 功能不可用。请前往设置页下载安装",
                 orient=Qt.Orientation.Horizontal, isClosable=True, duration=-1
@@ -85,3 +86,12 @@ class XSpacePage(PageBase):
         layout.addWidget(btn, alignment=Qt.AlignmentFlag.AlignCenter)
 
         self._setup_log_area(layout)
+
+    def refresh_ytdlp_status(self):
+        """yt-dlp 装好后重新检测：若已可用则关闭「未找到 yt-dlp」提示"""
+        if self._ytdlp_warning_bar is not None and is_ytdlp_available():
+            try:
+                self._ytdlp_warning_bar.close()
+            except Exception:
+                pass
+            self._ytdlp_warning_bar = None
