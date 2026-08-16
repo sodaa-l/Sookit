@@ -3,7 +3,7 @@
 ; 安装目录: Program Files\Sookit；运行时数据在 %APPDATA%/%LOCALAPPDATA%；yt-dlp 自动下载到 %LOCALAPPDATA%
 
 #define MyAppName "Sookit"
-#define MyAppVersion "260816.7"
+#define MyAppVersion "260816.8"
 #define MyAppPublisher "sodaa-l"
 #define MyAppExeName "Sookit.exe"
 #define MyAppId "{{F3A8B7C2-5E4D-4A2B-9C1E-8B7D6A5F4E3D}"
@@ -28,6 +28,9 @@ WizardStyle=modern
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 PrivilegesRequired=admin
+; 单实例互斥体（与 __main__.py 的 Local\Sookit 一致）：安装/卸载时检测 Sookit 是否在运行，
+; 若在运行则弹窗询问（不自动关闭），避免 tools/ 下文件被占用导致卸载删不掉
+AppMutex=Local\Sookit
 ; 运行时数据全部在 %APPDATA%/%LOCALAPPDATA%，程序目录只读，无写权限问题
 
 ; 仅简体中文界面；中文语言文件已入库为项目依赖：packaging\ChineseSimplified.isl

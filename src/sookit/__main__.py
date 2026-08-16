@@ -8,7 +8,42 @@ import os
 import sys
 
 
+# 单实例互斥体名（与 packaging/installer.iss 的 AppMutex 保持一致）
+# 限定 Local 会话（普通权限），供 Inno 安装/卸载检测程序是否在运行。
+_SINGLE_INSTANCE_MUTEX = "Local\\Sookit"
+
+
+def _acquire_single_instance():
+    """创建/占用单实例命名互斥体；返回句柄（int）表示持有成功，返回 None 表示已有实例。
+
+    供安装/卸载器（Inno AppMutex）检测本程序是否在运行：Sookit 运行期间该互斥体一直存在。
+    """
+    import ctypes
+    kernel32 = ctypes.windll.kernel32
+    handle = kernel32.CreateMutexW(None, False, _SINGLE_INSTANCE_MUTEX)
+    if not handle:
+        # 创建失败（罕见）不阻塞启动
+        return None
+    # ERROR_ALREADY_EXISTS = 183
+    if kernel32.GetLastError() == 183:
+        kernel32.CloseHandle(handle)
+        ctypes.windll.user32.MessageBoxW(
+            None,
+            "Sookit 已在运行，请勿重复启动。",
+            "Sookit",
+            0x40 | 0x1000,  # MB_ICONINFORMATION | MB_SETFOREGROUND
+        )
+        return None
+    return handle
+
+
 def main():
+    # ---------- 单实例互斥体 ----------
+    # 必须在创建 QApplication 之前检测：已有实例则提示并退出，不启动界面。
+    _mutex = _acquire_single_instance()
+    if _mutex is None:
+        sys.exit(0)
+
     # ---------- 依赖检查 ----------
     # PyQt6 - 核心依赖，缺失时弹窗提示
     try:
