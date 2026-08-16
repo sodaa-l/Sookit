@@ -51,8 +51,11 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: de
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
 
-; 卸载时同时删除用户运行时数据（配置、日志、封面缓存、yt-dlp 工具等）
+; 卸载时删除整个程序目录 {app}（含 Inno [Files] 记录之外的 updater 运行时产物，
+; 如 tools\yt-dlp、tools\.ytdlp_updater_result*.json；卸载时 AppMutex 已阻止 Sookit 运行）
+; 以及用户运行时数据（配置、日志、封面缓存）
 ; {userappdata} = %APPDATA%，{localappdata} = %LOCALAPPDATA%
 [UninstallDelete]
+Type: filesandordirs; Name: "{app}"
 Type: filesandordirs; Name: "{userappdata}\{#MyAppName}"
 Type: filesandordirs; Name: "{localappdata}\{#MyAppName}"
