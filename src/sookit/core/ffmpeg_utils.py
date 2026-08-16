@@ -131,7 +131,12 @@ def run_ytdlp(cmd_list, log_callback, process_ref=None, on_process_created=None,
         # 创建临时文件用于 --print-to-file 输出最终路径
         import tempfile
         tmp_path = tempfile.mktemp(suffix='.ytdlp_path')
-        cmd_list = cmd_list + ['--print-to-file', 'after_move:filepath', tmp_path]
+        # 强制 yt-dlp 输出 UTF-8：Windows 中文环境默认输出 GBK，若按 UTF-8 解码会导致
+        # 中文路径（如 [download] Destination: ...安次嶺希和子...mp4）乱码，
+        # 进而导致 _on_path 记录的错误路径删不掉真实的 .part/.part.aria2。
+        # 与 _run_ytdlp_json 的 --encoding utf-8 保持一致。
+        cmd_list = ['--encoding', 'utf-8'] + cmd_list + \
+                   ['--print-to-file', 'after_move:filepath', tmp_path]
 
         # 继承当前环境并设置 SSL 证书路径，确保系统 yt-dlp 能正常建立 HTTPS 连接
         env = os.environ.copy()
