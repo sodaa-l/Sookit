@@ -127,6 +127,9 @@ def _build_ytdlp_error(returncode, error_lines):
 
 def run_ytdlp(cmd_list, log_callback, process_ref=None, on_process_created=None,
               on_path=None):
+    # 提前初始化，确保任何异常路径（如 Popen 失败）下 except 都能安全访问
+    _last_dest = None
+    _error_lines = []   # 收集 yt-dlp 的 ERROR 输出行，用于失败时给出具体原因
     try:
         # 创建临时文件用于 --print-to-file 输出最终路径
         import tempfile
@@ -135,7 +138,9 @@ def run_ytdlp(cmd_list, log_callback, process_ref=None, on_process_created=None,
         # 中文路径（如 [download] Destination: ...安次嶺希和子...mp4）乱码，
         # 进而导致 _on_path 记录的错误路径删不掉真实的 .part/.part.aria2。
         # 与 _run_ytdlp_json 的 --encoding utf-8 保持一致。
-        cmd_list = ['--encoding', 'utf-8'] + cmd_list + \
+        # 注意：--encoding 必须插在 yt-dlp 可执行路径(cmd_list[0])之后，不能放最前面，
+        # 否则 Popen 会把 --encoding 当程序名执行而启动失败。
+        cmd_list = cmd_list[:1] + ['--encoding', 'utf-8'] + cmd_list[1:] + \
                    ['--print-to-file', 'after_move:filepath', tmp_path]
 
         # 继承当前环境并设置 SSL 证书路径，确保系统 yt-dlp 能正常建立 HTTPS 连接
@@ -157,8 +162,6 @@ def run_ytdlp(cmd_list, log_callback, process_ref=None, on_process_created=None,
             process_ref.append(process)
         if on_process_created is not None:
             on_process_created(process)
-        _last_dest = None
-        _error_lines = []   # 收集 yt-dlp 的 ERROR 输出行，用于失败时给出具体原因
         while True:
             line = process.stdout.readline()
             if not line and process.poll() is not None:
