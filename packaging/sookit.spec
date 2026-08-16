@@ -44,10 +44,44 @@ exe = EXE(
     icon=os.path.join(PKG, "sookit.ico"),
 )
 
+# ---- 独立下载器 updater.exe（复用同一 _internal，共享依赖，避免体积翻倍） ----
+a_updater = Analysis(
+    [os.path.join(SRC, "sookit", "updater.py")],
+    pathex=[SRC],  # 让 PyInstaller 解析 src 布局下的 sookit 包
+    binaries=[],
+    datas=[],
+    hiddenimports=[],
+    hookspath=[],
+    hooksconfig={},
+    runtime_hooks=[],
+    excludes=[],
+    noarchive=False,
+    optimize=0,
+)
+pyz_updater = PYZ(a_updater.pure)
+
+exe_updater = EXE(
+    pyz_updater,
+    a_updater.scripts,
+    [],
+    exclude_binaries=True,
+    name="updater",
+    debug=False,
+    bootloader_ignore_signals=False,
+    strip=False,
+    upx=True,
+    console=False,  # GUI 子系统，无黑窗
+    disable_windowed_traceback=False,
+    icon=os.path.join(PKG, "sookit.ico"),
+)
+
 coll = COLLECT(
     exe,
+    exe_updater,
     a.binaries,
     a.datas,
+    a_updater.binaries,
+    a_updater.datas,
     strip=False,
     upx=True,
     upx_exclude=[],

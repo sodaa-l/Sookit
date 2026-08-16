@@ -13,7 +13,7 @@ import qfluentwidgets as qfw
 
 from sookit.core.functions import (
     is_ytdlp_available, get_ytdlp_source, build_ytdlp_cmd,
-    download_ytdlp, download_deno, is_ytdlp_dir_writable, download_ytdlp_admin,
+    launch_ytdlp_updater,
     get_ytdlp_current_version, get_deno_current_version,
     check_ffmpeg, check_aria2c, load_download_config, save_download_config,
     load_theme_color, save_theme_color, THEME_COLORS, get_ffmpeg_path,
@@ -584,28 +584,12 @@ class SettingsPage(QWidget):
             progress = pyqtSignal(str)
             done = pyqtSignal(object)
             def run(s):
-                # 目录不可写（打包态装在只读的 Program Files）→ 提权子进程下载
-                if not is_ytdlp_dir_writable():
-                    try:
-                        result = download_ytdlp_admin(lambda t: s.progress.emit(t))
-                    except Exception as e:  # noqa: BLE001
-                        result = (False, "failed", str(e), False, "failed", str(e))
-                    s.done.emit(result)
-                    return
-                # ---- 可写目录 → 直接下载 ----
-                # yt-dlp（独立判断/下载，失败不影响 Deno）
-                yt_ok, yt_status, yt_err = True, "up_to_date", ""
+                # 一律走独立下载器（updater.exe 提权下载到软件目录）
                 try:
-                    yt_status = download_ytdlp(lambda t: s.progress.emit(t))
-                except Exception as e:
-                    yt_ok, yt_err = False, str(e)
-                # Deno（独立判断/下载，失败不影响 yt-dlp）
-                deno_ok, deno_status, deno_err = True, "up_to_date", ""
-                try:
-                    deno_status = download_deno(lambda t: s.progress.emit(t))
-                except Exception as e:
-                    deno_ok, deno_err = False, str(e)
-                s.done.emit((yt_ok, yt_status, yt_err, deno_ok, deno_status, deno_err))
+                    result = launch_ytdlp_updater(lambda t: s.progress.emit(t))
+                except Exception as e:  # noqa: BLE001
+                    result = (False, "failed", str(e), False, "failed", str(e))
+                s.done.emit(result)
 
         thread = QThread(self)
         w = _YtdlpDownloadWorker()

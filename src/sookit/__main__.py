@@ -9,22 +9,6 @@ import sys
 
 
 def main():
-    # ---------- 提权下载 yt-dlp/Deno（管理员子进程模式，不启动 GUI） ----------
-    # 当 yt-dlp 目录位于只读的 Program Files 时，设置页会用 runas 以管理员
-    # 身份重启本程序并带该参数；本分支只执行下载并写结果文件后退出。
-    if "--update-ytdlp-admin" in sys.argv:
-        from sookit.core.ytdlp_utils import (
-            admin_update_result_path, run_ytdlp_admin_update)
-        # 可选参数：结果文件路径（主进程传，避免跨权限 %TEMP% 不一致）
-        result_path = admin_update_result_path()
-        try:
-            i = sys.argv.index("--update-ytdlp-admin")
-            if i + 1 < len(sys.argv) and not sys.argv[i + 1].startswith("-"):
-                result_path = sys.argv[i + 1]
-        except ValueError:
-            pass
-        sys.exit(run_ytdlp_admin_update(result_path))
-
     # ---------- 依赖检查 ----------
     # PyQt6 - 核心依赖，缺失时弹窗提示
     try:

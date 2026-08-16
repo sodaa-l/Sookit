@@ -16,7 +16,6 @@ import os
 import re
 import shutil
 import subprocess
-import sys
 import time
 import zipfile
 import urllib.error
@@ -40,23 +39,6 @@ _UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
 
 def _ytdlp_dir() -> Path:
     return get_ytdlp_dir()
-
-
-def is_ytdlp_dir_writable() -> bool:
-    """yt-dlp 目标目录当前是否可写（决定下载是否需要提权）。
-
-    打包态装在 Program Files 时该目录只读 → 返回 False，主进程需以
-    管理员子进程方式下载；源码态/可写目录 → True，可直接下载。
-    """
-    d = _ytdlp_dir()
-    try:
-        d.mkdir(parents=True, exist_ok=True)
-        probe = d / ".sookit_write_test"
-        probe.write_text("ok", encoding="utf-8")
-        probe.unlink()
-        return True
-    except OSError:
-        return False
 
 
 def get_ytdlp_exe_path() -> Path:
@@ -445,110 +427,57 @@ def download_ytdlp_bundle(progress_cb=None, check_latest=True) -> str:
     return "updated"
 
 
-# ---------- 提权下载（写入只读的程序目录） ----------
+# ---------- 独立下载器（写入只读的程序目录） ----------
 
-def admin_update_result_path() -> str:
-    """生成提权下载的结果文件路径（软件目录下唯一文件名，供主进程与提权子进程共用）。
+def updater_result_path() -> str:
+    """生成独立下载器的结果文件路径（软件目录下唯一文件名，Sookit 与 updater.exe 共用）。
 
-    放在 get_tools_dir()（打包态=程序目录）：提权子进程(admin)可写、主进程(普通用户)可读，
-    且路径由同一函数生成 → 主进程与子进程天然一致，不依赖可能不一致的 %TEMP%。
+    放在 get_tools_dir()（打包态=程序目录）：updater.exe(admin)可写、Sookit(普通用户)可读，
+    且路径由同一函数生成 → 两边天然一致，不依赖可能不一致的 %TEMP%。
     唯一名(时间戳+pid+随机)避免并发冲突，也免去"普通用户删除 Program Files 旧文件"的权限问题。
     """
     import random
     import time as _t
     unique = f"{int(_t.time() * 1000)}_{os.getpid()}_{random.randint(0, 99999)}"
-    return os.path.join(str(get_tools_dir()), f".ytdlp_admin_result_{unique}.json")
+    return os.path.join(str(get_tools_dir()), f".ytdlp_updater_result_{unique}.json")
 
 
-def _admin_progress_path(result_path: str) -> str:
-    """由结果路径推导进度文件路径（结果路径 + .progress）"""
-    return result_path + ".progress"
+def _updater_exe() -> Path:
+    """打包态 updater.exe 路径（与 tools 同级，位于程序目录下）"""
+    return get_tools_dir().parent / "updater.exe"
 
 
-def run_ytdlp_admin_update(result_path: str) -> int:
-    """以管理员权限运行的 yt-dlp + Deno 下载/更新入口（提权子进程调用）。
-
-    顺序执行 download_ytdlp 与 download_deno（各自独立判断、互不干扰），
-    把进度写 result_path.progress（供主进程轮询显示百分比），
-    最终把结果写 JSON 到 result_path 供主进程读取。返回 0=全部成功，1=有失败。
-    本函数无 Qt/UI 依赖，可在无界面环境下运行。
-    """
-    progress_path = _admin_progress_path(result_path)
-
-    def _comp(name, fn):
-        ok, status, err = True, "up_to_date", ""
-        try:
-            status = fn(_admin_write_progress(progress_path, name))
-        except Exception as e:  # noqa: BLE001
-            ok, err = False, str(e)
-        return {"name": name, "ok": ok, "status": status, "error": err}
-
-    yt = _comp("yt-dlp", download_ytdlp)
-    deno = _comp("Deno", download_deno)
-    try:
-        Path(progress_path).write_text(
-            "已完成", encoding="utf-8")  # 标记下载结束，避免主进程误读为进行中
-    except OSError:
-        pass
-    try:
-        Path(result_path).write_text(
-            json.dumps({"yt": yt, "deno": deno}, ensure_ascii=False),
-            encoding="utf-8")
-    except OSError:
-        pass
-    return 0 if yt["ok"] and deno["ok"] else 1
-
-
-def _admin_write_progress(progress_path: str, name: str):
-    """构造一个进度回调：把进度文字覆盖写入进度文件（供提权子进程调用）"""
-    def cb(text: str) -> None:
-        try:
-            Path(progress_path).write_text(f"{name} {text}", encoding="utf-8")
-        except OSError:
-            pass
-    return cb
-
-
-def _runas_update(exe: str, result_path: str) -> None:
-    """用 ShellExecute 'runas' 以管理员身份启动 exe 执行更新，结果写 result_path。
+def _runas_update(exe: Path, params: str) -> None:
+    """用 ShellExecute 'runas' 以管理员身份启动 exe，执行 params。
 
     返回 >32 表示成功；<=32 为错误（5=用户取消/拒绝，30=路径错误等）。
-    result_path 含空格/中文，需用双引号包裹传给子进程。
+    params 含空格/中文路径时用双引号包裹传给子进程。
     """
-    params = f'--update-ytdlp-admin "{result_path}"'
     res = ctypes.windll.shell32.ShellExecuteW(
-        None, "runas", exe, params, None, 1)
+        None, "runas", str(exe), params, None, 1)
     if res <= 32:
         raise RuntimeError(f"管理员授权失败或已取消 (code={res})")
 
 
-def download_ytdlp_admin(progress_cb=None, timeout: float = 180) -> tuple:
-    """当 yt-dlp 目录不可写时，触发管理员子进程下载并等待结果（供后台线程调用）。
+def launch_ytdlp_updater(progress_cb=None, timeout: float = 300) -> tuple:
+    """Sookit 侧：提权调起独立 updater.exe 下载/更新 yt-dlp+Deno 并等待结果（供后台线程调用）。
 
     返回与 download_ytdlp/download_deno 组合一致的
     (yt_ok, yt_status, yt_err, deno_ok, deno_status, deno_err)。
 
-    流程：生成唯一结果路径 → runas 以管理员重启 Sookit.exe(--update-ytdlp-admin 结果路径) →
-    轮询进度文件更新 progress_cb、轮询结果文件直到出现（超时由 timeout 控制）→ 读取并返回。
+    流程：生成唯一结果路径 → runas 提权启动 updater.exe(--ytdlp-updater-gui 结果路径) →
+    轮询结果文件直到出现（超时由 timeout 控制，默认 300s，下载器无硬超时自己跑完）→ 读取并返回。
     """
-    result_path = admin_update_result_path()
-    progress_path = _admin_progress_path(result_path)
+    result_path = updater_result_path()
     if progress_cb:
-        progress_cb("请求管理员权限以写入程序目录…")
-    _runas_update(sys.executable, result_path)
-    last_progress = ""
+        progress_cb("请求管理员权限以更新组件…")
+    exe = _updater_exe()
+    if not exe.is_file():
+        return (False, "failed", f"未找到下载器 {exe}",
+                False, "failed", f"未找到下载器 {exe}")
+    _runas_update(exe, f'--ytdlp-updater-gui "{result_path}"')
     deadline = time.time() + timeout
     while time.time() < deadline:
-        # 读进度（提权子进程覆盖写），转发给 UI
-        try:
-            ptext = Path(progress_path).read_text(encoding="utf-8").strip()
-            if ptext and ptext != last_progress:
-                last_progress = ptext
-                if progress_cb:
-                    progress_cb(ptext)
-        except OSError:
-            pass
-        # 读结果
         if Path(result_path).is_file():
             try:
                 data = json.loads(Path(result_path).read_text(encoding="utf-8"))
@@ -559,8 +488,8 @@ def download_ytdlp_admin(progress_cb=None, timeout: float = 180) -> tuple:
                         deno.get("ok"), deno.get("status", "failed"),
                         deno.get("error", ""))
             except Exception:  # noqa: BLE001
-                return (False, "failed", "读取提权结果失败",
-                        False, "failed", "读取提权结果失败")
+                return (False, "failed", "读取下载器结果失败",
+                        False, "failed", "读取下载器结果失败")
         time.sleep(0.3)
-    return (False, "failed", "等待管理员下载超时",
-            False, "failed", "等待管理员下载超时")
+    return (False, "failed", "等待下载器返回超时",
+            False, "failed", "等待下载器返回超时")

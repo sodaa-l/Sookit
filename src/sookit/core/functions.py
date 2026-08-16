@@ -69,7 +69,7 @@ from sookit.core.ytdlp_utils import (
     download_ytdlp, download_deno, get_ytdlp_exe_path,
     get_ytdlp_current_version, get_deno_current_version,
     get_ytdlp_latest_version, get_deno_latest_version,
-    is_ytdlp_dir_writable, download_ytdlp_admin,
+    launch_ytdlp_updater,
 )
 from sookit.core.updater import (
     is_newer, get_current_version, get_latest_version,
