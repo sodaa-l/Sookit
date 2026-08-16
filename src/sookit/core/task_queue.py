@@ -249,6 +249,16 @@ class TaskQueueManager(QObject):
             # 在 worker 真正停止后自动释放引用
             worker.finished.connect(
                 lambda w=worker: self._cancelling_workers.discard(w))
+
+    def cancel_all(self):
+        """取消所有任务（供 Sookit 退出时统一清理下载进程树）。
+
+        对每个任务只通过其自己的 launcher PID 清理自己的进程树，不按进程名全局杀，
+        因此不影响独立运行的 updater.exe。用快照遍历，避免 cancel_task 内部
+        修改 active_tasks 导致迭代冲突。
+        """
+        for task_id in list(self.active_tasks.keys()):
+            self.cancel_task(task_id)
     
     def _remove_active_task(self, task_id: str):
         """从活跃任务列表移除"""

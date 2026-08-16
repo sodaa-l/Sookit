@@ -12,6 +12,24 @@ from sookit.core.functions import Functions
 from sookit.core.task_queue import TaskType, ProgressParser
 
 
+def _kill_process_tree(pid: int) -> None:
+    """用 taskkill /T /F 递归终止 pid 的整个进程树（Windows）。
+
+    /T 递归终止 pid 的所有子进程（如 yt-dlp launcher → real yt-dlp → aria2c），
+    /F 强制终止。仅针对该 PID 的进程树，不按进程名全局杀，不会误伤其他任务。
+    失败 / 进程已退出时静默忽略，绝不抛出导致崩溃。
+    """
+    if not pid or sys.platform != "win32":
+        return
+    try:
+        subprocess.run(
+            ["taskkill", "/PID", str(pid), "/T", "/F"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            timeout=10, creationflags=subprocess.CREATE_NO_WINDOW)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 # ---------- 单命令执行器 ----------
 class SingleCmdWorker(QObject):
     """并行执行一条命令，合并 stdout+stderr，返回版本字符串"""
@@ -236,14 +254,21 @@ class TaskWorker(QThread):
                     pass
 
     def cancel(self):
-        """取消任务"""
+        """取消任务：终止当前任务的整个下载进程树（yt-dlp launcher → real → aria2c）。
+
+        用 taskkill /T /F 按本 worker 的 launcher PID 递归终止，只杀本任务进程树，
+        不按进程名全局杀，不会影响其他任务/updater。taskkill 失败或进程已退出时
+        静默忽略；再以 _process.terminate() 兜底。仅对 Windows 生效。
+        """
         self._cancelled = True
         with self._process_lock:
-            if self._process:
-                try:
-                    self._process.terminate()
-                except Exception:
-                    pass
+            proc = self._process
+        if proc is not None:
+            _kill_process_tree(getattr(proc, "pid", None))
+            try:
+                proc.terminate()
+            except Exception:  # noqa: BLE001
+                pass
 
     def _on_process_created(self, process):
         """保存子进程引用"""

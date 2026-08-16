@@ -202,6 +202,13 @@ class MainWindow(qfw.FluentWindow):
         """真正退出应用前清理所有子进程"""
         # 停止直播监控的 workers
         self.monitor_page.stop_all_workers()
+        # 取消所有下载任务，终止各自的 yt-dlp/aria2c 进程树
+        # （延迟 import 避免循环依赖；每个任务只通过自己的 launcher PID 清理，不影响 updater.exe）
+        try:
+            from sookit.core.task_queue import TaskQueueManager
+            TaskQueueManager.instance().cancel_all()
+        except Exception:  # noqa: BLE001
+            pass
         QApplication.instance().quit()
 
     def refresh_ytdlp_status(self):

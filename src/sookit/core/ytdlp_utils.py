@@ -28,6 +28,11 @@ from sookit.paths import get_ytdlp_dir, get_tools_dir
 from sookit.core.config import load_download_config
 from sookit.core.ffmpeg_utils import get_aria2c_path
 
+
+class DownloadCancelled(Exception):
+    """下载被用户取消（cancel_cb 返回 True 时抛出，调用方据此中断并清理临时文件）。"""
+
+
 # ---------- 下载源 ----------
 YTDLP_URL = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe"
 DENO_URL = "https://github.com/denoland/deno/releases/latest/download/deno-x86_64-pc-windows-msvc.zip"
@@ -109,10 +114,13 @@ def _format_size(n: float) -> str:
     return f"{n:.1f} TB"
 
 
-def _download_file(url: str, dest: Path, label: str, progress_cb=None) -> None:
+def _download_file(url: str, dest: Path, label: str, progress_cb=None,
+                   cancel_cb=None) -> None:
     """下载文件到临时文件，完成后 os.replace 原子替换。
 
     progress_cb(text) 进度回调，text 形如 "下载 yt-dlp.exe — 23% (4.0 MB / 17.3 MB)"。
+    cancel_cb() -> bool：返回 True 表示应取消下载。取消时中断当前下载通道、
+    删除临时文件并抛 DownloadCancelled。
 
     下载器选择（依据设置页下载配置）：
     - use_aria2c 开 → 优先用内置 aria2c 多连接下载（-x/-s 取 aria2c_connections），
@@ -130,26 +138,31 @@ def _download_file(url: str, dest: Path, label: str, progress_cb=None) -> None:
         aria2c = get_aria2c_path()
         if os.path.exists(aria2c):
             try:
-                _download_file_with_aria2c(aria2c, url, tmp, label, progress_cb, connections)
+                _download_file_with_aria2c(
+                    aria2c, url, tmp, label, progress_cb, connections, cancel_cb)
                 os.replace(tmp, dest)
                 return
+            except DownloadCancelled:
+                tmp.unlink(missing_ok=True)
+                raise
             except Exception:
                 # aria2c 下载失败 → 回退 urllib 单线程
                 tmp.unlink(missing_ok=True)
                 if progress_cb:
                     progress_cb(f"{label} — aria2c 下载失败，改用单线程重试…")
 
-    _download_file_with_urllib(url, tmp, label, progress_cb)
+    _download_file_with_urllib(url, tmp, label, progress_cb, cancel_cb)
     os.replace(tmp, dest)
 
 
 def _download_file_with_aria2c(aria2c: str, url: str, tmp: Path, label: str,
-                               progress_cb, connections: int) -> None:
+                               progress_cb, connections: int, cancel_cb=None) -> None:
     """用 aria2c 多连接下载。失败抛异常，由调用方决定是否回退。
 
     aria2c 进度输出形如：
       [#abcde 4.0MiB/17.3MiB(23%) CN:16 DL:5.0MiB]
     通过 --summary-interval 定期打印汇总行，解析其中的已下载/总量/百分比。
+    cancel_cb 返回 True 时终止 aria2c 子进程并抛 DownloadCancelled。
     """
     cmd = [
         aria2c,
@@ -173,6 +186,10 @@ def _download_file_with_aria2c(aria2c: str, url: str, tmp: Path, label: str,
     buf = bytearray()
     _PROGRESS_RE = re.compile(r"\[#[a-zA-Z0-9]+\s+([\d.]+)([KMG]?i?B)/([\d.]+)([KMG]?i?B)\s*\((\d+)%\)")
     while True:
+        if cancel_cb and cancel_cb():
+            proc.kill()
+            proc.wait()
+            raise DownloadCancelled()
         chunk = proc.stdout.read(8192)
         if not chunk:
             break
@@ -217,8 +234,12 @@ def _parse_size(num: str, unit: str) -> int:
     return int(n * mult.get(u, 1))
 
 
-def _download_file_with_urllib(url: str, dest: Path, label: str, progress_cb=None) -> None:
-    """urllib 单线程流式下载到临时文件（原实现）"""
+def _download_file_with_urllib(url: str, dest: Path, label: str, progress_cb=None,
+                               cancel_cb=None) -> None:
+    """urllib 单线程流式下载到临时文件（原实现）。
+
+    cancel_cb 返回 True 时中断下载、删除临时文件并抛 DownloadCancelled。
+    """
     req = urllib.request.Request(url, headers=_UA)
     # 用 certifi 证书包构造 SSL context，解决 PyInstaller 打包态下
     # Python 默认证书路径（C:\Program Files\Common Files\SSL\...）不存在导致验证失败的问题
@@ -229,6 +250,8 @@ def _download_file_with_urllib(url: str, dest: Path, label: str, progress_cb=Non
             downloaded = 0
             with open(dest, "wb") as f:
                 while True:
+                    if cancel_cb and cancel_cb():
+                        raise DownloadCancelled()
                     chunk = resp.read(64 * 1024)
                     if not chunk:
                         break
@@ -394,7 +417,7 @@ def check_ytdlp_deno_update_needed() -> tuple:
     return yt_needed, deno_needed, yt_state, deno_state
 
 
-def download_ytdlp(progress_cb=None, check_latest=True) -> str:
+def download_ytdlp(progress_cb=None, check_latest=True, cancel_cb=None) -> str:
     """下载安装/更新内置 yt-dlp 到 tools/yt-dlp/（仅 yt-dlp，与 Deno 相互独立）。
 
     返回值：
@@ -406,6 +429,7 @@ def download_ytdlp(progress_cb=None, check_latest=True) -> str:
     时按原逻辑下载。check_latest=False 强制重新下载。
 
     网络/下载失败抛 RuntimeError（含可读信息），由 UI 层反馈。
+    cancel_cb() 返回 True 时抛 DownloadCancelled（用户取消，调用方需识别）。
     """
     try:
         exe_path = get_ytdlp_exe_path()
@@ -426,16 +450,18 @@ def download_ytdlp(progress_cb=None, check_latest=True) -> str:
                 need_update = True
 
         if need_update:
-            _download_file(YTDLP_URL, exe_path, "下载 yt-dlp.exe", progress_cb)
+            _download_file(YTDLP_URL, exe_path, "下载 yt-dlp.exe", progress_cb, cancel_cb)
 
         return "updated" if need_update else "up_to_date"
+    except DownloadCancelled:
+        raise
     except urllib.error.URLError as e:
         raise RuntimeError(f"网络下载失败: {e.reason}") from e
     except OSError as e:
         raise RuntimeError(f"下载失败: {e}") from e
 
 
-def download_deno(progress_cb=None, check_latest=True) -> str:
+def download_deno(progress_cb=None, check_latest=True, cancel_cb=None) -> str:
     """下载安装/更新内置 Deno 运行时到 tools/yt-dlp/（仅 Deno，与 yt-dlp 相互独立）。
 
     返回值：
@@ -447,6 +473,7 @@ def download_deno(progress_cb=None, check_latest=True) -> str:
     版本查询失败时按原逻辑下载。check_latest=False 强制重新下载。
 
     网络/解压失败抛 RuntimeError（含可读信息），由 UI 层反馈。
+    cancel_cb() 返回 True 时抛 DownloadCancelled（用户取消，调用方需识别）。
     """
     try:
         need_update = False
@@ -469,7 +496,7 @@ def download_deno(progress_cb=None, check_latest=True) -> str:
             if progress_cb:
                 progress_cb("正在下载 Deno 运行时…")
             try:
-                _download_file(DENO_URL, zip_path, "下载 Deno", progress_cb)
+                _download_file(DENO_URL, zip_path, "下载 Deno", progress_cb, cancel_cb)
                 if progress_cb:
                     progress_cb("正在解压 Deno…")
                 _extract_deno(zip_path)
@@ -477,6 +504,8 @@ def download_deno(progress_cb=None, check_latest=True) -> str:
                 zip_path.unlink(missing_ok=True)
 
         return "updated" if need_update else "up_to_date"
+    except DownloadCancelled:
+        raise
     except urllib.error.URLError as e:
         raise RuntimeError(f"网络下载失败: {e.reason}") from e
     except OSError as e:
@@ -485,14 +514,14 @@ def download_deno(progress_cb=None, check_latest=True) -> str:
         raise RuntimeError(f"Deno 压缩包损坏: {e}") from e
 
 
-def download_ytdlp_bundle(progress_cb=None, check_latest=True) -> str:
+def download_ytdlp_bundle(progress_cb=None, check_latest=True, cancel_cb=None) -> str:
     """兼容包装：顺序执行 download_ytdlp 与 download_deno（各自独立判断）。
 
     任一组件失败会抛 RuntimeError 中断；返回 "up_to_date"（两者都最新）或
     "updated"（至少一个被更新）。
     """
-    y = download_ytdlp(progress_cb, check_latest)
-    d = download_deno(progress_cb, check_latest)
+    y = download_ytdlp(progress_cb, check_latest, cancel_cb)
+    d = download_deno(progress_cb, check_latest, cancel_cb)
     if y == "up_to_date" and d == "up_to_date":
         return "up_to_date"
     return "updated"

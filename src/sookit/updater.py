@@ -22,7 +22,8 @@ from PyQt6.QtWidgets import QApplication, QVBoxLayout, QHBoxLayout, QDialog
 
 import qfluentwidgets as qfw
 
-from sookit.core.ytdlp_utils import download_ytdlp, download_deno
+from sookit.core.ytdlp_utils import (
+    download_ytdlp, download_deno, DownloadCancelled)
 from sookit.paths import get_tools_dir
 
 _PCT_RE = re.compile(r"(\d+)")
@@ -60,15 +61,33 @@ def _write_result(result_path: str, data: dict) -> None:
 
 
 class _DownloadWorker(QObject):
-    """在后台线程顺序下载 yt-dlp 与 Deno（各自独立判断、互不干扰）。"""
+    """在后台线程顺序下载 yt-dlp 与 Deno（各自独立判断、互不干扰）。
+
+    支持取消：set_cancelled() 后，当前下载会在下载循环的检查点中断
+    （download_ytdlp/download_deno 收到 cancel_cb=True 抛 DownloadCancelled），
+    并清理已下载的 .part 临时文件。
+    """
     progress = pyqtSignal(str)
     done = pyqtSignal(object)  # {"yt": {...}, "deno": {...}}
+
+    def __init__(self):
+        super().__init__()
+        self._cancelled = False
+
+    def set_cancelled(self):
+        self._cancelled = True
+
+    @property
+    def cancelled(self) -> bool:
+        return self._cancelled
 
     def run(self):
         def _comp(name, fn):
             ok, status, err = True, "up_to_date", ""
             try:
-                status = fn(self.progress.emit)
+                status = fn(self.progress.emit, True, lambda: self._cancelled)
+            except DownloadCancelled:
+                ok, status, err = False, "cancelled", "用户取消"
             except Exception as e:  # noqa: BLE001
                 ok, err = False, str(e)
             return {"name": name, "ok": ok, "status": status, "error": err}
@@ -148,6 +167,13 @@ class UpdaterDialog(QDialog):
         if self._finished:
             return
         self.cancel_btn.setEnabled(False)
+        self.status_label.setText("正在取消，请稍候…")
+        # 请求后台线程中断当前下载（download_ytdlp/deno 收到 cancel_cb=True 会停止并清理临时文件）
+        if self._worker:
+            self._worker.set_cancelled()
+        # 等待后台线程真正结束，确保下载已中断、临时文件已清理后再收尾
+        if self._thread and self._thread.isRunning():
+            self._thread.wait(15000)
         self.status_label.setText("已取消…")
         self._result = {
             "yt": {"name": "yt-dlp", "ok": False, "status": "cancelled", "error": "用户取消"},
