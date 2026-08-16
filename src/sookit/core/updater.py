@@ -3,8 +3,8 @@ core/updater.py
 Sookit 自动更新核心逻辑：版本比较换算、最新版本查询、安装器下载、忽略版本记忆。
 
 设计要点：
-- 复用 ytdlp_utils 的 _github_latest_tag（查询 GitHub releases/latest）与 _download_file
-  （下载，已含 aria2c/urllib 双通道 + 回退 + certifi SSL context）。
+- 复用 ytdlp_utils 的 _version_from_latest_url（经 releases/latest HTML 重定向解析 tag，
+  绕开 api.github.com 限流）与 _download_file（下载，已含 aria2c/urllib 双通道 + 回退 + certifi SSL context）。
 - 版本比较规则（满足日期版 → 语义化版平滑过渡）：
   - 本地当前固定为 build.YYMMDD.rev 格式。
   - 远程若为 build.YYMMDD.x → 先比 YYMMDD，相同再比 rev。
@@ -22,7 +22,7 @@ from pathlib import Path
 from sookit import APP_VERSION
 from sookit.paths import get_data_dir
 from sookit.core.config import load_ignored_update_version, save_ignored_update_version
-from sookit.core.ytdlp_utils import _github_latest_tag, _download_file
+from sookit.core.ytdlp_utils import _version_from_latest_url, _download_file
 
 # 分发仓库（GitHub Releases 源，由用户确认）
 REPO = "sodaa-l/Sookit"
@@ -99,8 +99,12 @@ def is_newer(local_version: str, remote_version: str) -> bool:
 
 
 def get_latest_version() -> str:
-    """查询分发仓库最新 release tag（去 v 前缀），无 release / 失败返回空串"""
-    return _github_latest_tag(REPO)
+    """查询分发仓库最新 release tag（去 v 前缀），无 release / 失败返回空串。
+
+    走 releases/latest 的 HTML 重定向（302 → /releases/tag/<版本>）解析 tag，
+    绕开 api.github.com 的匿名限流（403 后 API 查不到）。失败返回空串。
+    """
+    return _version_from_latest_url(f"https://github.com/{REPO}/releases/latest")
 
 
 def check_latest_version() -> str | None:

@@ -266,26 +266,56 @@ def _normalize_version(v: str) -> str:
         return v.strip().strip("vV")
 
 
-def _github_latest_tag(repo: str) -> str:
-    """查 GitHub 仓库 releases/latest 的 tag（去前缀 v），失败返回空串"""
-    url = f"https://api.github.com/repos/{repo}/releases/latest"
-    req = urllib.request.Request(url, headers={"User-Agent": "Sookit"})
+class _VersionResolved(Exception):
+    """内部信号：已从 latest 下载 URL 的重定向中解析出版本号，立即中断（绝不下载 body）。"""
+    def __init__(self, version: str):
+        super().__init__(version)
+        self.version = version
+
+
+# 兼容两种 latest 重定向路径：
+# - /releases/download/<版本>/<文件>（下载 URL，如 yt-dlp/deno）
+# - /releases/tag/<版本>（HTML 发布页 URL，如 Sookit 自更新）
+_VERSION_RE = re.compile(r"/releases/(?:download|tag)/(?:v|V)?([^/]+)(?:/|$)")
+
+
+def _version_from_latest_url(url: str, timeout: float = 10) -> str:
+    """从 GitHub latest 下载 URL 的重定向 Location 解析最新版本号（无前缀 v）。
+
+    只跟随重定向并检查 Location，一旦命中 /releases/download/<版本>/ 立即抛
+    _VersionResolved 中断 —— **绝不读取/下载 body**（不会把 exe/zip 下下来）。
+    失败返回空串。
+
+    相比 api.github.com REST API（匿名 60 次/时/IP 限流，403 后查不到），
+    latest 下载 URL 走下载 CDN，无此限流，版本可稳定解析。
+    """
+    class _Stop(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            m = _VERSION_RE.search(newurl)
+            if m:
+                raise _VersionResolved(m.group(1))
+            return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+    opener = urllib.request.build_opener(
+        _Stop, urllib.request.HTTPSHandler(context=get_certifi_ssl_context()))
     try:
-        with urllib.request.urlopen(req, timeout=10, context=get_certifi_ssl_context()) as resp:
-            data = json.loads(resp.read().decode("utf-8", errors="replace"))
-        return data.get("tag_name", "").strip("vV")
+        with opener.open(urllib.request.Request(url, headers=_UA), timeout=timeout):
+            pass
+    except _VersionResolved as r:
+        return r.version
     except Exception:
         return ""
+    return ""
 
 
 def get_ytdlp_latest_version() -> str:
     """GitHub 上 yt-dlp 最新发布版本号（无前缀 v），失败返回空串"""
-    return _github_latest_tag("yt-dlp/yt-dlp")
+    return _version_from_latest_url(YTDLP_URL)
 
 
 def get_deno_latest_version() -> str:
     """GitHub 上 Deno 最新发布版本号（无前缀 v），失败返回空串"""
-    return _github_latest_tag("denoland/deno")
+    return _version_from_latest_url(DENO_URL)
 
 
 def _run_version_cmd(exe: Path, pattern: str) -> str:
@@ -329,6 +359,41 @@ def get_deno_current_version() -> str:
     return _run_version_cmd(exe, r"deno\s+([\d.]+)")
 
 
+def check_ytdlp_deno_update_needed() -> tuple:
+    """Sookit 侧（普通权限）检查 yt-dlp/Deno 是否需要更新（**不下载**）。
+
+    返回 (yt_needed, deno_needed, yt_state, deno_state)：
+    - yt_needed/deno_needed: bool，是否触发提权下载
+    - yt_state/deno_state: "up_to_date"/"update"/"install"
+
+    判断规则（与 download_ytdlp/download_deno 的 check_latest 分支一致）：
+    - 未安装（本地版本空）→ 需要下载（install）
+    - 本地与最新都能拿到 → 按版本比较
+    - 已安装但最新版查询失败（网络/限流）→ 保守视为已最新（up_to_date），不重下
+    """
+    cur_yt = get_ytdlp_current_version()
+    if not cur_yt:
+        yt_needed, yt_state = True, "install"
+    else:
+        latest_yt = get_ytdlp_latest_version()
+        if latest_yt and _normalize_version(cur_yt) < _normalize_version(latest_yt):
+            yt_needed, yt_state = True, "update"
+        else:
+            yt_needed, yt_state = False, "up_to_date"
+
+    cur_deno = get_deno_current_version()
+    if not cur_deno:
+        deno_needed, deno_state = True, "install"
+    else:
+        latest_deno = get_deno_latest_version()
+        if latest_deno and _normalize_version(cur_deno) < _normalize_version(latest_deno):
+            deno_needed, deno_state = True, "update"
+        else:
+            deno_needed, deno_state = False, "up_to_date"
+
+    return yt_needed, deno_needed, yt_state, deno_state
+
+
 def download_ytdlp(progress_cb=None, check_latest=True) -> str:
     """下载安装/更新内置 yt-dlp 到 tools/yt-dlp/（仅 yt-dlp，与 Deno 相互独立）。
 
@@ -353,8 +418,11 @@ def download_ytdlp(progress_cb=None, check_latest=True) -> str:
             if cur and latest:
                 # 都能拿到版本时，基于最新版判断是否需要更新
                 need_update = _normalize_version(cur) < _normalize_version(latest)
+            elif cur:
+                # 已安装但最新版查询失败（网络/限流）→ 保守视为已最新，不重下
+                need_update = False
             else:
-                # 版本信息不足（未安装、查询失败）→ 按原逻辑下载
+                # 未安装 → 需要下载（首次安装）
                 need_update = True
 
         if need_update:
@@ -387,8 +455,11 @@ def download_deno(progress_cb=None, check_latest=True) -> str:
             latest = get_deno_latest_version()
             if cur and latest:
                 need_update = _normalize_version(cur) < _normalize_version(latest)
+            elif cur:
+                # 已安装但最新版查询失败（网络/限流）→ 保守视为已最新，不重下
+                need_update = False
             else:
-                # Deno 缺失（首次安装）或版本查询失败 → 需要下载
+                # Deno 缺失（首次安装）→ 需要下载
                 need_update = True
         else:
             need_update = True

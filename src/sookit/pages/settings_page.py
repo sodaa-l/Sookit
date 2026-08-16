@@ -15,6 +15,7 @@ from sookit.core.functions import (
     is_ytdlp_available, get_ytdlp_source, build_ytdlp_cmd,
     launch_ytdlp_updater,
     get_ytdlp_current_version, get_deno_current_version,
+    check_ytdlp_deno_update_needed,
     check_ffmpeg, check_aria2c, load_download_config, save_download_config,
     load_theme_color, save_theme_color, THEME_COLORS, get_ffmpeg_path,
     set_autostart, is_autostart, load_close_action, save_close_action,
@@ -584,7 +585,16 @@ class SettingsPage(QWidget):
             progress = pyqtSignal(str)
             done = pyqtSignal(object)
             def run(s):
-                # 一律走独立下载器（updater.exe 提权下载到软件目录）
+                # 方案甲：先由 Sookit 普通权限查版本，已最新则不提权只提示；
+                # 仅当确实需要下载/更新时才提权调起 updater.exe。
+                try:
+                    yt_needed, deno_needed, _, _ = check_ytdlp_deno_update_needed()
+                except Exception:  # noqa: BLE001 版本检查失败 → 保守当作需更新交给下载器兜底
+                    yt_needed = deno_needed = True
+                if not yt_needed and not deno_needed:
+                    s.done.emit((True, "up_to_date", "", True, "up_to_date", ""))
+                    return
+                # 需要更新/安装 → 提权调起独立下载器
                 try:
                     result = launch_ytdlp_updater(lambda t: s.progress.emit(t))
                 except Exception as e:  # noqa: BLE001
