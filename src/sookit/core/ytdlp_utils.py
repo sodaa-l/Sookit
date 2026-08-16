@@ -25,7 +25,7 @@ from pathlib import Path
 from shutil import which as _which
 
 from sookit.core.utils import get_certifi_ssl_context
-from sookit.paths import get_ytdlp_dir
+from sookit.paths import get_ytdlp_dir, get_tools_dir
 from sookit.core.config import load_download_config
 from sookit.core.ffmpeg_utils import get_aria2c_path
 
@@ -448,28 +448,48 @@ def download_ytdlp_bundle(progress_cb=None, check_latest=True) -> str:
 # ---------- 提权下载（写入只读的程序目录） ----------
 
 def admin_update_result_path() -> str:
-    """提权子进程写结果、主进程读取的临时结果文件路径（临时目录，用户可写）"""
-    import tempfile
-    return os.path.join(tempfile.gettempdir(), "sookit_ytdlp_admin_result.json")
+    """生成提权下载的结果文件路径（软件目录下唯一文件名，供主进程与提权子进程共用）。
+
+    放在 get_tools_dir()（打包态=程序目录）：提权子进程(admin)可写、主进程(普通用户)可读，
+    且路径由同一函数生成 → 主进程与子进程天然一致，不依赖可能不一致的 %TEMP%。
+    唯一名(时间戳+pid+随机)避免并发冲突，也免去"普通用户删除 Program Files 旧文件"的权限问题。
+    """
+    import random
+    import time as _t
+    unique = f"{int(_t.time() * 1000)}_{os.getpid()}_{random.randint(0, 99999)}"
+    return os.path.join(str(get_tools_dir()), f".ytdlp_admin_result_{unique}.json")
+
+
+def _admin_progress_path(result_path: str) -> str:
+    """由结果路径推导进度文件路径（结果路径 + .progress）"""
+    return result_path + ".progress"
 
 
 def run_ytdlp_admin_update(result_path: str) -> int:
     """以管理员权限运行的 yt-dlp + Deno 下载/更新入口（提权子进程调用）。
 
     顺序执行 download_ytdlp 与 download_deno（各自独立判断、互不干扰），
-    把结果写 JSON 到 result_path 供主进程读取。返回 0=全部成功，1=有失败。
+    把进度写 result_path.progress（供主进程轮询显示百分比），
+    最终把结果写 JSON 到 result_path 供主进程读取。返回 0=全部成功，1=有失败。
     本函数无 Qt/UI 依赖，可在无界面环境下运行。
     """
+    progress_path = _admin_progress_path(result_path)
+
     def _comp(name, fn):
         ok, status, err = True, "up_to_date", ""
         try:
-            status = fn(lambda _t: None)
+            status = fn(_admin_write_progress(progress_path, name))
         except Exception as e:  # noqa: BLE001
             ok, err = False, str(e)
         return {"name": name, "ok": ok, "status": status, "error": err}
 
     yt = _comp("yt-dlp", download_ytdlp)
     deno = _comp("Deno", download_deno)
+    try:
+        Path(progress_path).write_text(
+            "已完成", encoding="utf-8")  # 标记下载结束，避免主进程误读为进行中
+    except OSError:
+        pass
     try:
         Path(result_path).write_text(
             json.dumps({"yt": yt, "deno": deno}, ensure_ascii=False),
@@ -479,13 +499,25 @@ def run_ytdlp_admin_update(result_path: str) -> int:
     return 0 if yt["ok"] and deno["ok"] else 1
 
 
-def _runas_update(exe: str) -> None:
-    """用 ShellExecute 'runas' 以管理员身份启动 exe 执行更新。
+def _admin_write_progress(progress_path: str, name: str):
+    """构造一个进度回调：把进度文字覆盖写入进度文件（供提权子进程调用）"""
+    def cb(text: str) -> None:
+        try:
+            Path(progress_path).write_text(f"{name} {text}", encoding="utf-8")
+        except OSError:
+            pass
+    return cb
+
+
+def _runas_update(exe: str, result_path: str) -> None:
+    """用 ShellExecute 'runas' 以管理员身份启动 exe 执行更新，结果写 result_path。
 
     返回 >32 表示成功；<=32 为错误（5=用户取消/拒绝，30=路径错误等）。
+    result_path 含空格/中文，需用双引号包裹传给子进程。
     """
+    params = f'--update-ytdlp-admin "{result_path}"'
     res = ctypes.windll.shell32.ShellExecuteW(
-        None, "runas", exe, "--update-ytdlp-admin", None, 1)
+        None, "runas", exe, params, None, 1)
     if res <= 32:
         raise RuntimeError(f"管理员授权失败或已取消 (code={res})")
 
@@ -496,23 +528,30 @@ def download_ytdlp_admin(progress_cb=None, timeout: float = 180) -> tuple:
     返回与 download_ytdlp/download_deno 组合一致的
     (yt_ok, yt_status, yt_err, deno_ok, deno_status, deno_err)。
 
-    流程：清空旧结果 → runas 以管理员重启 Sookit.exe(--update-ytdlp-admin) →
-    轮询临时结果文件直到出现（超时由 timeout 控制）→ 读取并返回。
+    流程：生成唯一结果路径 → runas 以管理员重启 Sookit.exe(--update-ytdlp-admin 结果路径) →
+    轮询进度文件更新 progress_cb、轮询结果文件直到出现（超时由 timeout 控制）→ 读取并返回。
     """
     result_path = admin_update_result_path()
-    try:
-        Path(result_path).unlink(missing_ok=True)
-    except OSError:
-        pass
+    progress_path = _admin_progress_path(result_path)
     if progress_cb:
         progress_cb("请求管理员权限以写入程序目录…")
-    _runas_update(sys.executable)
+    _runas_update(sys.executable, result_path)
+    last_progress = ""
     deadline = time.time() + timeout
     while time.time() < deadline:
-        p = Path(result_path)
-        if p.is_file():
+        # 读进度（提权子进程覆盖写），转发给 UI
+        try:
+            ptext = Path(progress_path).read_text(encoding="utf-8").strip()
+            if ptext and ptext != last_progress:
+                last_progress = ptext
+                if progress_cb:
+                    progress_cb(ptext)
+        except OSError:
+            pass
+        # 读结果
+        if Path(result_path).is_file():
             try:
-                data = json.loads(p.read_text(encoding="utf-8"))
+                data = json.loads(Path(result_path).read_text(encoding="utf-8"))
                 yt = data.get("yt", {})
                 deno = data.get("deno", {})
                 return (yt.get("ok"), yt.get("status", "failed"),

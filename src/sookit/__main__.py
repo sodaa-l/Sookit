@@ -15,7 +15,15 @@ def main():
     if "--update-ytdlp-admin" in sys.argv:
         from sookit.core.ytdlp_utils import (
             admin_update_result_path, run_ytdlp_admin_update)
-        sys.exit(run_ytdlp_admin_update(admin_update_result_path()))
+        # 可选参数：结果文件路径（主进程传，避免跨权限 %TEMP% 不一致）
+        result_path = admin_update_result_path()
+        try:
+            i = sys.argv.index("--update-ytdlp-admin")
+            if i + 1 < len(sys.argv) and not sys.argv[i + 1].startswith("-"):
+                result_path = sys.argv[i + 1]
+        except ValueError:
+            pass
+        sys.exit(run_ytdlp_admin_update(result_path))
 
     # ---------- 依赖检查 ----------
     # PyQt6 - 核心依赖，缺失时弹窗提示
