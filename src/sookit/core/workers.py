@@ -213,6 +213,24 @@ class TaskWorker(QThread):
         self._process = None
         self._process_lock = threading.Lock()
         self.error = ""              # 任务失败时的错误信息（供 task_queue / UI 弹窗）
+        # 该任务对应的下载临时文件路径（由 run_ytdlp 解析 Destination 后填写，
+        # 用于取消时精准删除本任务自己的 .part/.part.aria2，不误删其他任务）
+        self.tmp_part = ""           # 如 D:/out/video.mp4.part
+        self.tmp_aria2 = ""          # 如 D:/out/video.mp4.part.aria2
+
+    def _on_path(self, dest_path: str):
+        """收到 yt-dlp 解析出的目标文件路径，据此记录对应的 .part / .part.aria2。"""
+        self.tmp_part = dest_path + ".part"
+        self.tmp_aria2 = dest_path + ".part.aria2"
+
+    def delete_tmp_part(self) -> None:
+        """删除本任务自己的下载临时文件（.part / .part.aria2）。失败静默，不误删其他任务。"""
+        for p in (self.tmp_part, self.tmp_aria2):
+            if p:
+                try:
+                    os.remove(p)
+                except OSError:
+                    pass
 
     def pause(self):
         """暂停任务 (Windows: NtSuspendProcess)"""
@@ -253,12 +271,15 @@ class TaskWorker(QThread):
                 except Exception:
                     pass
 
-    def cancel(self):
+    def cancel(self, delete_part: bool = True):
         """取消任务：终止当前任务的整个下载进程树（yt-dlp launcher → real → aria2c）。
 
         用 taskkill /T /F 按本 worker 的 launcher PID 递归终止，只杀本任务进程树，
         不按进程名全局杀，不会影响其他任务/updater。taskkill 失败或进程已退出时
         静默忽略；再以 _process.terminate() 兜底。仅对 Windows 生效。
+
+        delete_part=True（默认，用户主动取消）：删除本任务自己的 .part / .part.aria2。
+        delete_part=False（关闭 Sookit 但保留续传，本需求未用）：保留临时文件。
         """
         self._cancelled = True
         with self._process_lock:
@@ -269,6 +290,8 @@ class TaskWorker(QThread):
                 proc.terminate()
             except Exception:  # noqa: BLE001
                 pass
+        if delete_part:
+            self.delete_tmp_part()
 
     def _on_process_created(self, process):
         """保存子进程引用"""
@@ -306,7 +329,12 @@ class TaskWorker(QThread):
             # 执行函数
             self._output_path = None
             if self.task_type == TaskType.YTDLP:
-                # yt-dlp 任务需要 on_process_created 回调
+                # yt-dlp 任务需要 on_process_created / on_path 回调
+                result = self.func(*self.args, log=log_with_progress,
+                                   on_process_created=self._on_process_created,
+                                   on_path=self._on_path)
+            elif self.task_type in (TaskType.FFMPEG, TaskType.M3U8):
+                # ffmpeg/m3u8 任务也需要保存进程句柄，取消时才能 taskkill 终止
                 result = self.func(*self.args, log=log_with_progress,
                                    on_process_created=self._on_process_created)
             else:

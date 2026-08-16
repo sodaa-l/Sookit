@@ -156,7 +156,8 @@ class FormatType:
 
 class Functions:
     @staticmethod
-    def merge_image_audio(image, audio, output, audio_mode='copy', log=None):
+    def merge_image_audio(image, audio, output, audio_mode='copy', log=None,
+                          on_process_created=None):
         if audio_mode == 'transcode':
             ac = ['-af', 'aresample=resampler=soxr', '-ar', '48000', '-c:a', 'flac', '-sample_fmt', 's32']
         else:
@@ -168,10 +169,11 @@ class Functions:
                '-i', audio, '-vf', 'scale=trunc(iw/2)*2:trunc(ih/2)*2',
                '-c:v', 'libx264', '-tune', 'stillimage'] + ac + [
                '-pix_fmt', 'yuv420p', '-shortest', output]
-        return run_ffmpeg(cmd, log)
+        return run_ffmpeg(cmd, log, None, on_process_created)
 
     @staticmethod
-    def batch_merge_image_audio(image_source, audio_dir, output_dir, audio_mode='copy', log=None):
+    def batch_merge_image_audio(image_source, audio_dir, output_dir, audio_mode='copy',
+                                log=None, on_process_created=None):
         image_source = sanitize_path(image_source)
         audio_dir = sanitize_path(audio_dir)
         output_dir = sanitize_path(output_dir)
@@ -212,7 +214,8 @@ class Functions:
                 output_path = os.path.join(output_dir, f"{audio_base}.mkv")
                 if log: log(f"[{idx}/{total}] ▶ {audio_file}...")
                 Functions.merge_image_audio(img_path, os.path.join(audio_dir, audio_file),
-                                           output_path, audio_mode, log=log)
+                                           output_path, audio_mode, log=log,
+                                           on_process_created=on_process_created)
                 success += 1
                 if log: log(f"[{idx}/{total}] ✓ {audio_file} 完成")
             except Exception as e:
@@ -224,7 +227,8 @@ class Functions:
         return True
 
     @staticmethod
-    def img2vid_10s(image, output, duration=10, framerate=30, log=None):
+    def img2vid_10s(image, output, duration=10, framerate=30, log=None,
+                    on_process_created=None):
         ffmpeg = get_ffmpeg_path()
         if not os.path.exists(ffmpeg):
             ffmpeg = "ffmpeg"
@@ -232,19 +236,21 @@ class Functions:
                '-t', str(duration), '-c:v', 'libx264', '-crf', '20',
                '-preset', 'veryfast', '-pix_fmt', 'yuv420p',
                '-movflags', '+faststart', '-an', output]
-        return run_ffmpeg(cmd, log)
+        return run_ffmpeg(cmd, log, None, on_process_created)
 
     @staticmethod
-    def m3u8_to_aac(input_url, output, bitrate='320k', log=None):
+    def m3u8_to_aac(input_url, output, bitrate='320k', log=None,
+                    on_process_created=None):
         ffmpeg = get_ffmpeg_path()
         if not os.path.exists(ffmpeg):
             ffmpeg = "ffmpeg"
         cmd = [ffmpeg, '-i', input_url, '-c:a', 'aac', '-b:a', bitrate,
                '-vn', '-y', '-loglevel', 'error', '-stats', output]
-        return run_ffmpeg(cmd, log)
+        return run_ffmpeg(cmd, log, None, on_process_created)
 
     @staticmethod
-    def burn_subtitles(video, subtitle, output, encoder='software', log=None):
+    def burn_subtitles(video, subtitle, output, encoder='software', log=None,
+                       on_process_created=None):
         """烧录字幕到视频 - 通过切换工作目录规避驱动器冒号分隔符问题"""
         if encoder == 'software':
             vcodec = ['-c:v', 'libx264', '-preset', 'slow', '-crf', '23']
@@ -268,7 +274,7 @@ class Functions:
         orig_cwd = os.getcwd()
         try:
             os.chdir(sub_dir)
-            return run_ffmpeg(cmd, log)
+            return run_ffmpeg(cmd, log, None, on_process_created)
         finally:
             os.chdir(orig_cwd)
             try:
@@ -277,7 +283,8 @@ class Functions:
                 pass
 
     @staticmethod
-    def cut_video(input_video, output, start, end, audio_mode='copy', log=None):
+    def cut_video(input_video, output, start, end, audio_mode='copy', log=None,
+                  on_process_created=None):
         if audio_mode == 'copy':
             ac = ['-c:a', 'copy']
         else:
@@ -287,7 +294,7 @@ class Functions:
             ffmpeg = "ffmpeg"
         cmd = [ffmpeg, '-loglevel', 'info', '-y', '-i', input_video,
                '-ss', str(start), '-to', str(end), '-c:v', 'copy'] + ac + [output]
-        return run_ffmpeg(cmd, log)
+        return run_ffmpeg(cmd, log, None, on_process_created)
 
     @staticmethod
     def extract_frame(video, time_str, output, fmt='png', log=None):
@@ -304,7 +311,8 @@ class Functions:
         return run_ffmpeg(cmd, log)
 
     @staticmethod
-    def replace_audio(video, audio, output, mode='direct', log=None):
+    def replace_audio(video, audio, output, mode='direct', log=None,
+                      on_process_created=None):
         temp = None
         ffmpeg = get_ffmpeg_path()
         if not os.path.exists(ffmpeg):
@@ -315,23 +323,23 @@ class Functions:
             temp = tempfile.NamedTemporaryFile(suffix='.flac', delete=False).name
             cmd1 = [ffmpeg, '-i', audio, '-c:a', 'flac', '-ar', '48000',
                     '-sample_fmt', 's32', '-y', temp]
-            run_ffmpeg(cmd1, log)
+            run_ffmpeg(cmd1, log, None, on_process_created)
             audio = temp
         cmd = [ffmpeg, '-y', '-i', video, '-i', audio, '-c:v', 'copy',
                '-c:a', 'copy', '-map', '0:v:0', '-map', '1:a:0', '-shortest', output]
         try:
-            return run_ffmpeg(cmd, log)
+            return run_ffmpeg(cmd, log, None, on_process_created)
         finally:
             if mode != 'direct' and temp and os.path.exists(temp):
                 os.unlink(temp)
 
     @staticmethod
-    def extract_audio(video, output, log=None):
+    def extract_audio(video, output, log=None, on_process_created=None):
         ffmpeg = get_ffmpeg_path()
         if not os.path.exists(ffmpeg):
             ffmpeg = "ffmpeg"
         cmd = [ffmpeg, '-y', '-i', video, '-vn', '-acodec', 'copy', output]
-        return run_ffmpeg(cmd, log)
+        return run_ffmpeg(cmd, log, None, on_process_created)
 
     # ---------- YouTube 嗅探与下载 ----------
     @staticmethod
@@ -415,7 +423,8 @@ class Functions:
     @staticmethod
     def download_youtube(url, format_spec, output_dir, remote_components, 
                         concurrent_fragments=10, use_aria2c=True, aria2c_connections=16,
-                        log=None, process_ref=None, on_process_created=None):
+                        log=None, process_ref=None, on_process_created=None,
+                        on_path=None):
         Functions._check_ytdlp()
         output_template = os.path.join(output_dir, '%(title)s.%(ext)s')
         cmd = build_ytdlp_cmd('-f', format_spec, '-o', output_template, '--newline', url)
@@ -438,7 +447,7 @@ class Functions:
         if remote_components:
             cmd.extend(['--remote-components', 'ejs:github'])
         if log: log(f"运行: {' '.join(cmd)}")
-        return run_ytdlp(cmd, log, process_ref, on_process_created)
+        return run_ytdlp(cmd, log, process_ref, on_process_created, on_path)
 
     @staticmethod
     def check_live_status(url, log=None):
@@ -518,7 +527,8 @@ class Functions:
 
     @staticmethod
     def download_xspace(url, output_dir, audio_format='m4a', log=None,
-                        process_ref=None, on_process_created=None):
+                        process_ref=None, on_process_created=None,
+                        on_path=None):
         output_template = os.path.join(output_dir, '%(title)s.%(ext)s')
         cmd = build_ytdlp_cmd('-f', 'bestaudio', '--extract-audio',
                               '--audio-format', audio_format,
@@ -526,4 +536,4 @@ class Functions:
         if not log:
             cmd.append('-q')
         if log: log(f"运行: {' '.join(cmd)}")
-        return run_ytdlp(cmd, log, process_ref, on_process_created)
+        return run_ytdlp(cmd, log, process_ref, on_process_created, on_path)

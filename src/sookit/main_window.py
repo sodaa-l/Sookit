@@ -194,9 +194,24 @@ class MainWindow(qfw.FluentWindow):
             # 最小化至托盘
             event.ignore()
             self.hide()
-        else:
-            # 直接退出
-            self.quit_app()
+            return
+        # 有正在运行的下载任务时，先弹确认框（避免误关导致下载中断且 .part 残留）
+        try:
+            from sookit.core.task_queue import TaskQueueManager
+            if TaskQueueManager.instance().has_running_tasks():
+                dialog = qfw.MessageBox(
+                    "关闭 Sookit",
+                    "关闭 Sookit 会停止正在进行的任务，是否关闭？",
+                    self)
+                dialog.yesButton.setText("关闭")
+                dialog.cancelButton.setText("取消")
+                if not dialog.exec():
+                    event.ignore()
+                    return
+        except Exception:  # noqa: BLE001
+            pass
+        # 直接退出（quit_app 会终止进程并删除各任务 .part）
+        self.quit_app()
 
     def quit_app(self):
         """真正退出应用前清理所有子进程"""

@@ -76,7 +76,7 @@ def format_filesize(bytes_val):
 
 # ---------- FFmpeg / yt-dlp 命令执行 ----------
 
-def run_ffmpeg(cmd_list, log_callback, process_ref=None):
+def run_ffmpeg(cmd_list, log_callback, process_ref=None, on_process_created=None):
     try:
         process = subprocess.Popen(
             cmd_list, shell=False,
@@ -86,6 +86,8 @@ def run_ffmpeg(cmd_list, log_callback, process_ref=None):
         )
         if process_ref is not None:
             process_ref.append(process)
+        if on_process_created is not None:
+            on_process_created(process)
         while True:
             line = process.stdout.readline()
             if not line and process.poll() is not None:
@@ -123,7 +125,8 @@ def _build_ytdlp_error(returncode, error_lines):
     return f"yt-dlp 退出码: {returncode}，目标文件不存在或不完整{detail}"
 
 
-def run_ytdlp(cmd_list, log_callback, process_ref=None, on_process_created=None):
+def run_ytdlp(cmd_list, log_callback, process_ref=None, on_process_created=None,
+              on_path=None):
     try:
         # 创建临时文件用于 --print-to-file 输出最终路径
         import tempfile
@@ -173,6 +176,9 @@ def run_ytdlp(cmd_list, log_callback, process_ref=None, on_process_created=None)
                         raw = line[line.index(prefix) + len(prefix):].strip().strip('"')
                         if raw:
                             _last_dest = raw
+                            # 实时暴露目标文件路径（供任务记录对应的 .part，取消时精准删除本任务临时文件）
+                            if on_path is not None:
+                                on_path(raw)
         # 读取 --print-to-file 输出的最终路径（最可靠）
         # yt-dlp 输出的是 UTF-8，用 GBK 打开含日/韩字符的路径会报错
         output_path = None

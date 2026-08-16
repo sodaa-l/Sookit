@@ -226,8 +226,12 @@ class TaskQueueManager(QObject):
             task.worker.resume()
         self.task_updated.emit(task)
     
-    def cancel_task(self, task_id: str):
-        """取消指定任务 - 直接丢弃"""
+    def cancel_task(self, task_id: str, delete_part: bool = True):
+        """取消指定任务 - 直接丢弃。
+
+        delete_part=True（默认）：终止进程树后删除该任务自己的 .part/.part.aria2。
+        delete_part=False：终止进程但保留临时文件。
+        """
         task = self.active_tasks.get(task_id)
         if not task:
             return
@@ -241,7 +245,7 @@ class TaskQueueManager(QObject):
         # 在后台处理 worker 终止
         if task.worker:
             worker = task.worker
-            worker.cancel()
+            worker.cancel(delete_part)
             # 保留 worker 引用，防止 QThread 在后台线程尚未退出时被 GC 回收，
             # 避免 "QThread: Destroyed while thread is still running" 崩溃
             self._cancelling_workers.add(worker)
@@ -250,15 +254,22 @@ class TaskQueueManager(QObject):
             worker.finished.connect(
                 lambda w=worker: self._cancelling_workers.discard(w))
 
-    def cancel_all(self):
+    def has_running_tasks(self) -> bool:
+        """是否有正在运行的下载任务（供关闭 Sookit 时确认弹窗判断）。"""
+        return any(t.status == TaskStatus.RUNNING for t in self.active_tasks.values())
+
+    def cancel_all(self, delete_part: bool = True):
         """取消所有任务（供 Sookit 退出时统一清理下载进程树）。
 
         对每个任务只通过其自己的 launcher PID 清理自己的进程树，不按进程名全局杀，
         因此不影响独立运行的 updater.exe。用快照遍历，避免 cancel_task 内部
         修改 active_tasks 导致迭代冲突。
+
+        delete_part=True（默认）：终止进程树并删除各任务自己的 .part/.part.aria2。
+        delete_part=False：终止进程但保留临时文件。
         """
         for task_id in list(self.active_tasks.keys()):
-            self.cancel_task(task_id)
+            self.cancel_task(task_id, delete_part)
     
     def _remove_active_task(self, task_id: str):
         """从活跃任务列表移除"""
