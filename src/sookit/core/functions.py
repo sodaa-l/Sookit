@@ -424,10 +424,13 @@ class Functions:
     def download_youtube(url, format_spec, output_dir, remote_components, 
                         concurrent_fragments=10, use_aria2c=True, aria2c_connections=16,
                         log=None, process_ref=None, on_process_created=None,
-                        on_path=None):
+                        workspace=None):
         Functions._check_ytdlp()
-        output_template = os.path.join(output_dir, '%(title)s.%(ext)s')
-        cmd = build_ytdlp_cmd('-f', format_spec, '-o', output_template, '--newline', url)
+        # workspace 非空时输出到独立临时目录（下载完成后由 Sookit 移动到 output_dir）
+        out = workspace or output_dir
+        output_template = os.path.join(out, '%(title)s.%(ext)s')
+        cmd = build_ytdlp_cmd('-f', format_spec, '-o', output_template, '--newline',
+                              '--no-overwrites', url)
         
         if concurrent_fragments > 1:
             cmd.extend(['--concurrent-fragments', str(concurrent_fragments)])
@@ -447,7 +450,7 @@ class Functions:
         if remote_components:
             cmd.extend(['--remote-components', 'ejs:github'])
         if log: log(f"运行: {' '.join(cmd)}")
-        return run_ytdlp(cmd, log, process_ref, on_process_created, on_path)
+        return run_ytdlp(cmd, log, process_ref, on_process_created)
 
     @staticmethod
     def check_live_status(url, log=None):
@@ -528,12 +531,14 @@ class Functions:
     @staticmethod
     def download_xspace(url, output_dir, audio_format='m4a', log=None,
                         process_ref=None, on_process_created=None,
-                        on_path=None):
-        output_template = os.path.join(output_dir, '%(title)s.%(ext)s')
+                        workspace=None):
+        # workspace 非空时输出到独立临时目录（完成后由 Sookit 移动到 output_dir）
+        out = workspace or output_dir
+        output_template = os.path.join(out, '%(title)s.%(ext)s')
         cmd = build_ytdlp_cmd('-f', 'bestaudio', '--extract-audio',
                               '--audio-format', audio_format,
-                              '-o', output_template, '--newline', url)
+                              '-o', output_template, '--newline', '--no-overwrites', url)
         if not log:
             cmd.append('-q')
         if log: log(f"运行: {' '.join(cmd)}")
-        return run_ytdlp(cmd, log, process_ref, on_process_created, on_path)
+        return run_ytdlp(cmd, log, process_ref, on_process_created)

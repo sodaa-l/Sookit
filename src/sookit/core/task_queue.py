@@ -6,12 +6,34 @@ core/task_queue.py
 import os
 import json
 import re
+import time
 import uuid
+import random
 import threading
 from enum import Enum
 from PyQt6.QtCore import QObject, pyqtSignal
 
 from sookit.paths import get_cover_dir, get_data_dir
+
+# ULID 使用的 Crockford Base32 字符集
+_CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+
+
+def _generate_ulid() -> str:
+    """生成完整 ULID（26 字符，Crockford Base32）。
+
+    结构：前 10 字符为 48 位毫秒时间戳，后 16 字符为 80 位随机数。
+    与任务标题/URL 无关，只作为 task workspace 的唯一标识。
+    """
+    ts = int(time.time() * 1000)
+    # 48 位时间戳 -> 10 个 base32 字符
+    ts_str = ""
+    for _ in range(10):
+        ts_str = _CROCKFORD[ts & 0x1F] + ts_str
+        ts >>= 5
+    # 80 位随机数 -> 16 个 base32 字符
+    rand_str = "".join(_CROCKFORD[random.getrandbits(5)] for _ in range(16))
+    return ts_str + rand_str
 
 
 # ---------- 封面缓存目录 ----------
@@ -57,6 +79,10 @@ class Task:
         self.worker = None           # TaskWorker 实例
         self.output_path = ""        # 输出文件路径（用于打开文件夹）
         self.error = ""              # 失败时的错误信息（供 UI 弹窗提示）
+        # ---- workspace（仅 yt-dlp/aria2c 下载任务使用）----
+        self.output_dir = ""         # 用户目标目录
+        self.workspace = ""          # output_dir/._sookit_tmp_<ULID>/，Task 生命周期管理
+        self.output_files = []       # 最终交付文件路径列表（由 run_ytdlp 收集）
         
         # yt-dlp 专用元数据
         self.channel = metadata.get("channel", "") if metadata else ""
@@ -161,6 +187,31 @@ class TaskQueueManager(QObject):
         self._cancelled_task_ids = set()  # 已取消的 task_id，防止 finished_signal 误将取消任务移入已完成
         # 启动时恢复已完成任务
         self._load_completed_tasks()
+        # 清理上次异常退出遗留的 workspace（._sookit_tmp_*）
+        self._cleanup_stale_workspaces()
+
+    def _cleanup_stale_workspaces(self):
+        """清理上次异常退出遗留的临时工作目录（output_dir/._sookit_tmp_*）。
+
+        只扫描「已完成任务 metadata 中记录的 out_dir」，且只删除符合明确命名规则
+        （._sookit_tmp_ 前缀）的目录，不做全盘扫描，不删用户文件。
+        """
+        seen = set()
+        for t in self.completed_tasks.values():
+            out_dir = (t.metadata or {}).get('out_dir', '')
+            if out_dir and out_dir not in seen:
+                seen.add(out_dir)
+                try:
+                    for name in os.listdir(out_dir):
+                        if name.startswith('._sookit_tmp_'):
+                            p = os.path.join(out_dir, name)
+                            try:
+                                import shutil
+                                shutil.rmtree(p, ignore_errors=True)
+                            except Exception:
+                                pass
+                except OSError:
+                    continue
     
     def add_task(self, task_type: TaskType, title: str, func, args,
                  metadata: dict = None, output_path: str = "") -> Task:
@@ -189,12 +240,17 @@ class TaskQueueManager(QObject):
         if running_count >= self.max_concurrent:
             return  # 等待其他任务完成
         
+        # 仅 yt-dlp/aria2c 下载任务使用独立 workspace（由 Task 生命周期管理）
+        if task.task_type == TaskType.YTDLP:
+            self._ensure_workspace(task)
+        
         task.status = TaskStatus.RUNNING
         self.task_updated.emit(task)
         
         # 创建并启动 worker
         from sookit.core.workers import TaskWorker
-        worker = TaskWorker(task_id, task.task_type, task.func, task.args)
+        worker = TaskWorker(task_id, task.task_type, task.func, task.args,
+                            workspace=task.workspace)
         task.worker = worker
         
         # 连接信号
@@ -204,6 +260,34 @@ class TaskQueueManager(QObject):
         
         worker.start()
     
+    def _ensure_workspace(self, task):
+        """为 yt-dlp 下载任务创建独立 workspace：output_dir/._sookit_tmp_<ULID>/。
+
+        workspace 由 Task 生命周期管理（创建/删除都由 Task/TaskQueue 控制），
+        Worker 只负责使用 task.workspace。临时目录在用户目标目录内部，同卷可原子移动。
+        """
+        out_dir = (task.metadata or {}).get('out_dir', '')
+        if not out_dir:
+            # 无 out_dir 时不启用 workspace（download_youtube 回退用 output_dir 参数）
+            task.output_dir = ''
+            task.workspace = ''
+            return
+        task.output_dir = out_dir
+        workspace = os.path.join(out_dir, f"._sookit_tmp_{_generate_ulid()}")
+        try:
+            os.makedirs(workspace, exist_ok=True)
+            # Windows 隐藏属性（仅隐藏，不作安全机制）
+            if os.name == 'nt':
+                try:
+                    import ctypes
+                    ctypes.windll.kernel32.SetFileAttributesW(workspace, 0x2)  # FILE_ATTRIBUTE_HIDDEN
+                except Exception:
+                    pass
+            task.workspace = workspace
+        except OSError:
+            # 创建失败则不启用 workspace，回退直接写 out_dir
+            task.workspace = ''
+
     def pause_task(self, task_id: str):
         """暂停指定任务"""
         task = self.active_tasks.get(task_id)
@@ -312,11 +396,12 @@ class TaskQueueManager(QObject):
             task.progress = 100.0
             task.speed = ""
             task.eta = ""
-            # 优先使用 worker 返回的精确文件路径（yt-dlp --print-to-file）
-            if (hasattr(task.worker, '_output_path')
-                    and task.worker._output_path
-                    and os.path.isfile(task.worker._output_path)):
-                task.output_path = task.worker._output_path
+            # workspace 任务：把最终输出文件移动到用户目标目录（防覆盖 + fallback），
+            # 全部移动成功后才删除 workspace
+            if task.workspace:
+                moved, final_paths = self._finalize_workspace(task)
+                if final_paths:
+                    task.output_path = final_paths[0]
             # 从 metadata 回填输出路径
             if not task.output_path:
                 for key in ('out', 'output', 'out_dir'):
@@ -347,10 +432,81 @@ class TaskQueueManager(QObject):
             # 记录失败原因，供 UI 弹窗提示
             if task.worker is not None:
                 task.error = getattr(task.worker, 'error', "") or task.error
+                # 下载失败：删除整个 task workspace（放弃当前进度）
+                task.worker.delete_workspace()
             self.task_updated.emit(task)
             self.task_failed.emit(task)
             # 失败任务保留在活跃列表中显示
-    
+
+    def _finalize_workspace(self, task):
+        """把 workspace 中的最终输出文件移动到用户目标目录。
+
+        返回 (moved_ok, final_paths)：
+        - moved_ok: 是否所有文件都成功移动到目标目录
+        - final_paths: 移动后的最终路径列表
+
+        规则：
+        - 逐个移动 task.worker.output_files 到 task.output_dir（同卷原子 rename）。
+        - 防覆盖：目标已存在时追加后缀 _1/_2。
+        - 全部成功 → 删除 workspace，返回 True。
+        - 任一失败 → 不删 workspace（保留已下载文件），fallback 到系统 Downloads 目录；
+          再失败则保留 workspace（文件仍暂存在 workspace，避免丢失）。
+        """
+        srcs = list(getattr(task.worker, 'output_files', []) or [])
+        if not srcs:
+            # 无明确 output_files，尝试移动 workspace 内所有普通文件（兜底）
+            try:
+                srcs = [os.path.join(task.workspace, f)
+                        for f in os.listdir(task.workspace)
+                        if os.path.isfile(os.path.join(task.workspace, f))]
+            except OSError:
+                srcs = []
+
+        def _move_one(src, dest_dir):
+            """移动到 dest_dir，防覆盖加后缀。返回移动后的路径或 None。"""
+            name = os.path.basename(src)
+            target = os.path.join(dest_dir, name)
+            counter = 1
+            while os.path.exists(target):
+                base, ext = os.path.splitext(name)
+                target = os.path.join(dest_dir, f"{base}_{counter}{ext}")
+                counter += 1
+            os.replace(src, target)
+            return target
+
+        moved = []
+        # 第一优先：用户目标目录
+        dest_candidates = [task.output_dir]
+        if not task.output_dir:
+            dest_candidates = []
+        # 第二优先：系统 Downloads
+        try:
+            downloads = os.path.join(os.path.expanduser('~'), 'Downloads')
+            dest_candidates.append(downloads)
+        except Exception:
+            pass
+
+        for src in srcs:
+            placed = None
+            for dest_dir in dest_candidates:
+                if not dest_dir or not os.path.isdir(dest_dir):
+                    continue
+                try:
+                    placed = _move_one(src, dest_dir)
+                    break
+                except OSError:
+                    continue
+            if placed:
+                moved.append(placed)
+
+        all_moved = len(moved) == len(srcs) and len(srcs) > 0
+        if all_moved:
+            # 全部成功 → 删 workspace
+            if task.worker:
+                task.worker.delete_workspace()
+        # 任一失败：不删 workspace（文件保留），moved 中已移动的已安全
+        return (all_moved, moved)
+
     def _process_queue(self):
         """处理队列，启动等待中的任务"""
         running_count = sum(1 for t in self.active_tasks.values()

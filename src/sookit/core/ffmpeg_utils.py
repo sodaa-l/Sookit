@@ -187,15 +187,18 @@ def run_ytdlp(cmd_list, log_callback, process_ref=None, on_process_created=None,
                             # 实时暴露目标文件路径（供任务记录对应的 .part，取消时精准删除本任务临时文件）
                             if on_path is not None:
                                 on_path(raw)
-        # 读取 --print-to-file 输出的最终路径（最可靠）
+        # 读取 --print-to-file 输出的最终路径（最可靠）。
+        # 一个 Task 可能产出多个最终文件（如 -f '137,140' 不合并时视频+音频），
+        # yt-dlp 会把每个最终路径写为一行，因此按行拆分收集为列表。
         # yt-dlp 输出的是 UTF-8，用 GBK 打开含日/韩字符的路径会报错
-        output_path = None
+        output_paths = []
         if os.path.exists(tmp_path):
             try:
                 with open(tmp_path, 'r', encoding='utf-8') as f:
-                    content = f.read().strip()
-                if content and os.path.isfile(content):
-                    output_path = content
+                    for raw_line in f:
+                        p = raw_line.strip()
+                        if p and os.path.isfile(p):
+                            output_paths.append(p)
             except Exception:
                 pass
             finally:
@@ -203,18 +206,18 @@ def run_ytdlp(cmd_list, log_callback, process_ref=None, on_process_created=None,
                     os.remove(tmp_path)
                 except Exception:
                     pass
-        # 回退：使用日志解析的路径
-        if not output_path and _last_dest and os.path.isfile(_last_dest):
-            output_path = _last_dest
+        # 回退：使用日志解析的最后路径
+        if not output_paths and _last_dest and os.path.isfile(_last_dest):
+            output_paths = [_last_dest]
         if process.returncode != 0:
             # yt-dlp 有时在文件已下载成功后仍返回非零退出码（如 ffmpeg 合并问题）
             # 检查最终输出文件是否存在：存在则视为成功，不存在才报错
-            if output_path and os.path.isfile(output_path) and os.path.getsize(output_path) > 0:
+            if output_paths and all(os.path.isfile(p) and os.path.getsize(p) > 0 for p in output_paths):
                 if log_callback:
                     log_callback(f"⚠ yt-dlp 退出码: {process.returncode}（但目标文件存在，视为成功）")
             else:
                 raise RuntimeError(_build_ytdlp_error(process.returncode, _error_lines))
-        return output_path if output_path else True
+        return output_paths
     except KeyboardInterrupt:
         raise
     except Exception as e:

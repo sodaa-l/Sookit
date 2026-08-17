@@ -202,7 +202,7 @@ class TaskWorker(QThread):
     progress_signal = pyqtSignal(dict)   # {"progress", "speed", "eta"}
     finished_signal = pyqtSignal(bool)
 
-    def __init__(self, task_id, task_type, func, args):
+    def __init__(self, task_id, task_type, func, args, workspace=""):
         super().__init__()
         self.task_id = task_id
         self.task_type = task_type
@@ -213,24 +213,20 @@ class TaskWorker(QThread):
         self._process = None
         self._process_lock = threading.Lock()
         self.error = ""              # 任务失败时的错误信息（供 task_queue / UI 弹窗）
-        # 该任务对应的下载临时文件路径（由 run_ytdlp 解析 Destination 后填写，
-        # 用于取消时精准删除本任务自己的 .part/.part.aria2，不误删其他任务）
-        self.tmp_part = ""           # 如 D:/out/video.mp4.part
-        self.tmp_aria2 = ""          # 如 D:/out/video.mp4.part.aria2
+        # 该任务的独立临时工作目录（由 Task 生命周期管理，Worker 只负责使用）。
+        # 所有临时文件（.part/.aria2/.ytdl/.f<ID> 等）都在 workspace 内。
+        self.workspace = workspace
+        # 最终交付文件路径列表（由 run_ytdlp 的 --print-to-file 收集，多格式可多个）
+        self.output_files = []
 
-    def _on_path(self, dest_path: str):
-        """收到 yt-dlp 解析出的目标文件路径，据此记录对应的 .part / .part.aria2。"""
-        self.tmp_part = dest_path + ".part"
-        self.tmp_aria2 = dest_path + ".part.aria2"
-
-    def delete_tmp_part(self) -> None:
-        """删除本任务自己的下载临时文件（.part / .part.aria2）。失败静默，不误删其他任务。"""
-        for p in (self.tmp_part, self.tmp_aria2):
-            if p:
-                try:
-                    os.remove(p)
-                except OSError:
-                    pass
+    def delete_workspace(self) -> None:
+        """删除整个 task workspace（含所有临时文件）。失败静默。"""
+        if self.workspace:
+            try:
+                import shutil
+                shutil.rmtree(self.workspace, ignore_errors=True)
+            except Exception:  # noqa: BLE001
+                pass
 
     def pause(self):
         """暂停任务 (Windows: NtSuspendProcess)"""
@@ -278,8 +274,8 @@ class TaskWorker(QThread):
         不按进程名全局杀，不会影响其他任务/updater。taskkill 失败或进程已退出时
         静默忽略；再以 _process.terminate() 兜底。仅对 Windows 生效。
 
-        delete_part=True（默认，用户主动取消）：删除本任务自己的 .part / .part.aria2。
-        delete_part=False（关闭 Sookit 但保留续传，本需求未用）：保留临时文件。
+        delete_part=True（默认，用户主动取消/关闭）：删除整个 task workspace。
+        delete_part=False（暂停保留续传）：保留 workspace。
         """
         self._cancelled = True
         with self._process_lock:
@@ -291,7 +287,7 @@ class TaskWorker(QThread):
             except Exception:  # noqa: BLE001
                 pass
         if delete_part:
-            self.delete_tmp_part()
+            self.delete_workspace()
 
     def _on_process_created(self, process):
         """保存子进程引用"""
@@ -329,19 +325,21 @@ class TaskWorker(QThread):
             # 执行函数
             self._output_path = None
             if self.task_type == TaskType.YTDLP:
-                # yt-dlp 任务需要 on_process_created / on_path 回调
+                # yt-dlp 任务：传 workspace（临时目录），run_ytdlp 返回最终输出路径列表
                 result = self.func(*self.args, log=log_with_progress,
                                    on_process_created=self._on_process_created,
-                                   on_path=self._on_path)
+                                   workspace=self.workspace)
             elif self.task_type in (TaskType.FFMPEG, TaskType.M3U8):
                 # ffmpeg/m3u8 任务也需要保存进程句柄，取消时才能 taskkill 终止
                 result = self.func(*self.args, log=log_with_progress,
                                    on_process_created=self._on_process_created)
             else:
                 result = self.func(*self.args, log=log_with_progress)
-            # 捕获返回的路径（如果是字符串）
-            if isinstance(result, str):
-                self._output_path = result
+            # 捕获返回的最终输出路径列表（yt-dlp 多格式可能返回多个）
+            if isinstance(result, list):
+                self.output_files = [p for p in result if p]
+                if self.output_files:
+                    self._output_path = self.output_files[0]
             
             if not self._cancelled:
                 self.finished_signal.emit(True)
