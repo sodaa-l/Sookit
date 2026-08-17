@@ -94,6 +94,35 @@ class Task:
 
 COMPLETED_FILE = str(get_data_dir() / 'completed_tasks.json')
 
+# 当前未完成 workspace registry（启动清理残留用）。
+# 只记录 Sookit 自己创建的 workspace 完整路径，不扫描任意用户目录。
+ACTIVE_WORKSPACES_FILE = str(get_data_dir() / 'active_workspaces.json')
+
+
+def _load_active_workspaces() -> list:
+    """读取 active_workspaces registry，返回 workspace 路径列表。"""
+    try:
+        if os.path.exists(ACTIVE_WORKSPACES_FILE):
+            with open(ACTIVE_WORKSPACES_FILE, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            if isinstance(data, list):
+                return [str(p) for p in data]
+    except Exception:
+        pass
+    return []
+
+
+def _save_active_workspaces(paths: list) -> None:
+    """原子保存 active_workspaces registry（先写临时文件再 os.replace）。"""
+    try:
+        os.makedirs(os.path.dirname(ACTIVE_WORKSPACES_FILE), exist_ok=True)
+        tmp = ACTIVE_WORKSPACES_FILE + '.tmp'
+        with open(tmp, 'w', encoding='utf-8') as f:
+            json.dump(paths, f, indent=2)
+        os.replace(tmp, ACTIVE_WORKSPACES_FILE)
+    except Exception:
+        pass
+
 
 def _task_to_dict(task: 'Task') -> dict:
     """将 Task 序列化为可 JSON 存储的 dict (排除可执行对象 + 二进制数据)"""
@@ -185,34 +214,44 @@ class TaskQueueManager(QObject):
         self.max_concurrent = 3      # 最大并发任务数
         self._cancelling_workers = set()  # 保留取消中的 worker 引用，防止 QThread 被 GC
         self._cancelled_task_ids = set()  # 已取消的 task_id，防止 finished_signal 误将取消任务移入已完成
+        # 当前未完成 workspace 的 registry（内存副本 + 持久化）
+        self._active_workspaces = []
         # 启动时恢复已完成任务
         self._load_completed_tasks()
-        # 清理上次异常退出遗留的 workspace（._sookit_tmp_*）
+        # 清理上次异常退出遗留的 workspace（读 registry，只清自己登记的）
         self._cleanup_stale_workspaces()
 
-    def _cleanup_stale_workspaces(self):
-        """清理上次异常退出遗留的临时工作目录（output_dir/._sookit_tmp_*）。
+    def _register_workspace(self, path: str) -> None:
+        """登记一个 workspace（先写 registry 原子保存，确保即使后续创建失败/崩溃也能被清理）。"""
+        if not path or path in self._active_workspaces:
+            return
+        self._active_workspaces.append(path)
+        _save_active_workspaces(self._active_workspaces)
 
-        只扫描「已完成任务 metadata 中记录的 out_dir」，且只删除符合明确命名规则
-        （._sookit_tmp_ 前缀）的目录，不做全盘扫描，不删用户文件。
+    def _unregister_workspace(self, path: str) -> None:
+        """从 registry 移除一个 workspace（在删除 workspace 后调用）。"""
+        if path in self._active_workspaces:
+            self._active_workspaces.remove(path)
+            _save_active_workspaces(self._active_workspaces)
+
+    def _cleanup_stale_workspaces(self):
+        """清理上次异常退出遗留的临时工作目录。
+
+        只读取 registry 中登记的 workspace 路径，逐个删除；删除不存在或已清理的，
+        从 registry 移除记录。不做全盘扫描，不依赖 completed_tasks，不删用户文件。
         """
-        seen = set()
-        for t in self.completed_tasks.values():
-            out_dir = (t.metadata or {}).get('out_dir', '')
-            if out_dir and out_dir not in seen:
-                seen.add(out_dir)
-                try:
-                    for name in os.listdir(out_dir):
-                        if name.startswith('._sookit_tmp_'):
-                            p = os.path.join(out_dir, name)
-                            try:
-                                import shutil
-                                shutil.rmtree(p, ignore_errors=True)
-                            except Exception:
-                                pass
-                except OSError:
-                    continue
-    
+        import shutil
+        self._active_workspaces = _load_active_workspaces()
+        remaining = []
+        for ws in self._active_workspaces:
+            try:
+                if os.path.isdir(ws):
+                    shutil.rmtree(ws, ignore_errors=True)
+                # 无论是否删除成功，从 registry 移除（已不存在或已清理）
+            except Exception:
+                pass
+        _save_active_workspaces([])
+
     def add_task(self, task_type: TaskType, title: str, func, args,
                  metadata: dict = None, output_path: str = "") -> Task:
         """添加新任务到队列"""
@@ -274,6 +313,9 @@ class TaskQueueManager(QObject):
             return
         task.output_dir = out_dir
         workspace = os.path.join(out_dir, f"._sookit_tmp_{_generate_ulid()}")
+        # 先登记 registry（原子保存），再创建目录。
+        # 顺序保证：宁可 registry 记录一个尚不存在的 workspace，也不漏清实际已创建的。
+        self._register_workspace(workspace)
         try:
             os.makedirs(workspace, exist_ok=True)
             # Windows 隐藏属性（仅隐藏，不作安全机制）
@@ -285,8 +327,9 @@ class TaskQueueManager(QObject):
                     pass
             task.workspace = workspace
         except OSError:
-            # 创建失败则不启用 workspace，回退直接写 out_dir
+            # 创建失败则不启用 workspace，回退直接写 out_dir；同时从 registry 移除
             task.workspace = ''
+            self._unregister_workspace(workspace)
 
     def pause_task(self, task_id: str):
         """暂停指定任务"""
@@ -330,6 +373,9 @@ class TaskQueueManager(QObject):
         if task.worker:
             worker = task.worker
             worker.cancel(delete_part)
+            # 取消（delete_part=True）删除了 workspace，从 registry 移除登记
+            if delete_part and task.workspace:
+                self._unregister_workspace(task.workspace)
             # 保留 worker 引用，防止 QThread 在后台线程尚未退出时被 GC 回收，
             # 避免 "QThread: Destroyed while thread is still running" 崩溃
             self._cancelling_workers.add(worker)
@@ -432,8 +478,10 @@ class TaskQueueManager(QObject):
             # 记录失败原因，供 UI 弹窗提示
             if task.worker is not None:
                 task.error = getattr(task.worker, 'error', "") or task.error
-                # 下载失败：删除整个 task workspace（放弃当前进度）
+                # 下载失败：删除整个 task workspace（放弃当前进度），并从 registry 移除
                 task.worker.delete_workspace()
+                if task.workspace:
+                    self._unregister_workspace(task.workspace)
             self.task_updated.emit(task)
             self.task_failed.emit(task)
             # 失败任务保留在活跃列表中显示
@@ -501,9 +549,11 @@ class TaskQueueManager(QObject):
 
         all_moved = len(moved) == len(srcs) and len(srcs) > 0
         if all_moved:
-            # 全部成功 → 删 workspace
+            # 全部成功 → 删 workspace，并从 registry 移除
             if task.worker:
                 task.worker.delete_workspace()
+            if task.workspace:
+                self._unregister_workspace(task.workspace)
         # 任一失败：不删 workspace（文件保留），moved 中已移动的已安全
         return (all_moved, moved)
 
