@@ -13,6 +13,7 @@ sookit/updater.py
 import json
 import os
 import re
+import subprocess
 import sys
 import traceback
 from pathlib import Path
@@ -66,6 +67,8 @@ class _DownloadWorker(QObject):
     支持取消：set_cancelled() 后，当前下载会在下载循环的检查点中断
     （download_ytdlp/download_deno 收到 cancel_cb=True 抛 DownloadCancelled），
     并清理已下载的 .part 临时文件。
+
+    记录当前 aria2c 子进程（on_proc 回调），供取消超时后强制终止兜底。
     """
     progress = pyqtSignal(str)
     done = pyqtSignal(object)  # {"yt": {...}, "deno": {...}}
@@ -73,6 +76,7 @@ class _DownloadWorker(QObject):
     def __init__(self):
         super().__init__()
         self._cancelled = False
+        self._proc = None  # 当前 aria2c 子进程（Popen 对象，含 pid）
 
     def set_cancelled(self):
         self._cancelled = True
@@ -81,11 +85,48 @@ class _DownloadWorker(QObject):
     def cancelled(self) -> bool:
         return self._cancelled
 
+    def set_proc(self, proc):
+        """on_proc 回调：记录当前 aria2c 子进程。"""
+        self._proc = proc
+
+    def current_pid(self):
+        """当前 aria2c 进程 pid（无则 None）。"""
+        return self._proc.pid if self._proc is not None else None
+
+    def force_terminate(self):
+        """强制终止当前 aria2c 进程树（兜底，不按进程名全局杀）。
+
+        先尝试 terminate/kill；仍存活则用 taskkill /PID <pid> /T /F 精准杀。
+        """
+        proc = self._proc
+        if proc is None:
+            return
+        pid = proc.pid
+        if pid:
+            try:
+                proc.terminate()
+            except Exception:  # noqa: BLE001
+                pass
+            # 等待短暂退出，否则 taskkill 兜底
+            try:
+                proc.wait(timeout=3)
+            except Exception:  # noqa: BLE001
+                pass
+        if pid and proc.poll() is None:
+            try:
+                subprocess.run(
+                    ["taskkill", "/PID", str(pid), "/T", "/F"],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    timeout=10, creationflags=subprocess.CREATE_NO_WINDOW)
+            except Exception:  # noqa: BLE001
+                pass
+
     def run(self):
         def _comp(name, fn):
             ok, status, err = True, "up_to_date", ""
             try:
-                status = fn(self.progress.emit, True, lambda: self._cancelled)
+                status = fn(self.progress.emit, True, lambda: self._cancelled,
+                            self.set_proc)
             except DownloadCancelled:
                 ok, status, err = False, "cancelled", "用户取消"
             except Exception as e:  # noqa: BLE001
@@ -94,6 +135,7 @@ class _DownloadWorker(QObject):
 
         yt = _comp("yt-dlp", download_ytdlp)
         deno = _comp("Deno", download_deno)
+        self._proc = None  # 下载结束，清空
         self.done.emit({"yt": yt, "deno": deno})
 
 
@@ -174,6 +216,12 @@ class UpdaterDialog(QDialog):
         # 等待后台线程真正结束，确保下载已中断、临时文件已清理后再收尾
         if self._thread and self._thread.isRunning():
             self._thread.wait(15000)
+        # 若线程仍未退出（如 aria2c 卡住导致 reader 阻塞/取消未及时生效），强制终止 aria2c，
+        # 再确认退出后收尾，避免 updater 退出后 aria2c 成为孤儿继续下载。
+        if self._thread and self._thread.isRunning():
+            if self._worker:
+                self._worker.force_terminate()
+            self._thread.wait(5000)
         self.status_label.setText("已取消…")
         self._result = {
             "yt": {"name": "yt-dlp", "ok": False, "status": "cancelled", "error": "用户取消"},

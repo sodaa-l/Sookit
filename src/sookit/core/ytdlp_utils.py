@@ -13,9 +13,11 @@ yt-dlp 集中管理：来源解析、命令组装、内置安装与更新。
 import ctypes
 import json
 import os
+import queue
 import re
 import shutil
 import subprocess
+import threading
 import time
 import zipfile
 import urllib.error
@@ -115,12 +117,13 @@ def _format_size(n: float) -> str:
 
 
 def _download_file(url: str, dest: Path, label: str, progress_cb=None,
-                   cancel_cb=None) -> None:
+                   cancel_cb=None, on_proc=None) -> None:
     """下载文件到临时文件，完成后 os.replace 原子替换。
 
     progress_cb(text) 进度回调，text 形如 "下载 yt-dlp.exe — 23% (4.0 MB / 17.3 MB)"。
     cancel_cb() -> bool：返回 True 表示应取消下载。取消时中断当前下载通道、
     删除临时文件并抛 DownloadCancelled。
+    on_proc(proc) 可选：暴露当前 aria2c 子进程（含 pid），供调用方强制终止兜底。
 
     下载器选择（依据设置页下载配置）：
     - use_aria2c 开 → 优先用内置 aria2c 多连接下载（-x/-s 取 aria2c_connections），
@@ -139,7 +142,7 @@ def _download_file(url: str, dest: Path, label: str, progress_cb=None,
         if os.path.exists(aria2c):
             try:
                 _download_file_with_aria2c(
-                    aria2c, url, tmp, label, progress_cb, connections, cancel_cb)
+                    aria2c, url, tmp, label, progress_cb, connections, cancel_cb, on_proc)
                 os.replace(tmp, dest)
                 return
             except DownloadCancelled:
@@ -156,13 +159,19 @@ def _download_file(url: str, dest: Path, label: str, progress_cb=None,
 
 
 def _download_file_with_aria2c(aria2c: str, url: str, tmp: Path, label: str,
-                               progress_cb, connections: int, cancel_cb=None) -> None:
+                               progress_cb, connections: int, cancel_cb=None,
+                               on_proc=None) -> None:
     """用 aria2c 多连接下载。失败抛异常，由调用方决定是否回退。
 
     aria2c 进度输出形如：
       [#abcde 4.0MiB/17.3MiB(23%) CN:16 DL:5.0MiB]
     通过 --summary-interval 定期打印汇总行，解析其中的已下载/总量/百分比。
+
     cancel_cb 返回 True 时终止 aria2c 子进程并抛 DownloadCancelled。
+    用独立 daemon reader 线程读 stdout（queue.Queue），主循环通过 queue.get(timeout=0.2)
+    非阻塞获取数据，保证取消检查不被 proc.stdout.read() 阻塞（aria2c 卡住/无输出时也能及时 kill）。
+    on_proc(proc) 可选：Popen 后回调，向调用方暴露 aria2c 的 Popen 对象（含 pid），
+    供强制终止兜底使用。
     """
     cmd = [
         aria2c,
@@ -181,44 +190,71 @@ def _download_file_with_aria2c(aria2c: str, url: str, tmp: Path, label: str,
     proc = subprocess.Popen(
         cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+    if on_proc is not None:
+        on_proc(proc)
+
+    # ---- 独立 daemon reader 线程：持续读 stdout 放入队列 ----
+    chunk_queue = queue.Queue()
+    def _reader():
+        try:
+            while True:
+                chunk = proc.stdout.read(8192)
+                if not chunk:
+                    break
+                chunk_queue.put(chunk)
+        except Exception:
+            pass
+        finally:
+            chunk_queue.put(None)  # EOF 哨兵
+    reader = threading.Thread(target=_reader, daemon=True)
+    reader.start()
+
     total = None
     done = 0
     buf = bytearray()
     _PROGRESS_RE = re.compile(r"\[#[a-zA-Z0-9]+\s+([\d.]+)([KMG]?i?B)/([\d.]+)([KMG]?i?B)\s*\((\d+)%\)")
-    while True:
-        if cancel_cb and cancel_cb():
-            proc.kill()
-            proc.wait()
-            raise DownloadCancelled()
-        chunk = proc.stdout.read(8192)
-        if not chunk:
-            break
-        buf.extend(chunk)
-        # 以 \r 或 \n 切分行（aria2c 用 \r 重绘进度条，不换行）
+    try:
         while True:
-            cr = buf.find(b"\r")
-            nl = buf.find(b"\n")
-            if cr == -1 and nl == -1:
-                break
-            pos = cr if nl == -1 or (cr != -1 and cr < nl) else nl
-            line = bytes(buf[:pos]).decode("utf-8", errors="replace").strip()
-            # 跳过 \r\n 中的 \n（若上一分隔符是 \r）
-            if buf[pos:pos + 1] == b"\r" and buf[pos + 1:pos + 2] == b"\n":
-                del buf[:pos + 2]
-            else:
-                del buf[:pos + 1]
-            if not line:
-                continue
-            m = _PROGRESS_RE.search(line)
-            if m:
-                try:
-                    done = _parse_size(m.group(1), m.group(2))
-                    total = _parse_size(m.group(3), m.group(4))
-                    pct = int(m.group(5))
-                except ValueError:
+            # 每次循环先检查取消（不依赖 stdout 是否有数据）
+            if cancel_cb and cancel_cb():
+                proc.kill()
+                proc.wait()
+                raise DownloadCancelled()
+            try:
+                chunk = chunk_queue.get(timeout=0.2)
+            except queue.Empty:
+                continue  # 暂无新数据，回主循环继续检查取消
+            if chunk is None:
+                break  # EOF
+            buf.extend(chunk)
+            # 以 \r 或 \n 切分行（aria2c 用 \r 重绘进度条，不换行）
+            while True:
+                cr = buf.find(b"\r")
+                nl = buf.find(b"\n")
+                if cr == -1 and nl == -1:
+                    break
+                pos = cr if nl == -1 or (cr != -1 and cr < nl) else nl
+                line = bytes(buf[:pos]).decode("utf-8", errors="replace").strip()
+                # 跳过 \r\n 中的 \n（若上一分隔符是 \r）
+                if buf[pos:pos + 1] == b"\r" and buf[pos + 1:pos + 2] == b"\n":
+                    del buf[:pos + 2]
+                else:
+                    del buf[:pos + 1]
+                if not line:
                     continue
-                if progress_cb and total:
-                    progress_cb(f"{label} — {pct}% ({_format_size(done)} / {_format_size(total)})")
+                m = _PROGRESS_RE.search(line)
+                if m:
+                    try:
+                        done = _parse_size(m.group(1), m.group(2))
+                        total = _parse_size(m.group(3), m.group(4))
+                        pct = int(m.group(5))
+                    except ValueError:
+                        continue
+                    if progress_cb and total:
+                        progress_cb(f"{label} — {pct}% ({_format_size(done)} / {_format_size(total)})")
+    finally:
+        # 正常/异常结束都清理：等 reader 线程结束（kill 后 aria2c 退出，read 返回 EOF）
+        reader.join(timeout=1.0)
     proc.wait()
     if proc.returncode != 0:
         raise RuntimeError(f"aria2c 退出码 {proc.returncode}")
@@ -417,7 +453,8 @@ def check_ytdlp_deno_update_needed() -> tuple:
     return yt_needed, deno_needed, yt_state, deno_state
 
 
-def download_ytdlp(progress_cb=None, check_latest=True, cancel_cb=None) -> str:
+def download_ytdlp(progress_cb=None, check_latest=True, cancel_cb=None,
+                   on_proc=None) -> str:
     """下载安装/更新内置 yt-dlp 到 tools/yt-dlp/（仅 yt-dlp，与 Deno 相互独立）。
 
     返回值：
@@ -450,7 +487,7 @@ def download_ytdlp(progress_cb=None, check_latest=True, cancel_cb=None) -> str:
                 need_update = True
 
         if need_update:
-            _download_file(YTDLP_URL, exe_path, "下载 yt-dlp.exe", progress_cb, cancel_cb)
+            _download_file(YTDLP_URL, exe_path, "下载 yt-dlp.exe", progress_cb, cancel_cb, on_proc)
 
         return "updated" if need_update else "up_to_date"
     except DownloadCancelled:
@@ -461,7 +498,8 @@ def download_ytdlp(progress_cb=None, check_latest=True, cancel_cb=None) -> str:
         raise RuntimeError(f"下载失败: {e}") from e
 
 
-def download_deno(progress_cb=None, check_latest=True, cancel_cb=None) -> str:
+def download_deno(progress_cb=None, check_latest=True, cancel_cb=None,
+                  on_proc=None) -> str:
     """下载安装/更新内置 Deno 运行时到 tools/yt-dlp/（仅 Deno，与 yt-dlp 相互独立）。
 
     返回值：
@@ -496,7 +534,7 @@ def download_deno(progress_cb=None, check_latest=True, cancel_cb=None) -> str:
             if progress_cb:
                 progress_cb("正在下载 Deno 运行时…")
             try:
-                _download_file(DENO_URL, zip_path, "下载 Deno", progress_cb, cancel_cb)
+                _download_file(DENO_URL, zip_path, "下载 Deno", progress_cb, cancel_cb, on_proc)
                 if progress_cb:
                     progress_cb("正在解压 Deno…")
                 _extract_deno(zip_path)
@@ -514,14 +552,15 @@ def download_deno(progress_cb=None, check_latest=True, cancel_cb=None) -> str:
         raise RuntimeError(f"Deno 压缩包损坏: {e}") from e
 
 
-def download_ytdlp_bundle(progress_cb=None, check_latest=True, cancel_cb=None) -> str:
+def download_ytdlp_bundle(progress_cb=None, check_latest=True, cancel_cb=None,
+                          on_proc=None) -> str:
     """兼容包装：顺序执行 download_ytdlp 与 download_deno（各自独立判断）。
 
     任一组件失败会抛 RuntimeError 中断；返回 "up_to_date"（两者都最新）或
     "updated"（至少一个被更新）。
     """
-    y = download_ytdlp(progress_cb, check_latest, cancel_cb)
-    d = download_deno(progress_cb, check_latest, cancel_cb)
+    y = download_ytdlp(progress_cb, check_latest, cancel_cb, on_proc)
+    d = download_deno(progress_cb, check_latest, cancel_cb, on_proc)
     if y == "up_to_date" and d == "up_to_date":
         return "up_to_date"
     return "updated"
