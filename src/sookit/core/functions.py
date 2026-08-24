@@ -227,18 +227,6 @@ class Functions:
         return True
 
     @staticmethod
-    def img2vid_10s(image, output, duration=10, framerate=30, log=None,
-                    on_process_created=None):
-        ffmpeg = get_ffmpeg_path()
-        if not os.path.exists(ffmpeg):
-            ffmpeg = "ffmpeg"
-        cmd = [ffmpeg, '-y', '-loop', '1', '-framerate', str(framerate), '-i', image,
-               '-t', str(duration), '-c:v', 'libx264', '-crf', '20',
-               '-preset', 'veryfast', '-pix_fmt', 'yuv420p',
-               '-movflags', '+faststart', '-an', output]
-        return run_ffmpeg(cmd, log, None, on_process_created)
-
-    @staticmethod
     def m3u8_to_aac(input_url, output, bitrate='320k', log=None,
                     on_process_created=None):
         ffmpeg = get_ffmpeg_path()
@@ -281,34 +269,6 @@ class Functions:
                 os.unlink(filter_script)
             except Exception:
                 pass
-
-    @staticmethod
-    def cut_video(input_video, output, start, end, audio_mode='copy', log=None,
-                  on_process_created=None):
-        if audio_mode == 'copy':
-            ac = ['-c:a', 'copy']
-        else:
-            ac = ['-af', 'aresample=resampler=soxr', '-ar', '48000', '-c:a', 'flac', '-sample_fmt', 's32']
-        ffmpeg = get_ffmpeg_path()
-        if not os.path.exists(ffmpeg):
-            ffmpeg = "ffmpeg"
-        cmd = [ffmpeg, '-loglevel', 'info', '-y', '-i', input_video,
-               '-ss', str(start), '-to', str(end), '-c:v', 'copy'] + ac + [output]
-        return run_ffmpeg(cmd, log, None, on_process_created)
-
-    @staticmethod
-    def extract_frame(video, time_str, output, fmt='png', log=None):
-        base, ext = os.path.splitext(output)
-        if not ext or ext.lower() not in ('.png', '.jpg', '.jpeg', '.bmp', '.webp', '.tiff'):
-            output = base + '.' + fmt
-
-        ffmpeg = get_ffmpeg_path()
-        if not os.path.exists(ffmpeg):
-            ffmpeg = "ffmpeg"
-        cmd = [ffmpeg, '-y', '-ss', time_str, '-i', video,
-               '-frames:v', '1', '-q:v', '2', output]
-        if log: log(f"提取帧: {time_str}")
-        return run_ffmpeg(cmd, log)
 
     @staticmethod
     def replace_audio(video, audio, output, mode='direct', log=None,

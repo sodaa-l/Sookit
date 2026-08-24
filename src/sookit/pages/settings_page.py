@@ -542,7 +542,7 @@ class SettingsPage(QWidget):
         cur = self._normalize_version(self._yt_current_ver)
         lat = self._normalize_version(ver)
         if lat and cur and lat > cur:
-            dialog = qfw.MessageBox(
+            dialog = qfw.Dialog(
                 "yt-dlp 有新版本",
                 f"当前版本: {cur}    最新版本: {lat}\n"
                 "不更新可能会导致视频嗅探失败，是否更新？",

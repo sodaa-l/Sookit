@@ -197,7 +197,7 @@ class PageBase(QWidget):
             self._confirm_shutdown()
 
     def _confirm_shutdown(self):
-        dialog = qfw.MessageBox("关机确认", "所有任务已完成。\n20 秒后将关闭计算机，点击「取消」可中止关机。", self)
+        dialog = qfw.Dialog("关机确认", "所有任务已完成。\n20 秒后将关闭计算机，点击「取消」可中止关机。", self)
         dialog.yesButton.setText("确定关机")
         dialog.cancelButton.setText("取消")
         if dialog.exec():

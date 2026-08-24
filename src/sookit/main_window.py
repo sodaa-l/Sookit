@@ -37,8 +37,8 @@ from sookit.core.workers import Worker, MonitorWorker
 
 # ---------- 从 pages 导入所有页面类 ----------
 from sookit.pages import (
-    PageBase, MergePage, Img2VidPage, M3U8Page, XSpacePage, YouTubePage,
-    SubtitlePage, CutPage, ReplaceAudioPage, ExtractAudioPage, FramePage,
+    PageBase, MergePage, M3U8Page, XSpacePage, YouTubePage,
+    SubtitlePage, ReplaceAudioPage, ExtractAudioPage,
     MonitorPage, QueuePage, SettingsPage
 )
 
@@ -84,22 +84,16 @@ class MainWindow(qfw.FluentWindow):
         # 创建各页面
         self.youtube_page = YouTubePage(self)
         self.youtube_page.setObjectName("youtubePage")
-        self.cut_page = CutPage(self)
-        self.cut_page.setObjectName("cutPage")
         self.subtitle_page = SubtitlePage(self)
         self.subtitle_page.setObjectName("subtitlePage")
         self.monitor_page = MonitorPage(self)
         self.monitor_page.setObjectName("monitorPage")
         self.merge_page = MergePage(self)
         self.merge_page.setObjectName("mergePage")
-        self.img2vid_page = Img2VidPage(self)
-        self.img2vid_page.setObjectName("img2vidPage")
         self.m3u8_page = M3U8Page(self)
         self.m3u8_page.setObjectName("m3u8Page")
         self.xspace_page = XSpacePage(self)
         self.xspace_page.setObjectName("xspacePage")
-        self.frame_page = FramePage(self)
-        self.frame_page.setObjectName("framePage")
         self.replace_page = ReplaceAudioPage(self)
         self.replace_page.setObjectName("replacePage")
         self.extract_page = ExtractAudioPage(self)
@@ -111,11 +105,9 @@ class MainWindow(qfw.FluentWindow):
 
         # 添加到导航栏
         self.addSubInterface(self.youtube_page, FIF.PLAY, "YouTube 嗅探")
-        self.addSubInterface(self.cut_page, FIF.CUT, "视频裁切")
         self.addSubInterface(self.subtitle_page, FIF.FONT, "字幕烧录")
         self.addSubInterface(self.monitor_page, FIF.SYNC, "直播监控")
         self.addSubInterface(self.merge_page, FIF.PHOTO, "图片+音频合并")
-        self.addSubInterface(self.img2vid_page, FIF.VIDEO, "图片转视频")
         self.addSubInterface(self.m3u8_page, FIF.SAVE, "M3U8 下载")
         # X 图标——大画布+大字号绘制 𝕏，导航栏缩放后依然清晰
         self._x_icon_pixmap = QPixmap(128, 128)
@@ -130,7 +122,6 @@ class MainWindow(qfw.FluentWindow):
         p.drawText(QRectF(0, 0, 128, 128), Qt.AlignmentFlag.AlignCenter, "𝕏")
         p.end()
         self.addSubInterface(self.xspace_page, QIcon(self._x_icon_pixmap), "X Space 下载")
-        self.addSubInterface(self.frame_page, FIF.CAMERA, "帧提取")
         self.addSubInterface(self.replace_page, FIF.MUSIC, "音频覆盖")
         self.addSubInterface(self.extract_page, FIF.HEADPHONE, "音频提取")
         # 侧边栏底部
@@ -199,7 +190,7 @@ class MainWindow(qfw.FluentWindow):
         try:
             from sookit.core.task_queue import TaskQueueManager
             if TaskQueueManager.instance().has_running_tasks():
-                dialog = qfw.MessageBox(
+                dialog = qfw.Dialog(
                     "关闭 Sookit",
                     "关闭 Sookit 会停止正在进行的任务，是否关闭？",
                     self)
