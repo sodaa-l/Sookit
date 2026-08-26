@@ -1,5 +1,5 @@
 """
-YouTube 嗅探下载 页面
+视频嗅探下载 页面
 """
 import os
 import re
@@ -27,7 +27,7 @@ from sookit.core.utils import get_certifi_ssl_context
 
 
 class YouTubePage(PageBase):
-    """YouTube 视频嗅探与下载——封面和格式左右分栏布局"""
+    """视频嗅探与下载——封面和格式左右分栏布局"""
     def __init__(self, parent=None):
         super().__init__(parent)
 
@@ -50,16 +50,16 @@ class YouTubePage(PageBase):
         layout.setContentsMargins(20, 20, 20, 20)
         layout.setSpacing(10)
 
-        title = qfw.TitleLabel("YouTube 嗅探下载")
+        title = qfw.TitleLabel("视频嗅探下载")
         layout.addWidget(title)
-        layout.addWidget(self.create_caption_label("粘贴 YouTube 链接，嗅探所有可用格式，自由选择下载"))
+        layout.addWidget(self.create_caption_label("粘贴视频链接，嗅探所有可用格式，自由选择下载"))
         layout.addSpacing(6)
 
         # 检查 yt-dlp 可用性（PATH 全局或内置 tools/ 均可）
         if not is_ytdlp_available():
             self._ytdlp_warning_bar = qfw.InfoBar.warning(
                 parent=self, title="依赖缺失",
-                content="未找到 yt-dlp，YouTube 功能不可用。请前往设置页下载安装",
+                content="未找到 yt-dlp，嗅探功能不可用。请前往设置页下载安装",
                 orient=Qt.Orientation.Horizontal, isClosable=True, duration=-1
             )
 
@@ -510,7 +510,7 @@ class YouTubePage(PageBase):
         video_id = self._sniff_video_id or extract_youtube_id(self.url_input.text().strip())
         if not video_id:
             qfw.InfoBar.warning(
-                parent=self, title="提示", content="无法从 URL 提取 video_id",
+                parent=self, title="提示", content="该链接不支持封面获取",
                 orient=Qt.Orientation.Horizontal, isClosable=True, duration=3000)
             return
 
@@ -691,7 +691,7 @@ class YouTubePage(PageBase):
             func=Functions.download_youtube,
             args=(url, format_spec, out_dir, remote, concurrent_fragments, use_aria2c, aria2c_connections),
             task_type=TaskType.YTDLP,
-            title=self._sniff_title or f"YouTube 下载 - {video_id}",
+            title=self._sniff_title or f"视频下载 - {video_id}",
             metadata=metadata
         )
         qfw.InfoBar.info(parent=self, title="任务已加入队列", content="", duration=3000)

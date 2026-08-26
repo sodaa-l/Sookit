@@ -98,9 +98,11 @@ class MainWindow(qfw.FluentWindow):
         self.settings_page.setObjectName("settingsPage")
 
         # 添加到导航栏
-        self.addSubInterface(self.youtube_page, FIF.PLAY, "YouTube 嗅探")
-        self.addSubInterface(self.subtitle_page, FIF.FONT, "字幕烧录")
+        # 展开态面板宽度：默认 322px 偏宽，收窄到 250px（setExpandWidth 会同步更新条目宽度）
+        self.navigationInterface.panel.setExpandWidth(250)
+        self.addSubInterface(self.youtube_page, FIF.PLAY, "视频嗅探")
         self.addSubInterface(self.monitor_page, FIF.SYNC, "直播监控")
+        self.addSubInterface(self.subtitle_page, FIF.FONT, "字幕烧录")
         self.addSubInterface(self.replace_page, FIF.MUSIC, "音频覆盖")
         self.addSubInterface(self.extract_page, FIF.HEADPHONE, "音频提取")
         # 侧边栏底部
