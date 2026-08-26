@@ -82,7 +82,9 @@ class MonitorPage(PageBase):
         self.task_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.task_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         self.task_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        self.task_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        self.task_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
+        # ResizeToContents 不统计 setCellWidget 的按钮，需显式固定列宽（立即开始 80 + 删除 60 + spacing）
+        self.task_table.setColumnWidth(2, 160)
         self.task_table.setAlternatingRowColors(True)
         self.task_table.setMinimumHeight(200)
         layout.addWidget(self.task_table, stretch=1)
