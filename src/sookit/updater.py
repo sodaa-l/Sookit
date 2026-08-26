@@ -243,7 +243,6 @@ class UpdaterDialog(QDialog):
         if self._thread is not None and not self._thread.isRunning():
             if self._result is None:
                 self._result = cancelled_result
-            self.status_label.setText("已取消")
             self._finish()
             return
         if time.monotonic() >= self._cancel_deadline:
@@ -253,7 +252,6 @@ class UpdaterDialog(QDialog):
                 self._thread.wait(5000)
             if self._result is None:
                 self._result = cancelled_result
-            self.status_label.setText("已取消")
             self._finish()
             return
         QTimer.singleShot(100, self._poll_cancel)
