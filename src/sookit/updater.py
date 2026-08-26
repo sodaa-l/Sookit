@@ -15,6 +15,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 import traceback
 from pathlib import Path
 
@@ -123,6 +124,10 @@ class _DownloadWorker(QObject):
 
     def run(self):
         def _comp(name, fn):
+            # 已取消则不再进入该组件（含版本检查/下载），直接返回取消结果
+            if self._cancelled:
+                return {"name": name, "ok": False, "status": "cancelled",
+                        "error": "用户取消"}
             ok, status, err = True, "up_to_date", ""
             try:
                 status = fn(self.progress.emit, True, lambda: self._cancelled,
@@ -208,26 +213,50 @@ class UpdaterDialog(QDialog):
     def _on_cancel(self):
         if self._finished:
             return
+        if self._result is not None:
+            # 下载恰已完成（done 已到达），直接按真实结果收尾
+            self._finish()
+            return
         self.cancel_btn.setEnabled(False)
         self.status_label.setText("正在取消，请稍候…")
         # 请求后台线程中断当前下载（download_ytdlp/deno 收到 cancel_cb=True 会停止并清理临时文件）
         if self._worker:
             self._worker.set_cancelled()
-        # 等待后台线程真正结束，确保下载已中断、临时文件已清理后再收尾
-        if self._thread and self._thread.isRunning():
-            self._thread.wait(15000)
-        # 若线程仍未退出（如 aria2c 卡住导致 reader 阻塞/取消未及时生效），强制终止 aria2c，
-        # 再确认退出后收尾，避免 updater 退出后 aria2c 成为孤儿继续下载。
-        if self._thread and self._thread.isRunning():
-            if self._worker:
-                self._worker.force_terminate()
-            self._thread.wait(5000)
-        self.status_label.setText("已取消…")
-        self._result = {
+        # 非阻塞轮询线程状态：立即返回让事件循环渲染提示文字，避免 GUI 冻结
+        self._cancel_deadline = time.monotonic() + 20
+        self._poll_cancel()
+
+    def _poll_cancel(self):
+        """每 100ms 轮询后台线程退出状态（非阻塞，保证 GUI 不冻结、取消提示可见）。
+
+        - 线程已退出：若 done 信号已写入真实结果则以其为准（解决"取消瞬间下载恰好
+          完成、文件已被替换"的竞态），否则补写取消结果；
+        - 超时（20s）：先 force_terminate 杀干净 aria2c 进程树（防孤儿进程继续下载），
+          再给 5s 最后机会，确实卡死才硬写取消结果并关窗。
+        """
+        if self._finished:
+            return
+        cancelled_result = {
             "yt": {"name": "yt-dlp", "ok": False, "status": "cancelled", "error": "用户取消"},
             "deno": {"name": "Deno", "ok": False, "status": "cancelled", "error": "用户取消"},
         }
-        self._finish()
+        if self._thread is not None and not self._thread.isRunning():
+            if self._result is None:
+                self._result = cancelled_result
+            self.status_label.setText("已取消")
+            self._finish()
+            return
+        if time.monotonic() >= self._cancel_deadline:
+            if self._worker:
+                self._worker.force_terminate()
+            if self._thread is not None:
+                self._thread.wait(5000)
+            if self._result is None:
+                self._result = cancelled_result
+            self.status_label.setText("已取消")
+            self._finish()
+            return
+        QTimer.singleShot(100, self._poll_cancel)
 
     def _finish(self):
         """写结果文件并关闭窗口（结果由 Sookit 轮询读取）。"""
@@ -239,10 +268,15 @@ class UpdaterDialog(QDialog):
         self.accept()
 
     def closeEvent(self, e):
-        # 用户直接点窗口关闭按钮：按取消处理（写结果）
+        # 用户直接点窗口关闭按钮：按取消处理。
+        # 未完成时忽略关闭并隐藏窗口，后台继续取消流程（写完结果文件后由 _finish
+        # 关闭对话框退出），避免进程提前退出导致 Sookit 拿不到结果而空等超时。
         if not self._finished:
+            e.ignore()
+            self.hide()
             self._on_cancel()
-        super().closeEvent(e)
+        else:
+            super().closeEvent(e)
 
 
 def _parse_result_path() -> str:

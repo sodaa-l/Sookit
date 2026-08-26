@@ -35,6 +35,16 @@ class DownloadCancelled(Exception):
     """下载被用户取消（cancel_cb 返回 True 时抛出，调用方据此中断并清理临时文件）。"""
 
 
+def _raise_if_cancelled(cancel_cb) -> None:
+    """取消检查点：cancel_cb() 返回 True 时抛 DownloadCancelled。
+
+    用于下载各阶段之间（版本检查前后、启动下载进程前），
+    保证取消后不再执行后续网络请求或启动新的下载进程。
+    """
+    if cancel_cb is not None and cancel_cb():
+        raise DownloadCancelled()
+
+
 # ---------- 下载源 ----------
 YTDLP_URL = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe"
 DENO_URL = "https://github.com/denoland/deno/releases/latest/download/deno-x86_64-pc-windows-msvc.zip"
@@ -130,6 +140,7 @@ def _download_file(url: str, dest: Path, label: str, progress_cb=None,
       aria2c 不存在或下载失败时回退 urllib 单线程。
     - use_aria2c 关 → 直接用 urllib 单线程。
     """
+    _raise_if_cancelled(cancel_cb)  # 已取消则不再启动新的下载进程
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.with_suffix(dest.suffix + ".part")
 
@@ -338,7 +349,7 @@ class _VersionResolved(Exception):
 _VERSION_RE = re.compile(r"/releases/(?:download|tag)/(?:v|V)?([^/]+)(?:/|$)")
 
 
-def _version_from_latest_url(url: str, timeout: float = 10) -> str:
+def _version_from_latest_url(url: str, timeout: float = 20) -> str:
     """从 GitHub latest 下载 URL 的重定向 Location 解析最新版本号（无前缀 v）。
 
     只跟随重定向并检查 Location，一旦命中 /releases/download/<版本>/ 立即抛
@@ -347,6 +358,7 @@ def _version_from_latest_url(url: str, timeout: float = 10) -> str:
 
     相比 api.github.com REST API（匿名 60 次/时/IP 限流，403 后查不到），
     latest 下载 URL 走下载 CDN，无此限流，版本可稳定解析。
+    timeout 默认 20s：国内直连 GitHub TLS 握手偶发超过 10s，放宽以减少误判"已最新"。
     """
     class _Stop(urllib.request.HTTPRedirectHandler):
         def redirect_request(self, req, fp, code, msg, headers, newurl):
@@ -469,13 +481,16 @@ def download_ytdlp(progress_cb=None, check_latest=True, cancel_cb=None,
     cancel_cb() 返回 True 时抛 DownloadCancelled（用户取消，调用方需识别）。
     """
     try:
+        _raise_if_cancelled(cancel_cb)
         exe_path = get_ytdlp_exe_path()
         ytdlp_present = exe_path.is_file()
         need_update = True
 
         if check_latest:
             cur = get_ytdlp_current_version() if ytdlp_present else ""
+            _raise_if_cancelled(cancel_cb)
             latest = get_ytdlp_latest_version()
+            _raise_if_cancelled(cancel_cb)
             if cur and latest:
                 # 都能拿到版本时，基于最新版判断是否需要更新
                 need_update = _normalize_version(cur) < _normalize_version(latest)
@@ -514,10 +529,13 @@ def download_deno(progress_cb=None, check_latest=True, cancel_cb=None,
     cancel_cb() 返回 True 时抛 DownloadCancelled（用户取消，调用方需识别）。
     """
     try:
+        _raise_if_cancelled(cancel_cb)
         need_update = False
         if check_latest:
             cur = get_deno_current_version()
+            _raise_if_cancelled(cancel_cb)
             latest = get_deno_latest_version()
+            _raise_if_cancelled(cancel_cb)
             if cur and latest:
                 need_update = _normalize_version(cur) < _normalize_version(latest)
             elif cur:
@@ -620,15 +638,20 @@ def launch_ytdlp_updater(progress_cb=None, timeout: float = 300) -> tuple:
         if Path(result_path).is_file():
             try:
                 data = json.loads(Path(result_path).read_text(encoding="utf-8"))
-                yt = data.get("yt", {})
-                deno = data.get("deno", {})
-                return (yt.get("ok"), yt.get("status", "failed"),
-                        yt.get("error", ""),
-                        deno.get("ok"), deno.get("status", "failed"),
-                        deno.get("error", ""))
             except Exception:  # noqa: BLE001
                 return (False, "failed", "读取下载器结果失败",
                         False, "failed", "读取下载器结果失败")
+            # 读取成功后清理结果文件，避免程序目录累积 .ytdlp_updater_result_*.json
+            try:
+                Path(result_path).unlink(missing_ok=True)
+            except OSError:
+                pass
+            yt = data.get("yt", {})
+            deno = data.get("deno", {})
+            return (yt.get("ok"), yt.get("status", "failed"),
+                    yt.get("error", ""),
+                    deno.get("ok"), deno.get("status", "failed"),
+                    deno.get("error", ""))
         time.sleep(0.3)
     return (False, "failed", "等待下载器返回超时",
             False, "failed", "等待下载器返回超时")
