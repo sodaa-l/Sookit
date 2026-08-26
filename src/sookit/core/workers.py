@@ -316,8 +316,6 @@ class TaskWorker(QThread):
                     # ffmpeg 需要 total_duration，从 metadata 获取
                     total_duration = self.args[-1] if len(self.args) > 0 and isinstance(self.args[-1], (int, float)) else None
                     progress_data = ProgressParser.parse_ffmpeg_output(msg, total_duration)
-                elif self.task_type == TaskType.M3U8:
-                    progress_data = ProgressParser.parse_ytdlp_output(msg)
                 
                 if progress_data:
                     self.progress_signal.emit(progress_data)
@@ -329,8 +327,8 @@ class TaskWorker(QThread):
                 result = self.func(*self.args, log=log_with_progress,
                                    on_process_created=self._on_process_created,
                                    workspace=self.workspace)
-            elif self.task_type in (TaskType.FFMPEG, TaskType.M3U8):
-                # ffmpeg/m3u8 任务也需要保存进程句柄，取消时才能 taskkill 终止
+            elif self.task_type == TaskType.FFMPEG:
+                # ffmpeg 任务也需要保存进程句柄，取消时才能 taskkill 终止
                 result = self.func(*self.args, log=log_with_progress,
                                    on_process_created=self._on_process_created)
             else:

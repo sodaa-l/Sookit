@@ -387,19 +387,6 @@ class YtDlpTaskCard(TaskCardBase):
             self.cover_w.setText("封面加载失败")
 
 
-# ---------- m3u8 任务卡片 ----------
-
-class M3U8TaskCard(TaskCardBase):
-    """m3u8 任务卡片 - 显示下载图标"""
-    COVER_W = 270
-    COVER_H = 152
-
-    def _create_cover_widget(self):
-        self.cover_w = RoundedCoverWidget(self.COVER_W, self.COVER_H)
-        self.cover_w.setIcon(qfw.FluentIcon.DOWNLOAD)
-        return self.cover_w
-
-
 # ---------- ffmpeg 任务卡片（三级封面策略）----------
 
 class FfmpegTaskCard(TaskCardBase):
@@ -991,8 +978,6 @@ def create_task_card(task: Task) -> TaskCardBase:
     """根据任务类型创建对应的卡片"""
     if task.task_type == TaskType.YTDLP:
         return YtDlpTaskCard(task)
-    elif task.task_type == TaskType.M3U8:
-        return M3U8TaskCard(task)
     elif task.task_type == TaskType.FFMPEG:
         return FfmpegTaskCard(task)
     else:

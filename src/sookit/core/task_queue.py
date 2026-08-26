@@ -56,7 +56,6 @@ class TaskStatus(Enum):
 
 class TaskType(Enum):
     YTDLP = "ytdlp"      # yt-dlp 下载任务
-    M3U8 = "m3u8"        # m3u8 下载任务
     FFMPEG = "ffmpeg"    # ffmpeg 转码任务
 
 

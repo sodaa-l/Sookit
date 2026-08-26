@@ -9,8 +9,8 @@ import sys
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QFileDialog, \
     QApplication, QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView, \
     QSplitter, QLabel, QSizePolicy, QSystemTrayIcon
-from PyQt6.QtCore import Qt, QThread, QObject, pyqtSignal, pyqtSlot, QTimer, QRectF, QByteArray, QSize
-from PyQt6.QtGui import QFont, QTextCursor, QIcon, QPixmap, QPainter, QColor, QPainterPath
+from PyQt6.QtCore import Qt, QThread, QObject, pyqtSignal, pyqtSlot, QTimer, QByteArray, QSize
+from PyQt6.QtGui import QTextCursor, QIcon
 
 import qfluentwidgets as qfw
 from qfluentwidgets import FluentIcon as FIF, NavigationItemPosition, InfoBadge, InfoBadgePosition
@@ -37,7 +37,7 @@ from sookit.core.workers import Worker, MonitorWorker
 
 # ---------- 从 pages 导入所有页面类 ----------
 from sookit.pages import (
-    PageBase, MergePage, M3U8Page, XSpacePage, YouTubePage,
+    PageBase, YouTubePage,
     SubtitlePage, ReplaceAudioPage, ExtractAudioPage,
     MonitorPage, QueuePage, SettingsPage
 )
@@ -88,12 +88,6 @@ class MainWindow(qfw.FluentWindow):
         self.subtitle_page.setObjectName("subtitlePage")
         self.monitor_page = MonitorPage(self)
         self.monitor_page.setObjectName("monitorPage")
-        self.merge_page = MergePage(self)
-        self.merge_page.setObjectName("mergePage")
-        self.m3u8_page = M3U8Page(self)
-        self.m3u8_page.setObjectName("m3u8Page")
-        self.xspace_page = XSpacePage(self)
-        self.xspace_page.setObjectName("xspacePage")
         self.replace_page = ReplaceAudioPage(self)
         self.replace_page.setObjectName("replacePage")
         self.extract_page = ExtractAudioPage(self)
@@ -107,21 +101,6 @@ class MainWindow(qfw.FluentWindow):
         self.addSubInterface(self.youtube_page, FIF.PLAY, "YouTube 嗅探")
         self.addSubInterface(self.subtitle_page, FIF.FONT, "字幕烧录")
         self.addSubInterface(self.monitor_page, FIF.SYNC, "直播监控")
-        self.addSubInterface(self.merge_page, FIF.PHOTO, "图片+音频合并")
-        self.addSubInterface(self.m3u8_page, FIF.SAVE, "M3U8 下载")
-        # X 图标——大画布+大字号绘制 𝕏，导航栏缩放后依然清晰
-        self._x_icon_pixmap = QPixmap(128, 128)
-        self._x_icon_pixmap.fill(Qt.GlobalColor.transparent)
-        p = QPainter(self._x_icon_pixmap)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        p.setRenderHint(QPainter.RenderHint.TextAntialiasing)
-        font = QFont("Segoe UI Symbol", 100)
-        p.setFont(font)
-        icon_color = Qt.GlobalColor.white if qfw.isDarkTheme() else Qt.GlobalColor.black
-        p.setPen(icon_color)
-        p.drawText(QRectF(0, 0, 128, 128), Qt.AlignmentFlag.AlignCenter, "𝕏")
-        p.end()
-        self.addSubInterface(self.xspace_page, QIcon(self._x_icon_pixmap), "X Space 下载")
         self.addSubInterface(self.replace_page, FIF.MUSIC, "音频覆盖")
         self.addSubInterface(self.extract_page, FIF.HEADPHONE, "音频提取")
         # 侧边栏底部
@@ -225,7 +204,7 @@ class MainWindow(qfw.FluentWindow):
             except Exception:
                 pass
             self._ytdlp_warning_bar = None
-        for page in (self.youtube_page, self.monitor_page, self.xspace_page):
+        for page in (self.youtube_page, self.monitor_page):
             if page is not None and hasattr(page, "refresh_ytdlp_status"):
                 try:
                     page.refresh_ytdlp_status()

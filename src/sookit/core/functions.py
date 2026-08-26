@@ -156,87 +156,6 @@ class FormatType:
 
 class Functions:
     @staticmethod
-    def merge_image_audio(image, audio, output, audio_mode='copy', log=None,
-                          on_process_created=None):
-        if audio_mode == 'transcode':
-            ac = ['-af', 'aresample=resampler=soxr', '-ar', '48000', '-c:a', 'flac', '-sample_fmt', 's32']
-        else:
-            ac = ['-c:a', 'copy']
-        ffmpeg = get_ffmpeg_path()
-        if not os.path.exists(ffmpeg):
-            ffmpeg = "ffmpeg"
-        cmd = [ffmpeg, '-loglevel', 'info', '-y', '-loop', '1', '-i', image,
-               '-i', audio, '-vf', 'scale=trunc(iw/2)*2:trunc(ih/2)*2',
-               '-c:v', 'libx264', '-tune', 'stillimage'] + ac + [
-               '-pix_fmt', 'yuv420p', '-shortest', output]
-        return run_ffmpeg(cmd, log, None, on_process_created)
-
-    @staticmethod
-    def batch_merge_image_audio(image_source, audio_dir, output_dir, audio_mode='copy',
-                                log=None, on_process_created=None):
-        image_source = sanitize_path(image_source)
-        audio_dir = sanitize_path(audio_dir)
-        output_dir = sanitize_path(output_dir)
-
-        if not os.path.exists(audio_dir):
-            raise FileNotFoundError(f"音频目录不存在: {audio_dir}")
-
-        audio_files = [f for f in os.listdir(audio_dir)
-                      if f.lower().endswith(('.mp3', '.wav', '.flac', '.aac'))]
-        if not audio_files:
-            raise ValueError("音频目录中没有支持的格式文件")
-
-        use_single_image = os.path.isfile(image_source)
-        if not use_single_image and not os.path.isdir(image_source):
-            raise FileNotFoundError(f"图片来源不存在: {image_source}")
-
-        if not use_single_image:
-            images_map = {}
-            for f in os.listdir(image_source):
-                if f.lower().endswith(('.jpg', '.jpeg', '.png')):
-                    images_map[os.path.splitext(f)[0]] = f
-
-        os.makedirs(output_dir, exist_ok=True)
-        success = 0
-        total = len(audio_files)
-
-        for idx, audio_file in enumerate(audio_files, 1):
-            audio_base = os.path.splitext(audio_file)[0]
-            try:
-                if use_single_image:
-                    img_path = image_source
-                else:
-                    if audio_base not in images_map:
-                        if log: log(f"[{idx}/{total}] ⏭ {audio_file}: 无匹配图片，跳过")
-                        continue
-                    img_path = os.path.join(image_source, images_map[audio_base])
-
-                output_path = os.path.join(output_dir, f"{audio_base}.mkv")
-                if log: log(f"[{idx}/{total}] ▶ {audio_file}...")
-                Functions.merge_image_audio(img_path, os.path.join(audio_dir, audio_file),
-                                           output_path, audio_mode, log=log,
-                                           on_process_created=on_process_created)
-                success += 1
-                if log: log(f"[{idx}/{total}] ✓ {audio_file} 完成")
-            except Exception as e:
-                if log: log(f"[{idx}/{total}] ✗ {audio_file}: {e}")
-
-        if log: log(f"批量处理完成: {success}/{total}")
-        if success == 0:
-            raise RuntimeError("所有音频文件处理失败，请检查文件格式和路径")
-        return True
-
-    @staticmethod
-    def m3u8_to_aac(input_url, output, bitrate='320k', log=None,
-                    on_process_created=None):
-        ffmpeg = get_ffmpeg_path()
-        if not os.path.exists(ffmpeg):
-            ffmpeg = "ffmpeg"
-        cmd = [ffmpeg, '-i', input_url, '-c:a', 'aac', '-b:a', bitrate,
-               '-vn', '-y', '-loglevel', 'error', '-stats', output]
-        return run_ffmpeg(cmd, log, None, on_process_created)
-
-    @staticmethod
     def burn_subtitles(video, subtitle, output, encoder='software', log=None,
                        on_process_created=None):
         """烧录字幕到视频 - 通过切换工作目录规避驱动器冒号分隔符问题"""
@@ -487,18 +406,3 @@ class Functions:
             return True
         except Exception as e:
             raise RuntimeError(f"封面下载失败: {e}")
-
-    @staticmethod
-    def download_xspace(url, output_dir, audio_format='m4a', log=None,
-                        process_ref=None, on_process_created=None,
-                        workspace=None):
-        # workspace 非空时输出到独立临时目录（完成后由 Sookit 移动到 output_dir）
-        out = workspace or output_dir
-        output_template = os.path.join(out, '%(title)s.%(ext)s')
-        cmd = build_ytdlp_cmd('-f', 'bestaudio', '--extract-audio',
-                              '--audio-format', audio_format,
-                              '-o', output_template, '--newline', '--no-overwrites', url)
-        if not log:
-            cmd.append('-q')
-        if log: log(f"运行: {' '.join(cmd)}")
-        return run_ytdlp(cmd, log, process_ref, on_process_created)
