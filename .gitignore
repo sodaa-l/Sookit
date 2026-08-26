@@ -26,6 +26,10 @@ new_feature.txt
 # CodeBuddy 项目数据（工作记忆、计划文档等）
 .codebuddy/
 
+# IDE 本地配置与 AI 辅助文件（工具生成，不入库）
+.vscode/
+CODEBUDDY.md
+
 # 调试截图
 让这个箱子居中*.jpeg
 
