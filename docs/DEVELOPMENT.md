@@ -16,7 +16,7 @@ src/sookit/        代码包 (标准 src 布局)
     │
     ├─ assets/            静态资源 (960x960.png 应用图标)
     │
-    ├─ pages/          UI 页面层 (10 个页面)
+    ├─ pages/          UI 页面层 (7 个页面)
     │   └─ base.py     PageBase 基类 — 拖放、run_queued_task、自动关机
     │
     ├─ core/           业务逻辑层
@@ -32,7 +32,7 @@ src/sookit/        代码包 (标准 src 布局)
     │
     └─ widgets/        可复用 UI 组件层
         ├─ cover_image.py   封面自绘控件
-        └─ task_card.py     任务卡片 (3 种类型 + 工厂函数 + 封面三级加载)
+        └─ task_card.py     任务卡片 (2 种类型 + 工厂函数 + 封面三级加载)
 
 运行时数据 (不在项目根，见 paths.py)：
     %APPDATA%\Sookit\           config.json、completed_tasks.json、active_workspaces.json、updates/
@@ -48,11 +48,11 @@ flowchart TB
         A1 -->|单实例互斥体| A0["Local\\Sookit (ctypes CreateMutexW)"]
         A1 -->|检查依赖| A2[PyQt6 / qfluentwidgets]
         A1 -->|创建主窗口| A3[MainWindow]
-        A3 -->|注册导航| A4["10个UI页面"]
+        A3 -->|注册导航| A4["7个UI页面"]
     end
 
     subgraph UI["UI组件层"]
-        B1["pages/ (10个页面)"] -->|继承| B2[PageBase]
+        B1["pages/ (7个页面)"] -->|继承| B2[PageBase]
         B3["widgets/ (自定义控件)"] --> B1
         B2 -->|run_queued_task| B4[TaskQueueManager]
     end
@@ -108,21 +108,19 @@ flowchart TB
 
 | 方法 | 功能类型 | 依赖 |
 | --- | --- | --- |
-| `merge_image_audio(image, audio, output, audio_mode, log, on_process_created)` | 图片+音频合并 | ffmpeg |
-| `batch_merge_image_audio(...)` | 批量合并 | ffmpeg |
-| `m3u8_to_aac(input_url, output, bitrate, log, on_process_created)` | M3U8 下载 | ffmpeg |
 | `burn_subtitles(video, subtitle, output, encoder, log, on_process_created)` | 字幕烧录 | ffmpeg + libass |
 | `replace_audio(...)` | 音频覆盖 | ffmpeg |
 | `extract_audio(...)` | 音频提取 | ffmpeg |
-| `sniff_youtube(url, log)` | YouTube 格式嗅探 | yt-dlp |
-| `download_youtube(url, format_spec, output_dir, remote, ..., workspace=None)` | YouTube 下载 | yt-dlp (可选 aria2c) |
+| `sniff_youtube(url, log)` | 视频格式嗅探（通用，yt-dlp 支持的站点均可） | yt-dlp |
+| `download_youtube(url, format_spec, output_dir, remote, ..., workspace=None)` | 视频下载（通用） | yt-dlp (可选 aria2c) |
 | `check_live_status(url, log)` | 直播状态检测 | yt-dlp (降级 HTTP) |
 | `sniff_channel(url, log)` | 频道视频列表 | yt-dlp |
-| `download_xspace(url, output_dir, audio_format, ..., workspace=None)` | X Space 下载 | yt-dlp |
+
+> 注：`merge_image_audio` / `batch_merge_image_audio` / `m3u8_to_aac` / `download_xspace` 已随 M3U8 下载、X Space 下载、图片+音频合并三个功能移除（2026-08）。
 
 ### 页面 (`pages/`)
 
-所有页面继承 `PageBase(QWidget)`，通过 `run_queued_task()` 加入任务队列。10 个页面同上文架构总览，功能见旧表（未变化）。
+所有页面继承 `PageBase(QWidget)`，通过 `run_queued_task()` 加入任务队列。7 个页面：视频嗅探（youtube_page，文案已通用化但类名保留 YouTubePage）、直播监控、字幕烧录、音频覆盖、音频提取、任务队列、设置。
 
 ### 自定义组件 (`widgets/`)
 
@@ -193,9 +191,14 @@ Sookit 下载任务用 `taskkill /PID <launcher> /T /F` 递归终止整个进程
 yt-dlp/Deno 下载更新从 Sookit 解耦为独立 `updater.exe`：
 
 - Sookit 只查版本（`check_ytdlp_deno_update_needed`），需更新才 `launch_ytdlp_updater` 提权调起。
-- 通信：Sookit 生成 result_path → runas 启动 `updater.exe --ytdlp-updater-gui <result_path>` → updater 写结果 JSON → Sookit 轮询。
+- 通信：Sookit 生成 result_path → runas 启动 `updater.exe --ytdlp-updater-gui <result_path>` → updater 写结果 JSON → Sookit 轮询（**读取成功后删除结果文件**，避免程序目录累积 `.ytdlp_updater_result_*.json`）。
 - aria2c 设置自动跟随（复用 `download_ytdlp`/`download_deno`）。
-- updater 取消/关闭：方向 A（`_download_file_with_aria2c` 用 reader 线程 + `queue.get(timeout=0.2)` 非阻塞读 stdout，取消不被 read 阻塞）+ 方向 B（`_on_cancel` 的 `thread.wait(15000)` 超时后仍运行才 `force_terminate()`，再 `wait(5000)` 确认 aria2c 退出才 `_finish()`，避免孤儿）。
+- updater 取消/关闭（2026-08 重构为非阻塞）：
+  - `_download_file_with_aria2c` 用 reader 线程 + `queue.get(timeout=0.2)` 非阻塞读 stdout，取消不被 read 阻塞；
+  - `_on_cancel` **不阻塞 GUI 线程**：设标志 + 显示"正在取消"后立即返回，`QTimer` 每 100ms 轮询线程状态（`_poll_cancel`）；
+  - 超时兜底（20s）：先 `force_terminate()` 杀 aria2c 进程树 → `wait(5000)` → **done 信号的真实结果优先**于硬编码 cancelled（解决"取消瞬间下载恰好完成、文件已被替换"竞态）→ 确实卡死才写 cancelled 关窗；
+  - `closeEvent` 未完成时 `ignore()` + `hide()`，后台写完结果文件再退出（Sookit 不会空等超时）；
+  - 取消确认后直接关窗，不显示"已取消"文字（停留时间太短无可读性）。
 - `_DownloadWorker` 通过 `on_proc=self.set_proc` 记录当前 aria2c Popen；`force_terminate` 先 terminate，仍存活则 `taskkill /PID <specific_pid> /T /F`（不按进程名全局杀）。
 
 ### 11. 版本检查走 releases 重定向
@@ -213,6 +216,14 @@ yt-dlp/Deno 下载更新从 Sookit 解耦为独立 `updater.exe`：
 ### 13. 关闭 Sookit 确认
 
 `closeEvent` 有 RUNNING 任务时弹 `qfw.Dialog`「关闭 Sookit 会停止正在进行的任务，是否关闭？」（yesButton「关闭」/cancelButton「取消」），确认后 `quit_app` → `cancel_all()`（默认 `delete_part=True`，终止进程树 + 删各任务 workspace）。
+
+### 14. 导航栏展开宽度
+
+`MainWindow.__init__` 中 `self.navigationInterface.panel.setExpandWidth(250)`（qfluentwidgets 默认 322px 偏宽）。该 API 会同步更新 `NavigationWidget.EXPAND_WIDTH`（条目宽度）；折叠态固定 48px 不可调；`setMinimumExpandWidth`（默认 1008px）控制窗口多宽时面板自动保持展开。
+
+### 15. 功能裁剪记录（2026-08）
+
+移除 M3U8 下载、X Space 下载、图片+音频合并三个功能（页面 + Functions 方法 + `TaskType.M3U8` + `M3U8TaskCard`）。理由：均可被 yt-dlp 链路替代（X Space 页纯为 yt-dlp flag 包装；M3U8 裸 ffmpeg 无重试/续传/Headers）。旧 `completed_tasks.json` 中 `task_type="m3u8"` 记录在 `_load_completed_tasks` 的 try/except 中被安全跳过。未来若需"仅音频下载"，给 `download_youtube` 加可选 `-x --audio-format` 后处理即可覆盖。
 
 ## AI 编码约定
 
@@ -257,8 +268,17 @@ class MyNewPage(PageBase):
 - `run_ytdlp(cmd, log, process_ref=None, on_process_created=None, on_path=None)`：
   - 内部加 `--encoding utf-8`（强制 yt-dlp 输出 UTF-8，避免中文路径乱码）和 `--print-to-file after_move:filepath`。
   - **返回值是列表**：按行收集多个最终输出路径（支持 `-f '137,140'` 多文件）。
-  - 签名保留 `on_path`，但 `download_youtube`/`download_xspace` 当前**不传** on_path（output_files 靠 `--print-to-file` 返回列表）。
+  - 签名保留 `on_path`，但 `download_youtube` 当前**不传** on_path（output_files 靠 `--print-to-file` 返回列表）。
 - `ytdlp_utils._download_file_with_aria2c` 用**reader 线程 + queue.get(timeout=0.2)** 非阻塞读 stdout（取消不被 read 阻塞），`on_proc(proc)` 暴露 aria2c。
+
+### 下载取消检查点（重要）
+
+所有可取消的下载流程（`download_ytdlp`/`download_deno`/`_download_file`）通过 `_raise_if_cancelled(cancel_cb)` 在**各阶段之间**插入检查点：
+
+- 函数入口、本地版本查询后、最新版查询后、启动下载进程前各一个；
+- 消除"版本检查阶段"的取消盲区（网络超时 20s + `--version` 子进程 20s，两个组件最坏 ~60s 内取消无响应）；
+- `_download_file` 入口检查点保证取消后**不会启动新的 aria2c/urllib 进程**；
+- `_version_from_latest_url` 超时 20s（国内直连 GitHub TLS 握手偶发超 10s，过短会误判"已最新"静默跳过更新）。
 
 ### metadata 结构约定
 
