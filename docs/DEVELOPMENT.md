@@ -306,7 +306,43 @@ from sookit.pages.base import PageBase
 
 - **给 subprocess 命令插参数**：必须插在可执行路径 `cmd[0]` **之后**（`cmd_list[:1] + [...] + cmd_list[1:]`），否则 Popen 把参数当程序名。
 - **修改 Task/Workspace**：新增下载任务时确认 Task 有 `output_dir`/`workspace`/`output_files`，workspace 由 TaskQueueManager 管理，Worker 不拥有。
-- **版本号**：升版三处同步（`__init__.py` APP_VERSION、`pyproject.toml` version、`installer.iss` MyAppVersion）。
+- **版本号**：升版三处同步（`__init__.py` APP_VERSION、`pyproject.toml` version、`installer.iss` MyAppVersion），详见[打包与发布](#打包与发布)。
+
+## 打包与发布
+
+### 版本号规范
+
+格式 `YYMMDD.N`（如 `260827.1`）：日期 + 当天递增序号（当天首个版本 N=1）。升版时**三处同步**：
+
+| 文件 | 字段 | 示例 |
+| --- | --- | --- |
+| `src/sookit/__init__.py` | `APP_VERSION`（带 `build.` 前缀） | `"build.260827.1"` |
+| `pyproject.toml` | `[project] version` | `"260827.1"` |
+| `packaging/installer.iss` | `#define MyAppVersion` | `"260827.1"` |
+
+### 打包流程
+
+```bash
+# 1. PyInstaller onedir 构建（Sookit.exe 与 updater.exe 共享同一 _internal，避免体积翻倍）
+uv run pyinstaller --noconfirm packaging/sookit.spec
+
+# 2. 复制外部工具到产物目录（排除 yt-dlp/ —— yt-dlp/Deno 不随安装包分发，
+#    装后首次点「下载/更新」由 updater.exe 提权下载到程序目录 tools/yt-dlp）
+mkdir -p dist/Sookit/tools && cp -r tools/aria2c tools/ffmpeg dist/Sookit/tools/
+
+# 3. Inno Setup 编译安装包（scoop 安装的 ISCC 经 shims 调用）
+/d/scoop/shims/ISCC.exe packaging/installer.iss
+```
+
+产物：`dist/Sookit-Setup-<版本>.exe`（安装包）；`dist/Sookit/`（onedir 目录，可先直接运行验证再编译安装器）。
+
+### 安装器行为要点（installer.iss）
+
+- 仅简体中文界面（`ChineseSimplified.isl` 已入库，来自官方 issrc 仓库 `Files/Languages/`）。
+- 默认安装到 `{autopf}\Sookit`；**父路径可自选，末级目录强制为 Sookit**：`[Code] NextButtonClick(wpSelectDir)` 检测所选目录最后一级非 Sookit 时自动追加 `\Sookit`（如 `D:\Apps` → `D:\Apps\Sookit`，盘符根 `D:\` → `D:\Sookit`；不区分大小写、不会重复追加）。限制：静默安装 `/VERYSILENT /DIR=` 不显示向导页，不走该回调，无法校验。
+- `AppMutex=Local\Sookit`：安装/卸载时检测 Sookit 是否在运行，弹窗询问（不自动关闭）。
+- 卸载删除整个 `{app}`（含 updater 运行时产物 `tools\yt-dlp`）及 `%APPDATA%\Sookit`、`%LOCALAPPDATA%\Sookit` 用户数据。
+- ISCC 编译时的 `PrivilegesRequired=admin + per-user areas` 警告为已知行为：多账户场景下若用另一管理员凭据提权，`{userappdata}`/`{localappdata}` 会解析到提权账户而非实际使用者（仅数据残留，不影响功能）；单管理员场景无影响，维持现状不加 `UsedUserAreasWarning=no` 压制。
 
 ## 已知踩坑备忘录
 

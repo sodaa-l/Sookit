@@ -1,9 +1,9 @@
 ; Sookit Inno Setup 安装脚本
 ; 用法: ISCC.exe packaging/installer.iss
-; 安装目录: Program Files\Sookit；运行时数据在 %APPDATA%/%LOCALAPPDATA%；yt-dlp 自动下载到 %LOCALAPPDATA%
+; 安装目录: 默认 Program Files\Sookit；父路径可自选，末级目录强制为 Sookit（见 [Code] 自动补全）；运行时数据在 %APPDATA%/%LOCALAPPDATA%；yt-dlp 自动下载到 %LOCALAPPDATA%
 
 #define MyAppName "Sookit"
-#define MyAppVersion "260816.8"
+#define MyAppVersion "260827.1"
 #define MyAppPublisher "sodaa-l"
 #define MyAppExeName "Sookit.exe"
 #define MyAppId "{{F3A8B7C2-5E4D-4A2B-9C1E-8B7D6A5F4E3D}"
@@ -59,3 +59,21 @@ Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChang
 Type: filesandordirs; Name: "{app}"
 Type: filesandordirs; Name: "{userappdata}\{#MyAppName}"
 Type: filesandordirs; Name: "{localappdata}\{#MyAppName}"
+
+; 强制安装目录末级为 Sookit：父路径可自选，若用户所选目录的最后一级不是 Sookit，
+; 点「下一步」时自动追加 \Sookit（如 D:\Apps → D:\Apps\Sookit，D:\ → D:\Sookit）。
+; 已以 Sookit 结尾（不区分大小写）则原样保留，不会重复追加。
+; 注意：静默安装（/VERYSILENT /DIR=...）不显示向导页，不走该回调，无法校验。
+[Code]
+function NextButtonClick(CurPageID: Integer): Boolean;
+var
+  Dir: string;
+begin
+  Result := True;
+  if CurPageID = wpSelectDir then
+  begin
+    Dir := RemoveBackslashUnlessRoot(WizardDirValue());
+    if CompareText(ExtractFileName(Dir), 'Sookit') <> 0 then
+      WizardForm.DirEdit.Text := AddBackslash(Dir) + 'Sookit';
+  end;
+end;
