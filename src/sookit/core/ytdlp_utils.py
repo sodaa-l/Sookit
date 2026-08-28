@@ -644,6 +644,11 @@ def launch_ytdlp_updater(progress_cb=None, timeout: float = 300) -> tuple:
             try:
                 data = json.loads(Path(result_path).read_text(encoding="utf-8"))
             except Exception:  # noqa: BLE001
+                # 坏结果文件同样要清理，避免 tools/ 下累积 .ytdlp_updater_result_*.json
+                try:
+                    Path(result_path).unlink(missing_ok=True)
+                except OSError:
+                    pass
                 return (False, "failed", "读取下载器结果失败",
                         False, "failed", "读取下载器结果失败")
             # 读取成功后清理结果文件，避免程序目录累积 .ytdlp_updater_result_*.json

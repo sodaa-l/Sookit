@@ -685,8 +685,10 @@ class SettingsPage(QWidget):
         self.yt_btn.setEnabled(True)
         self.yt_btn.setText("下载/更新")
 
-        # 组装各组件状态描述
+        # 组装各组件状态描述（用户主动取消不算失败，中性显示「已取消」）
         def _comp_state(name, ok, status):
+            if status == "cancelled":
+                return f"{name} 已取消"
             if not ok:
                 return f"{name} 失败"
             return f"{name} 已更新" if status == "updated" else f"{name} 已最新"
@@ -695,7 +697,10 @@ class SettingsPage(QWidget):
         deno_state = _comp_state("Deno", deno_ok, deno_status)
         any_updated = (yt_ok and yt_status == "updated") or (deno_ok and deno_status == "updated")
         all_up_to_date = (yt_ok and yt_status == "up_to_date") and (deno_ok and deno_status == "up_to_date")
-        any_failed = not yt_ok or not deno_ok
+        # 真失败 = 非取消的未成功；用户主动取消走中性「已取消」提示而非红色错误条
+        any_failed = any((not ok) and status != "cancelled"
+                         for ok, status in ((yt_ok, yt_status), (deno_ok, deno_status)))
+        all_cancelled = yt_status == "cancelled" and deno_status == "cancelled"
 
         if all_up_to_date:
             # 两者都已最新
@@ -709,6 +714,11 @@ class SettingsPage(QWidget):
                                  content=f"yt-dlp: {yt_state}\nDeno: {deno_state}"
                                          + (f"\n\nyt-dlp 错误: {yt_err}" if not yt_ok else "")
                                          + (f"\nDeno 错误: {deno_err}" if not deno_ok else ""))
+        elif all_cancelled:
+            # 全部组件均为用户取消：中性提示，不算失败
+            self.yt_label.setText("yt-dlp / Deno  —  已取消")
+            show_infobar(self, "info", title="已取消",
+                         content="本次更新已取消，可随时重新发起", duration=5000)
         elif any_updated:
             show_infobar(self, "success", title="完成",
                          content=f"{yt_state}；{deno_state}", duration=5000)
