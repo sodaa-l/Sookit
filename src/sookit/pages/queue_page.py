@@ -12,6 +12,7 @@ import qfluentwidgets as qfw
 from sookit.core.task_queue import TaskQueueManager, Task, TaskStatus
 from sookit.widgets.task_card import create_task_card, TaskCardBase, CompletedThumbnailCard
 from sookit.pages.base import PageBase
+from sookit.widgets.infobar import show_infobar
 from sookit.core.utils import get_scrollbar_style
 
 
@@ -166,11 +167,7 @@ class QueuePage(PageBase):
         # content 可能较长，截断显示
         if len(content) > 200:
             content = content[:200] + "…"
-        qfw.InfoBar.error(
-            parent=self, title=title,
-            content=content,
-            orient=Qt.Orientation.Horizontal,
-            isClosable=True, duration=-1)
+        show_infobar(self, "error", title=title, content=content)
     
     def _on_task_removed(self, task_id: str):
         """任务移除（取消 / 删除已完成）"""

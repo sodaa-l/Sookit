@@ -21,6 +21,7 @@ from sookit.core.functions import (
     load_download_config, DEFAULT_OUTPUT_DIR, ensure_output_dir
 )
 from sookit.widgets.cover_image import CoverImageWidget
+from sookit.widgets.infobar import show_infobar
 from sookit.pages.base import PageBase
 from sookit.core.task_queue import TaskType
 from sookit.core.utils import get_certifi_ssl_context
@@ -57,11 +58,8 @@ class YouTubePage(PageBase):
 
         # 检查 yt-dlp 可用性（PATH 全局或内置 tools/ 均可）
         if not is_ytdlp_available():
-            self._ytdlp_warning_bar = qfw.InfoBar.warning(
-                parent=self, title="依赖缺失",
-                content="未找到 yt-dlp，嗅探功能不可用。请前往设置页下载安装",
-                orient=Qt.Orientation.Horizontal, isClosable=True, duration=-1
-            )
+            self._ytdlp_warning_bar = show_infobar(self, "warning", title="依赖缺失",
+                                                   content="未找到 yt-dlp，嗅探功能不可用。请前往设置页下载安装")
             self.add_goto_settings_button(self._ytdlp_warning_bar)
 
         # ---- URL 输入行 ----
@@ -204,19 +202,14 @@ class YouTubePage(PageBase):
         content = task.error or "任务执行失败，请查看日志"
         if len(content) > 200:
             content = content[:200] + "…"
-        qfw.InfoBar.error(
-            parent=self, title=title,
-            content=content,
-            orient=Qt.Orientation.Horizontal,
-            isClosable=True, duration=-1)
+        show_infobar(self, "error", title=title, content=content)
 
     # -------- 嗅探 --------
     def do_sniff(self):
         url = self.url_input.text().strip()
         if not url:
-            qfw.InfoBar.warning(
-                parent=self, title="提示", content="请先输入 YouTube 链接",
-                orient=Qt.Orientation.Horizontal, isClosable=True, duration=3000)
+            show_infobar(self, "warning", title="提示", content="请先输入 YouTube 链接",
+                         duration=3000)
             return
         # 切换按钮：隐藏蓝色嗅探，显示灰色停止嗅探
         self.sniff_btn.setVisible(False)
@@ -260,9 +253,8 @@ class YouTubePage(PageBase):
             self._sniff_worker.wait(1000)
             self._reset_sniff_btn()
             self.log("嗅探已停止")
-            qfw.InfoBar.info(
-                parent=self, title="已停止", content="嗅探已停止",
-                orient=Qt.Orientation.Horizontal, isClosable=True, duration=3000)
+            show_infobar(self, "info", title="已停止", content="嗅探已停止",
+                         duration=3000)
 
     def _reset_sniff_btn(self):
         # 切换按钮：显示蓝色嗅探，隐藏灰色停止嗅探
@@ -300,12 +292,8 @@ class YouTubePage(PageBase):
             self._formats_data = []
             self.format_table.setRowCount(0)
             self.log("该视频暂无可用下载格式，但仍可下载封面")
-            qfw.InfoBar.info(
-                parent=self, title="提示",
-                content="暂无可用下载格式，但仍可下载封面",
-                orient=Qt.Orientation.Horizontal,
-                isClosable=True, duration=4000
-            )
+            show_infobar(self, "info", title="提示",
+                         content="暂无可用下载格式，但仍可下载封面", duration=4000)
             return
 
         sorted_fmts = sorted(fmts, key=self._format_sort_key)
@@ -336,12 +324,8 @@ class YouTubePage(PageBase):
         self._fix_format_table_columns()
 
         self.log(f"嗅探完成，共 {len(fmts)} 个格式")
-        qfw.InfoBar.success(
-            parent=self, title="完成",
-            content=f"找到 {len(fmts)} 个可用格式",
-            orient=Qt.Orientation.Horizontal,
-            isClosable=True, duration=3000
-        )
+        show_infobar(self, "success", title="完成",
+                     content=f"找到 {len(fmts)} 个可用格式", duration=3000)
 
     @staticmethod
     def _parse_quality_value(q: str) -> int:
@@ -401,9 +385,7 @@ class YouTubePage(PageBase):
         if self._sniff_video_id and not self.cover_label._pixmap:
             self._load_cover_image(self._sniff_video_id)
             self.log("已从 URL 提取封面选项，可尝试下载封面")
-            qfw.InfoBar.error(
-                parent=self, title="嗅探失败", content=err_msg,
-                orient=Qt.Orientation.Horizontal, isClosable=True)
+            show_infobar(self, "error", title="嗅探失败", content=err_msg)
 
     def _sniff_timeout(self):
         if self._sniff_worker and self._sniff_worker.isRunning():
@@ -415,9 +397,7 @@ class YouTubePage(PageBase):
                 self._sniff_worker.terminate()
             self._reset_sniff_btn()
             self.log("嗅探超时（60秒），请检查网络或链接是否有效")
-            qfw.InfoBar.error(
-                parent=self, title="超时", content="嗅探超时，请检查网络或链接",
-                orient=Qt.Orientation.Horizontal, isClosable=True)
+            show_infobar(self, "error", title="超时", content="嗅探超时，请检查网络或链接")
 
     # -------- 封面加载（异步下载并在左侧显示）--------
     def _load_cover_image(self, video_id):
@@ -510,17 +490,15 @@ class YouTubePage(PageBase):
     def _download_cover(self):
         video_id = self._sniff_video_id or extract_youtube_id(self.url_input.text().strip())
         if not video_id:
-            qfw.InfoBar.warning(
-                parent=self, title="提示", content="该链接不支持封面获取",
-                orient=Qt.Orientation.Horizontal, isClosable=True, duration=3000)
+            show_infobar(self, "warning", title="提示", content="该链接不支持封面获取",
+                         duration=3000)
             return
 
         idx = self.cover_combo.currentIndex()
         thumbs = build_thumbnails(video_id)
         if idx < 0 or idx >= len(thumbs):
-            qfw.InfoBar.warning(
-                parent=self, title="提示", content="请先选择一个封面分辨率",
-                orient=Qt.Orientation.Horizontal, isClosable=True, duration=3000)
+            show_infobar(self, "warning", title="提示", content="请先选择一个封面分辨率",
+                         duration=3000)
             return
         cover_url = thumbs[idx]['url']
 
@@ -552,25 +530,19 @@ class YouTubePage(PageBase):
         self._cover_download_worker = worker  # 保存引用防止 GC
         worker.start()
         self.log(f"▶ 开始下载封面: {filename}")
-        qfw.InfoBar.info(
-            parent=self, title="开始下载封面",
-            content=f"保存到: {filename}",
-            orient=Qt.Orientation.Horizontal, isClosable=True, duration=3000)
+        show_infobar(self, "info", title="开始下载封面",
+                     content=f"保存到: {filename}", duration=3000)
 
     def _on_cover_download_done(self, success, path):
         """封面下载完成回调"""
         if success:
             self.log(f"✓ 封面下载完成: {path}")
-            qfw.InfoBar.success(
-                parent=self, title="封面下载完成",
-                content=f"已保存到: {os.path.basename(path)}",
-                orient=Qt.Orientation.Horizontal, isClosable=True, duration=3000)
+            show_infobar(self, "success", title="封面下载完成",
+                         content=f"已保存到: {os.path.basename(path)}", duration=3000)
         else:
             self.log("✗ 封面下载失败")
-            qfw.InfoBar.error(
-                parent=self, title="封面下载失败",
-                content="请检查网络连接或链接是否有效",
-                orient=Qt.Orientation.Horizontal, isClosable=True)
+            show_infobar(self, "error", title="封面下载失败",
+                         content="请检查网络连接或链接是否有效")
 
     # -------- 固定表格列宽 --------
     def _fix_format_table_columns(self):
@@ -594,9 +566,8 @@ class YouTubePage(PageBase):
                         checked_audio.append(fmt['format_id'])
 
         if not checked:
-            qfw.InfoBar.warning(
-                parent=self, title="提示", content="请至少勾选一个格式",
-                orient=Qt.Orientation.Horizontal, isClosable=True, duration=3000)
+            show_infobar(self, "warning", title="提示", content="请至少勾选一个格式",
+                         duration=3000)
             return
 
         # 仅视频+仅音频各一个 → TeachingTip 询问是否合并
@@ -695,4 +666,4 @@ class YouTubePage(PageBase):
             title=self._sniff_title or f"视频下载 - {video_id}",
             metadata=metadata
         )
-        qfw.InfoBar.info(parent=self, title="任务已加入队列", content="", duration=3000)
+        show_infobar(self, "info", title="任务已加入队列", content="", duration=3000)

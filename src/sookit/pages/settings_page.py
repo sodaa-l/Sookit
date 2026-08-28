@@ -23,6 +23,7 @@ from sookit.core.functions import (
 )
 from sookit.core.utils import get_scrollbar_style, get_certifi_ssl_context
 from sookit import APP_NAME, APP_VERSION
+from sookit.widgets.infobar import show_infobar
 
 
 class SettingsPage(QWidget):
@@ -248,7 +249,7 @@ class SettingsPage(QWidget):
     def _connect_signals(self):
         self.theme_combo.currentIndexChanged.connect(self._on_theme_changed)
         self.color_menu.triggered.connect(self._on_color_changed)
-        self.yt_btn.clicked.connect(self._update_ytdlp)
+        self.yt_btn.clicked.connect(lambda: self._update_ytdlp())
         # 下载设置信号连接
         self.fragments_combo.currentIndexChanged.connect(self._on_download_setting_changed)
         self.aria2c_switch.checkedChanged.connect(self._on_download_setting_changed)
@@ -321,10 +322,8 @@ class SettingsPage(QWidget):
             finally:
                 self.check_update_btn.setEnabled(True)
         else:
-            qfw.InfoBar.info(parent=self, title="提示",
-                             content="未找到主窗口，无法检查更新",
-                             orient=Qt.Orientation.Horizontal,
-                             isClosable=True, duration=5000)
+            show_infobar(self, "info", title="提示",
+                         content="未找到主窗口，无法检查更新", duration=5000)
 
     @staticmethod
     def _parse_ytdlp_version(text: str) -> str:
@@ -550,51 +549,109 @@ class SettingsPage(QWidget):
             dialog.yesButton.setText("更新")
             dialog.cancelButton.setText("取消")
             if dialog.exec():
-                self._update_ytdlp()
+                self._update_ytdlp(skip_check=True)  # 已确认有新版本，跳过检查态直接更新
 
-    def _update_ytdlp(self):
+    def _update_ytdlp(self, skip_check: bool = False):
         """按来源三分支处理下载/更新：
         - path → 仅提示自行更新
-        - tools → 自动重新下载最新版覆盖
-        - None  → 下载安装到 tools/yt-dlp/（含 Deno 运行时）
+        - tools → 先「检查中」查新版本（skip_check=True 时跳过，如自动更新路径已确认有新版），
+                  确需更新才切「更新中」提权下载；查询失败如实弹错误并引导手动更新
+        - None  → 未安装，直接「安装中」提权下载到 tools/yt-dlp/（含 Deno 运行时）
         """
         source = get_ytdlp_source()
         if source == "path":
-            qfw.InfoBar.info(parent=self, title="提示",
-                             content="检测到 PATH 中的全局 yt-dlp，请自行更新",
-                             orient=Qt.Orientation.Horizontal,
-                             isClosable=True, duration=6000)
+            show_infobar(self, "info", title="提示",
+                         content="检测到 PATH 中的全局 yt-dlp，请自行更新",
+                         duration=6000)
             return
 
         action = "更新" if source == "tools" else "安装"
         self.yt_btn.setEnabled(False)
-        self.yt_btn.setText("下载中…")
-        self.yt_label.setText(f"正在{action} yt-dlp…")
+        if source == "tools" and not skip_check:
+            # 检查态：先普通权限查新版本，确需更新才提权下载
+            self.yt_btn.setText("检查中…")
+            self.yt_label.setText("yt-dlp  —  正在检查新版本…")
+            if self._update_progress:
+                self._update_progress.close()
+            self._update_progress = show_infobar(
+                self, "info", title="检查中",
+                content="正在检查 yt-dlp（含 Deno 运行时）的新版本…", closable=False)
+            self._start_check()
+        else:
+            # 未安装 / 已确认有新版本：直接进入下载态
+            self.yt_btn.setText("下载中…")
+            self.yt_label.setText(f"正在{action} yt-dlp…")
+            if self._update_progress:
+                self._update_progress.close()
+            self._update_progress = show_infobar(
+                self, "info", title=f"{action}中",
+                content=f"正在{action} yt-dlp（含 Deno 运行时）…", closable=False)
+            self._start_download()
+
+    def _start_check(self):
+        """后台线程检查 yt-dlp/Deno 是否需要更新（普通权限，不下载）"""
+        class _YtdlpCheckWorker(QObject):
+            done = pyqtSignal(object)
+            def run(s):
+                try:
+                    s.done.emit(check_ytdlp_deno_update_needed())
+                except Exception as e:  # noqa: BLE001 极端异常同样按查询失败处理
+                    s.done.emit((False, "check_failed", str(e),
+                                 False, "check_failed", str(e)))
+
+        thread = QThread(self)
+        w = _YtdlpCheckWorker()
+        w.moveToThread(thread)
+        thread.started.connect(w.run)
+        w.done.connect(self._on_check_done)
+        w.done.connect(thread.quit)
+        w.done.connect(w.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.start()
+        self._update_worker = w
+        self._update_thread = thread
+
+    @pyqtSlot(object)
+    def _on_check_done(self, result):
+        """检查完成：已最新→汇总提示；需更新→切「更新中」下载态；查询失败→错误提示引导手动更新"""
+        yt_needed, deno_needed, yt_state, deno_state = result
+        any_check_failed = yt_state == "check_failed" or deno_state == "check_failed"
+
+        if any_check_failed and not yt_needed and not deno_needed:
+            # 查询失败且没有确定要更新的组件：不下载，如实告知并引导自行更新
+            if self._update_progress:
+                self._update_progress.close()
+                self._update_progress = None
+            self.yt_btn.setEnabled(True)
+            self.yt_btn.setText("下载/更新")
+            self.yt_label.setText("yt-dlp / Deno  —  检查更新失败")
+            show_infobar(self, "error", title="检查更新失败",
+                                 content="无法从 GitHub 获取 yt-dlp/Deno 最新版本信息，请检查网络或代理后重试；"
+                                         "也可前往 https://github.com/yt-dlp/yt-dlp/releases 手动下载，"
+                                         "覆盖程序目录 tools\\yt-dlp\\ 下的 yt-dlp.exe")
+            return
+
+        if not yt_needed and not deno_needed:
+            self._on_ytdlp_download_done((True, "up_to_date", "", True, "up_to_date", ""))
+            return
+
+        # 确需更新（含部分组件查询失败但另一组件确定需更新，失败组件交 updater 自行判断）
         if self._update_progress:
             self._update_progress.close()
-        self._update_progress = qfw.InfoBar.info(
-            parent=self, title=f"{action}中",
-            content=f"正在{action} yt-dlp（含 Deno 运行时）…",
-            orient=Qt.Orientation.Horizontal, isClosable=False, duration=-1)
-        self._start_ytdlp_download()
+        self.yt_btn.setText("下载中…")
+        self.yt_label.setText("正在更新 yt-dlp…")
+        self._update_progress = show_infobar(
+            self, "info", title="更新中",
+            content="正在更新 yt-dlp（含 Deno 运行时）…", closable=False)
+        self._start_download()
 
-    def _start_ytdlp_download(self):
-        """后台线程顺序下载/更新 yt-dlp 与 Deno（各自独立判断、互不干扰），
+    def _start_download(self):
+        """后台线程提权调起 updater.exe 下载/更新 yt-dlp 与 Deno，
         进度经 yt_label 文字回显。返回 (yt_ok, yt_status, yt_err, deno_ok, deno_status, deno_err)"""
         class _YtdlpDownloadWorker(QObject):
             progress = pyqtSignal(str)
             done = pyqtSignal(object)
             def run(s):
-                # 方案甲：先由 Sookit 普通权限查版本，已最新则不提权只提示；
-                # 仅当确实需要下载/更新时才提权调起 updater.exe。
-                try:
-                    yt_needed, deno_needed, _, _ = check_ytdlp_deno_update_needed()
-                except Exception:  # noqa: BLE001 版本检查失败 → 保守当作需更新交给下载器兜底
-                    yt_needed = deno_needed = True
-                if not yt_needed and not deno_needed:
-                    s.done.emit((True, "up_to_date", "", True, "up_to_date", ""))
-                    return
-                # 需要更新/安装 → 提权调起独立下载器
                 try:
                     result = launch_ytdlp_updater(lambda t: s.progress.emit(t))
                 except Exception as e:  # noqa: BLE001
@@ -643,23 +700,18 @@ class SettingsPage(QWidget):
         if all_up_to_date:
             # 两者都已最新
             self.yt_label.setText("yt-dlp / Deno  —  已是最新版本")
-            qfw.InfoBar.info(parent=self, title="提示",
-                             content="yt-dlp 与 Deno 均已是最新版本，无需更新",
-                             orient=Qt.Orientation.Horizontal,
-                             isClosable=True, duration=5000)
+            show_infobar(self, "info", title="提示",
+                         content="yt-dlp 与 Deno 均已是最新版本，无需更新",
+                         duration=5000)
         elif any_failed:
             self.yt_label.setText("yt-dlp / Deno  —  更新异常")
-            qfw.InfoBar.error(parent=self, title="部分更新失败",
-                              content=f"yt-dlp: {yt_state}\nDeno: {deno_state}"
-                                      + (f"\n\nyt-dlp 错误: {yt_err}" if not yt_ok else "")
-                                      + (f"\nDeno 错误: {deno_err}" if not deno_ok else ""),
-                              orient=Qt.Orientation.Vertical,
-                              isClosable=True, duration=-1)
+            show_infobar(self, "error", title="部分更新失败",
+                                 content=f"yt-dlp: {yt_state}\nDeno: {deno_state}"
+                                         + (f"\n\nyt-dlp 错误: {yt_err}" if not yt_ok else "")
+                                         + (f"\nDeno 错误: {deno_err}" if not deno_ok else ""))
         elif any_updated:
-            qfw.InfoBar.success(parent=self, title="完成",
-                                content=f"{yt_state}；{deno_state}",
-                                orient=Qt.Orientation.Horizontal,
-                                isClosable=True, duration=5000)
+            show_infobar(self, "success", title="完成",
+                         content=f"{yt_state}；{deno_state}", duration=5000)
             # 装好后刷新主窗口及各页面「未找到 yt-dlp」提示（修复2）
             win = self.window()
             if win is not None and hasattr(win, "refresh_ytdlp_status"):

@@ -10,6 +10,7 @@ import qfluentwidgets as qfw
 
 from sookit.core.functions import Functions, check_ffmpeg
 from sookit.pages.base import PageBase
+from sookit.widgets.infobar import show_infobar
 from sookit.core.task_queue import TaskType
 
 
@@ -27,11 +28,9 @@ class ExtractAudioPage(PageBase):
 
         # 检查 ffmpeg 可用性
         if not check_ffmpeg():
-            qfw.InfoBar.warning(
-                parent=self, title="依赖缺失",
-                content="FFmpeg 未安装，此功能不可用。请将 FFmpeg 放入 tools/ffmpeg/ 目录，或安装并添加到 PATH。",
-                orient=Qt.Orientation.Horizontal, isClosable=True, duration=-1
-            )
+            show_infobar(self, "warning", title="依赖缺失",
+                                 content="FFmpeg 未安装，此功能不可用。请将 FFmpeg 放入 tools/ffmpeg/ 目录，或安装并添加到 PATH。",
+                                 duration=-1)
 
         grid = QGridLayout()
         grid.setVerticalSpacing(12)
@@ -56,9 +55,8 @@ class ExtractAudioPage(PageBase):
     def _start_extract(self):
         video = self.video.text().strip()
         if not video:
-            qfw.InfoBar.warning(
-                parent=self, title="提示", content="请选择视频文件",
-                orient=Qt.Orientation.Horizontal, isClosable=True, duration=3000)
+            show_infobar(self, "warning", title="提示", content="请选择视频文件",
+                         duration=3000)
             return
         out_raw = self.out.text().strip()
         if out_raw:
@@ -82,4 +80,4 @@ class ExtractAudioPage(PageBase):
             title=f"音频提取 - {filename}",
             metadata=metadata
         )
-        qfw.InfoBar.info(parent=self, title="任务已加入队列", content="", duration=3000)
+        show_infobar(self, "info", title="任务已加入队列", content="", duration=3000)

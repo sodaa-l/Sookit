@@ -294,6 +294,19 @@ class MyNewPage(PageBase):
 - **不要**直接访问 `TaskQueueManager` 的 `active_tasks` / `completed_tasks` 内部 dict — 使用 `get_active_tasks()` / `get_completed_tasks()`。
 - **不要**跨线程操作 Qt 控件 — 使用 `pyqtSignal`。
 
+### InfoBar 提示规范（重要）
+
+- **新增 InfoBar 提示一律使用 `show_infobar()`**（`sookit/widgets/infobar.py`），**不要直接调用 `qfw.InfoBar.*`**：
+
+  ```python
+  from sookit.widgets.infobar import show_infobar
+  show_infobar(self, "error", title="检查更新失败", content=..., duration=-1)
+  ```
+
+- 函数按 content **实际渲染宽度**自动分级：≤560px 保持原生单行（Horizontal）；超过则重建为竖排（Vertical）+ QLabel wordWrap 按像素宽换行 + 限宽 + 补足高度。阈值常量 `WRAP_THRESHOLD = 560`，可用 `wrap_max_width` 参数覆盖。
+- 需要挂自定义控件（按钮等）时用返回值：`bar = show_infobar(...); bar.addWidget(btn)`。
+- 背景：qfluentwidgets 内置换行按"父窗口宽/9"的**字符数**（上限 120）硬换行，而中文字符显示宽度约为 ASCII 两倍，长中文文案实际不换行、单行撑爆 InfoBar（实测比 1131px 窗口还宽）；且 wordWrap 后 QLabel 的 sizeHint 仍按单行计算，直接 adjustSize 会截断文本，故封装内用 `heightForWidth` 补高度。
+
 ### 导入规范
 
 ```python
@@ -362,3 +375,4 @@ mkdir -p dist/Sookit/tools && cp -r tools/aria2c tools/ffmpeg dist/Sookit/tools/
 | 安装/卸载时文件占用删不掉 | 卸载时程序运行 | 单实例互斥体 + AppMutex |
 | 卸载删不掉 tools\yt-dlp | updater 运行时产物不在卸载记录 | `[UninstallDelete]` 删整个 `{app}` |
 | 异常退出残留 workspace | 进程被杀中断下载，临时目录未清理 | active_workspaces registry 启动清理 |
+| 长中文文案撑爆 InfoBar | 库内置换行按字符数（上限 120）算，中文显示宽度≈ASCII 两倍 | 统一走 `show_infobar()`，按渲染宽度自动换行 |

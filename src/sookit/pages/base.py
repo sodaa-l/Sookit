@@ -14,6 +14,7 @@ import qfluentwidgets as qfw
 from sookit.core.workers import Worker
 from sookit.core.config import load_task_complete_action
 from sookit.core.task_queue import TaskQueueManager, TaskType
+from sookit.widgets.infobar import show_infobar
 
 
 class PageBase(QWidget):
@@ -135,14 +136,8 @@ class PageBase(QWidget):
     def run_task(self, func, args):
         if self.worker and self.worker.isRunning():
             self.log("任务正在运行中，请等待完成")
-            qfw.InfoBar.warning(
-                parent=self,
-                title="提示",
-                content="请等待当前任务完成",
-                orient=Qt.Orientation.Horizontal,
-                isClosable=True,
-                duration=3000
-            )
+            show_infobar(self, "warning", title="提示",
+                         content="请等待当前任务完成", duration=3000)
             return
         self.worker = Worker(func, args)
         self.worker.log_signal.connect(self.log)
@@ -176,23 +171,12 @@ class PageBase(QWidget):
     def _on_task_done(self, ok):
         if ok:
             self.log("✅ 任务完成")
-            qfw.InfoBar.success(
-                parent=self,
-                title="完成",
-                content="任务执行成功",
-                orient=Qt.Orientation.Horizontal,
-                isClosable=True,
-                duration=3000
-            )
+            show_infobar(self, "success", title="完成",
+                         content="任务执行成功", duration=3000)
         else:
             self.log("❌ 任务失败")
-            qfw.InfoBar.error(
-                parent=self,
-                title="错误",
-                content="任务执行失败，请查看日志",
-                orient=Qt.Orientation.Horizontal,
-                isClosable=True,
-            )
+            show_infobar(self, "error", title="错误",
+                         content="任务执行失败，请查看日志")
         self._check_auto_action()
 
     def _check_auto_action(self):

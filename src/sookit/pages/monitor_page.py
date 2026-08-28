@@ -18,6 +18,7 @@ from sookit.core.youtube_utils import build_thumbnails
 from sookit.core.task_queue import TaskQueueManager, TaskType
 from sookit.core.workers import MonitorWorker
 from sookit.pages.base import PageBase
+from sookit.widgets.infobar import show_infobar
 
 
 class MonitorPage(PageBase):
@@ -36,11 +37,8 @@ class MonitorPage(PageBase):
         # 检查 yt-dlp 可用性（PATH 全局或内置 tools/ 均可）
         self._ytdlp_warning_bar = None
         if not is_ytdlp_available():
-            self._ytdlp_warning_bar = qfw.InfoBar.warning(
-                parent=self, title="依赖缺失",
-                content="未找到 yt-dlp，直播监控功能不可用。请前往设置页下载安装",
-                orient=Qt.Orientation.Horizontal, isClosable=True, duration=-1
-            )
+            self._ytdlp_warning_bar = show_infobar(self, "warning", title="依赖缺失",
+                                                   content="未找到 yt-dlp，直播监控功能不可用。请前往设置页下载安装")
             self.add_goto_settings_button(self._ytdlp_warning_bar)
 
         url_row = QHBoxLayout()
@@ -122,9 +120,8 @@ class MonitorPage(PageBase):
     def add_task(self):
         url = self.url_input.text().strip()
         if not url:
-            qfw.InfoBar.warning(
-                parent=self, title="提示", content="请输入链接",
-                orient=Qt.Orientation.Horizontal, isClosable=True, duration=3000)
+            show_infobar(self, "warning", title="提示", content="请输入链接",
+                         duration=3000)
             return
 
         self.url_input.clear()
@@ -171,19 +168,15 @@ class MonitorPage(PageBase):
             self._add_single_task(task_id, v['url'], v['title'])
             added += 1
         self.log(f"已从频道添加 {added} 个视频到监控列表")
-        qfw.InfoBar.success(
-            parent=self, title="完成",
-            content=f"已添加 {added} 个视频到监控列表",
-            orient=Qt.Orientation.Horizontal, isClosable=True, duration=3000)
+        show_infobar(self, "success", title="完成",
+                     content=f"已添加 {added} 个视频到监控列表", duration=3000)
 
     def _on_channel_error(self, err):
         self.add_btn.setEnabled(True)
         self.add_btn.setText("+ 添加监控")
         self._channel_sniff_worker = None
         self.log(f"频道嗅探失败: {err}")
-        qfw.InfoBar.error(
-            parent=self, title="嗅探失败", content=err,
-            orient=Qt.Orientation.Horizontal, isClosable=True, duration=5000)
+        show_infobar(self, "error", title="嗅探失败", content=err, duration=5000)
 
     def _add_single_task(self, task_id, url, title):
         row = self.task_table.rowCount()
@@ -453,7 +446,8 @@ class MonitorPage(PageBase):
             if task_id in self._task_rows:
                 row = self._task_rows[task_id]
                 self.task_table.item(row, 0).setText("失败")
-            qfw.InfoBar.error(parent=self, title="监控任务失败", content=f"任务 [{task_id}] 执行失败")
+            show_infobar(self, "error", title="监控任务失败",
+                     content=f"任务 [{task_id}] 执行失败")
         self._workers.pop(task_id, None)
         if not self._workers:
             self._check_auto_action()

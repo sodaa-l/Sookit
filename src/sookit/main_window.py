@@ -20,6 +20,7 @@ from sookit.paths import get_icon_path
 
 # ---------- 从 widgets 导入自定义控件 ----------
 from sookit.widgets.cover_image import CoverImageWidget
+from sookit.widgets.infobar import show_infobar
 
 # ---------- 从 core.functions 导入工具函数和功能类 ----------
 from sookit.core.functions import (
@@ -232,10 +233,8 @@ class MainWindow(qfw.FluentWindow):
         if latest:
             self.prompt_update(latest)
         else:
-            qfw.InfoBar.info(
-                parent=self._info_parent(), title="已是最新版本",
-                content=f"当前已是最新版本（{get_current_version()}）",
-                orient=Qt.Orientation.Horizontal, isClosable=True, duration=5000)
+            show_infobar(self._info_parent(), "info", title="已是最新版本",
+                         content=f"当前已是最新版本（{get_current_version()}）", duration=5000)
 
     def prompt_update(self, latest: str):
         """弹出「发现新版本」Dialog（更新/忽略此版本/取消）。latest 须为已查询到的版本号。"""
@@ -261,10 +260,9 @@ class MainWindow(qfw.FluentWindow):
                 dialog.reject()
             except Exception:
                 dialog.close()
-            qfw.InfoBar.info(
-                parent=self._info_parent(), title="已忽略",
-                content=f"已忽略版本 {latest}，将在出现更新版本后重新提醒。",
-                orient=Qt.Orientation.Horizontal, isClosable=True, duration=5000)
+            show_infobar(self._info_parent(), "info", title="已忽略",
+                         content=f"已忽略版本 {latest}，将在出现更新版本后重新提醒。",
+                         duration=5000)
 
         ignore_btn.clicked.connect(_on_ignore)
         dialog.addWidget(ignore_btn)
@@ -278,10 +276,9 @@ class MainWindow(qfw.FluentWindow):
 
     def _do_update(self, latest: str):
         """后台下载安装器，进度经 InfoBar 回显，完成后提示路径 + 打开按钮"""
-        self._update_infobar = qfw.InfoBar.info(
-            parent=self._info_parent(), title="正在下载更新",
-            content=f"正在下载 Sookit {latest} 安装器…",
-            orient=Qt.Orientation.Horizontal, isClosable=False, duration=-1)
+        self._update_infobar = show_infobar(
+            self._info_parent(), "info", title="正在下载更新",
+            content=f"正在下载 Sookit {latest} 安装器…", closable=False)
 
         class _DownloadWorker(QObject):
             progress = pyqtSignal(str)
@@ -323,16 +320,12 @@ class MainWindow(qfw.FluentWindow):
             self._update_infobar = None
         status, payload = result
         if status != "ok":
-            qfw.InfoBar.error(
-                parent=self._info_parent(), title="更新失败",
-                content=f"安装器下载失败：{payload}",
-                orient=Qt.Orientation.Vertical, isClosable=True, duration=-1)
+            show_infobar(self._info_parent(), "error", title="更新失败",
+                                 content=f"安装器下载失败：{payload}")
             return
         path = payload
-        bar = qfw.InfoBar.success(
-            parent=self._info_parent(), title="下载完成",
-            content=f"安装器已保存到：\n{path}\n\n请运行安装器完成更新（覆盖安装，需管理员权限）。",
-            orient=Qt.Orientation.Vertical, isClosable=True, duration=-1)
+        bar = show_infobar(self._info_parent(), "success", title="下载完成",
+                                   content=f"安装器已保存到：\n{path}\n\n请运行安装器完成更新（覆盖安装，需管理员权限）。")
         open_btn = qfw.PushButton("打开文件")
         open_btn.clicked.connect(lambda: self._open_file(path))
         bar.addWidget(open_btn)
@@ -345,10 +338,8 @@ class MainWindow(qfw.FluentWindow):
         try:
             os.startfile(path)  # Windows 专用
         except Exception as e:  # noqa: BLE001
-            qfw.InfoBar.warning(
-                parent=self._info_parent(), title="无法打开",
-                content=f"{e}", orient=Qt.Orientation.Horizontal,
-                isClosable=True, duration=6000)
+            show_infobar(self._info_parent(), "warning", title="无法打开",
+                         content=f"{e}", duration=6000)
 
     def _open_folder(self, path: str):
         """在资源管理器中定位文件"""
@@ -356,7 +347,5 @@ class MainWindow(qfw.FluentWindow):
         try:
             subprocess.Popen(["explorer", "/select,", str(path)])
         except Exception as e:  # noqa: BLE001
-            qfw.InfoBar.warning(
-                parent=self._info_parent(), title="无法打开",
-                content=f"{e}", orient=Qt.Orientation.Horizontal,
-                isClosable=True, duration=6000)
+            show_infobar(self._info_parent(), "warning", title="无法打开",
+                         content=f"{e}", duration=6000)

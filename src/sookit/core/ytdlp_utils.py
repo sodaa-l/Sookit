@@ -435,19 +435,22 @@ def check_ytdlp_deno_update_needed() -> tuple:
 
     返回 (yt_needed, deno_needed, yt_state, deno_state)：
     - yt_needed/deno_needed: bool，是否触发提权下载
-    - yt_state/deno_state: "up_to_date"/"update"/"install"
+    - yt_state/deno_state: "up_to_date"/"update"/"install"/"check_failed"
 
     判断规则（与 download_ytdlp/download_deno 的 check_latest 分支一致）：
     - 未安装（本地版本空）→ 需要下载（install）
     - 本地与最新都能拿到 → 按版本比较
-    - 已安装但最新版查询失败（网络/限流）→ 保守视为已最新（up_to_date），不重下
+    - 已安装但最新版查询失败（网络/限流）→ "check_failed"，由调用方如实提示，
+      不吞成 up_to_date 误导用户"已最新"（也不保守重下，避免无谓提权）
     """
     cur_yt = get_ytdlp_current_version()
     if not cur_yt:
         yt_needed, yt_state = True, "install"
     else:
         latest_yt = get_ytdlp_latest_version()
-        if latest_yt and _normalize_version(cur_yt) < _normalize_version(latest_yt):
+        if not latest_yt:
+            yt_needed, yt_state = False, "check_failed"
+        elif _normalize_version(cur_yt) < _normalize_version(latest_yt):
             yt_needed, yt_state = True, "update"
         else:
             yt_needed, yt_state = False, "up_to_date"
@@ -457,7 +460,9 @@ def check_ytdlp_deno_update_needed() -> tuple:
         deno_needed, deno_state = True, "install"
     else:
         latest_deno = get_deno_latest_version()
-        if latest_deno and _normalize_version(cur_deno) < _normalize_version(latest_deno):
+        if not latest_deno:
+            deno_needed, deno_state = False, "check_failed"
+        elif _normalize_version(cur_deno) < _normalize_version(latest_deno):
             deno_needed, deno_state = True, "update"
         else:
             deno_needed, deno_state = False, "up_to_date"
