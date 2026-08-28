@@ -23,8 +23,8 @@ from sookit.widgets.cover_image import CoverImageWidget
 
 # ---------- 从 core.functions 导入工具函数和功能类 ----------
 from sookit.core.functions import (
-    Functions, check_ffmpeg, sanitize_path, format_duration, format_filesize,
-    extract_youtube_id, build_thumbnails, is_ytdlp_available,
+    Functions, sanitize_path, format_duration, format_filesize,
+    extract_youtube_id, build_thumbnails,
     fetch_youtube_metadata, get_video_duration, run_ffmpeg, run_ytdlp,
     load_theme_color, load_close_action, DEFAULT_OUTPUT_DIR, ensure_output_dir,
     check_latest_version, get_current_version, get_ignored_version,
@@ -54,32 +54,7 @@ class MainWindow(qfw.FluentWindow):
         # 设置窗口图标
         self.setWindowIcon(QIcon(str(get_icon_path())))
 
-        # 检查 ffmpeg 可用性（可选依赖，缺失时仅警告）
-        FFMPEG_AVAILABLE = check_ffmpeg()
-        if not FFMPEG_AVAILABLE:
-            qfw.InfoBar.warning(
-                parent=self,
-                title="警告",
-                content="未找到 FFmpeg！请将 FFmpeg 放入 tools/ffmpeg/ 目录，或安装并添加到 PATH。",
-                orient=Qt.Orientation.Horizontal,
-                isClosable=True,
-                duration=10000
-            )
-
-        # 检查 yt-dlp 可用性（可选依赖，PATH 全局或内置 tools/ 均可，缺失时 YouTube 功能不可用）
-        self._ytdlp_warning_bar = None
-        if not is_ytdlp_available():
-            self._ytdlp_warning_bar = qfw.InfoBar.warning(
-                parent=self,
-                title="警告",
-                content="未找到 yt-dlp！YouTube 相关功能将不可用，请前往设置页下载安装。",
-                orient=Qt.Orientation.Horizontal,
-                isClosable=True,
-                duration=-1
-            )
-            btn = qfw.PushButton("前往设置")
-            btn.clicked.connect(lambda: self.switchTo(self.settings_page))
-            self._ytdlp_warning_bar.addWidget(btn)
+        # 依赖缺失提示在各页面内展示（页面构造时检测），主窗口不再全局弹条
 
         # 创建各页面
         self.youtube_page = YouTubePage(self)
@@ -200,12 +175,6 @@ class MainWindow(qfw.FluentWindow):
 
     def refresh_ytdlp_status(self):
         """yt-dlp 装好后统一刷新各页「未找到 yt-dlp」提示（关闭已显示/已初始化的 warning infobar）"""
-        if self._ytdlp_warning_bar is not None and is_ytdlp_available():
-            try:
-                self._ytdlp_warning_bar.close()
-            except Exception:
-                pass
-            self._ytdlp_warning_bar = None
         for page in (self.youtube_page, self.monitor_page):
             if page is not None and hasattr(page, "refresh_ytdlp_status"):
                 try:

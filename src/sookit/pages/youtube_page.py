@@ -62,6 +62,7 @@ class YouTubePage(PageBase):
                 content="未找到 yt-dlp，嗅探功能不可用。请前往设置页下载安装",
                 orient=Qt.Orientation.Horizontal, isClosable=True, duration=-1
             )
+            self.add_goto_settings_button(self._ytdlp_warning_bar)
 
         # ---- URL 输入行 ----
         url_row = QHBoxLayout()

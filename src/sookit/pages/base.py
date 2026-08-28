@@ -61,6 +61,17 @@ class PageBase(QWidget):
     def _setup_log_area(self, layout):
         layout.addSpacing(20)
 
+    def add_goto_settings_button(self, infobar):
+        """给页面级依赖缺失 InfoBar 加「前往设置」按钮，点击跳转主窗口设置页"""
+        btn = qfw.PushButton("前往设置")
+        btn.clicked.connect(self._go_to_settings)
+        infobar.addWidget(btn)
+
+    def _go_to_settings(self):
+        win = self.window()
+        if win is not None and hasattr(win, "switchTo"):
+            win.switchTo(win.settings_page)
+
     def log(self, msg):
         print(msg)
         logger.info(msg)

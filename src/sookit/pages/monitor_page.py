@@ -41,6 +41,7 @@ class MonitorPage(PageBase):
                 content="未找到 yt-dlp，直播监控功能不可用。请前往设置页下载安装",
                 orient=Qt.Orientation.Horizontal, isClosable=True, duration=-1
             )
+            self.add_goto_settings_button(self._ytdlp_warning_bar)
 
         url_row = QHBoxLayout()
         self.url_input = qfw.LineEdit()
