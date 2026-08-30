@@ -3,7 +3,7 @@
 ; 安装目录: 默认 Program Files\Sookit；父路径可自选，末级目录强制为 Sookit（见 [Code] 自动补全）；运行时数据在 %APPDATA%/%LOCALAPPDATA%；yt-dlp 自动下载到 %LOCALAPPDATA%
 
 #define MyAppName "Sookit"
-#define MyAppVersion "260827.1"
+#define MyAppVersion "260830.1"
 #define MyAppPublisher "sodaa-l"
 #define MyAppExeName "Sookit.exe"
 #define MyAppId "{{F3A8B7C2-5E4D-4A2B-9C1E-8B7D6A5F4E3D}"
