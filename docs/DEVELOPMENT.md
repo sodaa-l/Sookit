@@ -191,8 +191,9 @@ Sookit 下载任务用 `taskkill /PID <launcher> /T /F` 递归终止整个进程
 yt-dlp/Deno 下载更新从 Sookit 解耦为独立 `updater.exe`：
 
 - Sookit 只查版本（`check_ytdlp_deno_update_needed`），需更新才 `launch_ytdlp_updater` 提权调起。
-- 通信：Sookit 生成 result_path → runas 启动 `updater.exe --ytdlp-updater-gui <result_path>` → updater 写结果 JSON → Sookit 轮询（**读取成功后删除结果文件**，避免程序目录累积 `.ytdlp_updater_result_*.json`）。
+- 通信：Sookit 生成 result_path → runas 启动 `updater.exe --ytdlp-updater-gui <result_path>` → updater 写结果 JSON → Sookit 轮询（终止条件：**结果文件出现或 updater.exe 进程消失**；进程消失 + 无结果 = 下载器崩溃/被强杀，立即判失败；结果文件读取后删除，避免累积 `.ytdlp_updater_result_*.json`，坏 JSON 同样清理）。
 - aria2c 设置自动跟随（复用 `download_ytdlp`/`download_deno`）。
+- **updater 取消的 QThread 竞态崩溃（2026-08 修复）**：`done.emit` 同时触发 `_on_done`/`thread.quit`/`finished→deleteLater`，与 `_poll_cancel`（QTimer 100ms）存在生命周期竞态——QThread C++ 对象被删后访问 `isRunning()` 抛 RuntimeError，主线程 QTimer 回调未捕获异常 → updater 静默崩溃（无结果文件、Sookit 超时）。修复：不连接 `deleteLater`（QThread 随对话框销毁回收）+ `_thread_alive()` 防御（RuntimeError 按线程已结束处理）。
 - updater 取消/关闭（2026-08 重构为非阻塞）：
   - `_download_file_with_aria2c` 用 reader 线程 + `queue.get(timeout=0.2)` 非阻塞读 stdout，取消不被 read 阻塞；
   - `_on_cancel` **不阻塞 GUI 线程**：设标志 + 显示"正在取消"后立即返回，`QTimer` 每 100ms 轮询线程状态（`_poll_cancel`）；
@@ -224,6 +225,15 @@ yt-dlp/Deno 下载更新从 Sookit 解耦为独立 `updater.exe`：
 ### 15. 功能裁剪记录（2026-08）
 
 移除 M3U8 下载、X Space 下载、图片+音频合并三个功能（页面 + Functions 方法 + `TaskType.M3U8` + `M3U8TaskCard`）。理由：均可被 yt-dlp 链路替代（X Space 页纯为 yt-dlp flag 包装；M3U8 裸 ffmpeg 无重试/续传/Headers）。旧 `completed_tasks.json` 中 `task_type="m3u8"` 记录在 `_load_completed_tasks` 的 try/except 中被安全跳过。未来若需"仅音频下载"，给 `download_youtube` 加可选 `-x --audio-format` 后处理即可覆盖。
+
+### 16. yt-dlp 更新检查与取消的完善（2026-08）
+
+- **检查态/下载态分离**：`_update_ytdlp(skip_check=False)`——已安装（tools）先「检查中」查新版本，确需更新才切「更新中」提权下载；未安装直接「安装中」；自动更新确认路径 `skip_check=True` 直达「更新中」。
+- **取消中性化**：用户主动取消不算失败——`_comp_state` 对 `cancelled` 显示「已取消」，全取消走中性 info「已取消」提示（非红色错误条）；`any_failed` 判定排除 cancelled（混合场景取消组件显示「已取消」、真失败仍走错误条）。
+- **数据源统一**：自动检查（进设置页触发，每次启动一次）从 PyPI JSON API 改为 `get_ytdlp_latest_version()`（GitHub releases 重定向，与手动检查/更新同源，消除两源发布时序差的矛盾）。
+- **「有新版本」Dialog → 常驻 InfoBar**：非阻塞 warning 条（含「前往设置」按钮，与「依赖缺失」条形式一致），引用 `_yt_new_version_bar` 防重复堆积，更新成功后 `close_yt_new_version_bar()` 自动关闭。
+- **`launch_ytdlp_updater` 轮询重写**：终止条件从固定 300s 改为「结果文件出现或 updater.exe 进程消失」（`tasklist` 检测，普通权限可见提权进程；输出 GBK 用 `errors="ignore"` 解码）——慢网络下载不误报失败、强杀/崩溃立即判失败（"下载器已退出但未返回结果"）；`timeout` 语义改为防挂死绝对上限（默认 30 分钟）。
+- **坏 JSON/`.aria2` 残留修复**：`json.loads` 失败分支补 unlink（此前只修了读取成功分支）；`_download_file` 取消/失败清理补删 `.aria2` 控制文件（此前只删 `.part`）。
 
 ## AI 编码约定
 
@@ -303,9 +313,13 @@ class MyNewPage(PageBase):
   show_infobar(self, "error", title="检查更新失败", content=..., duration=-1)
   ```
 
-- 函数按 content **实际渲染宽度**自动分级：≤560px 保持原生单行（Horizontal）；超过则重建为竖排（Vertical）+ QLabel wordWrap 按像素宽换行 + 限宽 + 补足高度。阈值常量 `WRAP_THRESHOLD = 560`，可用 `wrap_max_width` 参数覆盖。
+- 函数按 content **实际渲染宽度**自动分级：≤560px 保持原生单行（Horizontal）；超过则重建为竖排（Vertical）+ **标点优先贪心换行**（`，。；：！？、` 后为首选断点，无标点长段二分硬断）+ label 固定宽度与精确高度。阈值常量 `WRAP_THRESHOLD = 560`，可用 `wrap_max_width` 参数覆盖。
 - 需要挂自定义控件（按钮等）时用返回值：`bar = show_infobar(...); bar.addWidget(btn)`。
-- 背景：qfluentwidgets 内置换行按"父窗口宽/9"的**字符数**（上限 120）硬换行，而中文字符显示宽度约为 ASCII 两倍，长中文文案实际不换行、单行撑爆 InfoBar（实测比 1131px 窗口还宽）；且 wordWrap 后 QLabel 的 sizeHint 仍按单行计算，直接 adjustSize 会截断文本，故封装内用 `heightForWidth` 补高度。
+- 背景（三个坑，终版方案逐一解决）：
+  1. qfluentwidgets 内置换行按"父窗口宽/9"的**字符数**（上限 120）硬换行，而中文字符显示宽度约为 ASCII 两倍——长中文文案实际不换行、单行撑爆 InfoBar（实测比 1131px 窗口还宽）；
+  2. wordWrap QLabel 的 sizeHint 高度仍按单行算，且布局会**垂直压缩 label**（行距挤压、文本截断）——**高度必须在 label 层解决**：`fontMetrics.boundingRect(0, 0, 宽, 10000, TextWordWrap, text)` 精确计算后 `label.setMinimumHeight()`，bar 层的 setMinimumHeight 补偿治标不治本（bar 高了 label 仍被压）；
+  3. 换行后需同步 `bar.content = wrapped`：窗口 resize 时库的 `_adjustText` 会用 TextWrap 重排 `self.content`，其对含 `\n` 文本逐行处理不破坏已有换行（已从源码确认 + resize 实测）。
+- 初始宽度可能偏大（QSS 字体 polish 前的 sizeHint 偏大，实测 679 → 557），封装内已加事件循环后二次 `adjustSize` 收缩。
 
 ### 导入规范
 
@@ -375,4 +389,8 @@ mkdir -p dist/Sookit/tools && cp -r tools/aria2c tools/ffmpeg dist/Sookit/tools/
 | 安装/卸载时文件占用删不掉 | 卸载时程序运行 | 单实例互斥体 + AppMutex |
 | 卸载删不掉 tools\yt-dlp | updater 运行时产物不在卸载记录 | `[UninstallDelete]` 删整个 `{app}` |
 | 异常退出残留 workspace | 进程被杀中断下载，临时目录未清理 | active_workspaces registry 启动清理 |
+| updater 取消时静默崩溃无结果 | done/finished→deleteLater 与 QTimer 回调竞态，访问已删 QThread 抛 RuntimeError | 不连 deleteLater + `_thread_alive()` 防御（RuntimeError 按线程已结束处理） |
+| InfoBar 换行文本行距压缩/截断 | wordWrap QLabel sizeHint 高度按单行算，布局垂直压缩 label | label 层精确高度（fontMetrics boundingRect）+ setFixedWidth 钉死宽度 |
+| 重打包后 updater 回退 urllib | 打包只跑 pyinstaller 漏了复制 tools，aria2c 缺失 | 打包两步：pyinstaller + 复制 tools/aria2c ffmpeg |
+| UAC 提权进程不继承环境变量 | runas 启动重建环境块 | 测试时 Sookit 侧迁就 updater 的 frozen 路径解析（VIDEOTOOLBOX_TOOLS_DIR 指向其 tools） |
 | 长中文文案撑爆 InfoBar | 库内置换行按字符数（上限 120）算，中文显示宽度≈ASCII 两倍 | 统一走 `show_infobar()`，按渲染宽度自动换行 |

@@ -325,7 +325,7 @@ class MainWindow(qfw.FluentWindow):
             return
         path = payload
         bar = show_infobar(self._info_parent(), "success", title="下载完成",
-                                   content=f"安装器已保存到：\n{path}\n\n请运行安装器完成更新（覆盖安装，需管理员权限）。")
+                                   content=f"安装器已保存到：\n{path}，\n\n请运行安装器完成更新。")
         open_btn = qfw.PushButton("打开文件")
         open_btn.clicked.connect(lambda: self._open_file(path))
         bar.addWidget(open_btn)

@@ -3,8 +3,6 @@
 """
 import os
 import re
-import json
-import urllib.request
 
 from PyQt6.QtWidgets import QVBoxLayout, QHBoxLayout, QWidget, QScrollArea, QFrame
 from PyQt6.QtCore import Qt, QThread, QObject, pyqtSignal, pyqtSlot, QTimer
@@ -16,12 +14,13 @@ from sookit.core.functions import (
     launch_ytdlp_updater,
     get_ytdlp_current_version, get_deno_current_version,
     check_ytdlp_deno_update_needed,
+    get_ytdlp_latest_version,
     check_ffmpeg, check_aria2c, load_download_config, save_download_config,
     load_theme_color, save_theme_color, THEME_COLORS, get_ffmpeg_path,
     set_autostart, is_autostart, load_close_action, save_close_action,
     load_task_complete_action, save_task_complete_action,
 )
-from sookit.core.utils import get_scrollbar_style, get_certifi_ssl_context
+from sookit.core.utils import get_scrollbar_style
 from sookit import APP_NAME, APP_VERSION
 from sookit.widgets.infobar import show_infobar
 
@@ -34,6 +33,7 @@ class SettingsPage(QWidget):
         self._update_thread = None
         self._yt_current_ver = ""
         self._yt_update_checked = False
+        self._yt_new_version_bar = None  # 「yt-dlp 有新版本」常驻 InfoBar（更新成功后关闭）
         self._update_progress = None
         # yt-dlp / Deno 版本检测结果（None=尚未返回；""=未安装/获取失败）
         self._yt_ver = None
@@ -500,24 +500,18 @@ class SettingsPage(QWidget):
             self.ff_label.setText("FFmpeg  —  未安装")
 
     def _check_yt_update_needed(self, current_ver: str):
-        """后台通过 PyPI JSON API 查最新版，有新版本则弹窗"""
-        class _PyPIVersionWorker(QObject):
-            done = pyqtSignal(object)
+        """后台通过 GitHub releases 重定向查最新版（与手动检查/更新同源），有新版本则弹窗"""
+        class _LatestVersionWorker(QObject):
+            done = pyqtSignal(str)
             def run(s):
-                try:
-                    url = "https://pypi.org/pypi/yt-dlp/json"
-                    with urllib.request.urlopen(url, timeout=10, context=get_certifi_ssl_context()) as resp:
-                        data = json.loads(resp.read().decode())
-                    s.done.emit(data.get("info", {}).get("version", ""))
-                except Exception:
-                    s.done.emit("")
+                s.done.emit(get_ytdlp_latest_version())
 
         self._yt_current_ver = current_ver
         thread = QThread(self)
-        w = _PyPIVersionWorker()
+        w = _LatestVersionWorker()
         w.moveToThread(thread)
         thread.started.connect(w.run)
-        w.done.connect(self._on_pypi_version)
+        w.done.connect(self._on_latest_version)
         w.done.connect(thread.quit)
         w.done.connect(w.deleteLater)
         thread.finished.connect(thread.deleteLater)
@@ -533,23 +527,36 @@ class SettingsPage(QWidget):
         except Exception:
             return v
 
-    @pyqtSlot(object)
-    def _on_pypi_version(self, ver):
-        """在主线程比较版本并决定是否弹窗（标准化后比较，避免前导零干扰）"""
+    @pyqtSlot(str)
+    def _on_latest_version(self, ver):
+        """在主线程比较版本，有新版本则弹常驻 InfoBar（含前往设置按钮，非阻塞）"""
         if not ver:
             return
         cur = self._normalize_version(self._yt_current_ver)
         lat = self._normalize_version(ver)
-        if lat and cur and lat > cur:
-            dialog = qfw.Dialog(
-                "yt-dlp 有新版本",
-                f"当前版本: {cur}    最新版本: {lat}\n"
-                "不更新可能会导致视频嗅探失败，是否更新？",
-                self)
-            dialog.yesButton.setText("更新")
-            dialog.cancelButton.setText("取消")
-            if dialog.exec():
-                self._update_ytdlp(skip_check=True)  # 已确认有新版本，跳过检查态直接更新
+        if lat and cur and lat > cur and self._yt_new_version_bar is None:
+            self._yt_new_version_bar = show_infobar(
+                self, "warning", title="yt-dlp 有新版本",
+                content=f"当前版本 {cur}，最新版本 {lat}。不更新可能导致视频嗅探失败，请前往设置页更新。",
+                duration=-1)
+            btn = qfw.PushButton("前往设置")
+            btn.clicked.connect(self._go_to_settings)
+            self._yt_new_version_bar.addWidget(btn)
+
+    def _go_to_settings(self):
+        win = self.window()
+        if win is not None and hasattr(win, "switchTo"):
+            win.switchTo(win.settings_page)
+
+    def close_yt_new_version_bar(self):
+        """更新成功后关闭「有新版本」提示条（避免过时提示）"""
+        bar = getattr(self, "_yt_new_version_bar", None)
+        if bar is not None:
+            try:
+                bar.close()
+            except RuntimeError:
+                pass
+            self._yt_new_version_bar = None
 
     def _update_ytdlp(self, skip_check: bool = False):
         """按来源三分支处理下载/更新：
@@ -722,6 +729,7 @@ class SettingsPage(QWidget):
         elif any_updated:
             show_infobar(self, "success", title="完成",
                          content=f"{yt_state}；{deno_state}", duration=5000)
+            self.close_yt_new_version_bar()  # 更新成功，关闭「有新版本」提示条
             # 装好后刷新主窗口及各页面「未找到 yt-dlp」提示（修复2）
             win = self.window()
             if win is not None and hasattr(win, "refresh_ytdlp_status"):
