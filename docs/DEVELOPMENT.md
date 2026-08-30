@@ -349,6 +349,13 @@ from sookit.pages.base import PageBase
 | `pyproject.toml` | `[project] version` | `"260827.1"` |
 | `packaging/installer.iss` | `#define MyAppVersion` | `"260827.1"` |
 
+**发布 Release 的 tag 命名（重要）**：tag 必须用**带 `build.` 前缀**的完整版本号（如 `build.260827.1`，
+与 `APP_VERSION` 一致）。原因：`core/updater.py` 的 `is_newer` 日期版比较要求远程 tag 带 `build.` 前缀，
+否则纯数字 `260827.1` 会被当作语义化版本、每次启动都误报「发现新版本」。release 的 **asset 直接上传
+`installer.iss` 产物原样**（`Sookit-Setup-260827.1.exe`，不带 `build.` 前缀）；`download_installer` 下载时会
+自动剥离 `build.` 前缀拼资产名/本地文件名，两者正好对上
+（URL：`releases/download/build.260827.1/Sookit-Setup-260827.1.exe`）。
+
 ### 打包流程
 
 ```bash

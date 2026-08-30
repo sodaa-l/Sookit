@@ -138,27 +138,42 @@ def set_ignored_version(version: str):
 
 # ---------- 安装器下载 ----------
 
-def _setup_asset_url(tag: str) -> str:
-    """根据 tag 组装安装器下载 URL（兼容带/不带 v 前缀的 tag）。
+def _asset_version(tag: str) -> str:
+    """安装器资产名/本地文件名用版本号：去掉 v 与 build. 前缀（build.260830.1 → 260830.1）。
 
-    tag 为 release 的纯版本号（已去 v）。URL 优先尝试 v{tag}，同时返回 {tag} 备用。
+    发布 tag 使用带 build. 前缀的完整版本号（与 APP_VERSION 一致，保证 is_newer 的日期版
+    比较生效）；而安装包产物名由 installer.iss 的 MyAppVersion 生成、不带 build. 前缀，
+    故下载时须剥离后再拼资产名与本地文件名。
+    """
+    clean = (tag or "").lstrip("vV")
+    if clean.lower().startswith("build."):
+        clean = clean[len("build."):]
+    return clean
+
+
+def _setup_asset_url(tag: str) -> tuple[str, str]:
+    """根据 tag 组装安装器下载 URL。
+
+    tag 为 release 版本号（可带 build. / v 前缀）。URL 优先尝试 v{tag}，同时返回 {tag} 备用；
+    资产名剥离 build. 前缀（与 installer.iss 的 OutputBaseFilename 一致）。
     """
     base = f"https://github.com/{REPO}/releases/download"
-    name = f"{_SETUP_PREFIX}{tag}.exe"
+    name = f"{_SETUP_PREFIX}{_asset_version(tag)}.exe"
     return base, name
 
 
 def download_installer(tag: str, progress_cb=None) -> Path:
     """下载 Sookit 安装器到 %APPDATA%\\Sookit\\updates\\，返回绝对路径。
 
-    tag 为 release 的纯版本号。兼容 tag 带/不带 v 前缀：先试 v{tag}，404/失败再试 {tag}。
+    tag 为 release 版本号（可带 build. / v 前缀）。先试 v{tag}，404/失败再试 {tag}；
+    本地文件名与资产名剥离 build. 前缀（如 Sookit-Setup-260830.1.exe）。
     下载失败抛 RuntimeError（含可读信息），由 UI 层反馈。
     """
     if not tag:
         raise RuntimeError("版本号为空，无法下载安装器")
     dest_dir = get_data_dir() / "updates"
     dest_dir.mkdir(parents=True, exist_ok=True)
-    dest = dest_dir / f"{_SETUP_PREFIX}{tag}.exe"
+    dest = dest_dir / f"{_SETUP_PREFIX}{_asset_version(tag)}.exe"
     base, name = _setup_asset_url(tag)
 
     last_err: Exception | None = None
