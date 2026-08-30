@@ -193,7 +193,10 @@ class UpdaterDialog(QDialog):
         self._worker.progress.connect(self._on_progress)
         self._worker.done.connect(self._on_done)
         self._worker.done.connect(self._thread.quit)
-        self._thread.finished.connect(self._thread.deleteLater)
+        # 注意：不连接 thread.finished → deleteLater。done 信号会同时触发 _on_done/
+        # thread.quit，deleteLater 与 _poll_cancel(QTimer) 存在生命周期竞态——QThread
+        # 的 C++ 对象被删后 _poll_cancel 访问 isRunning() 抛 RuntimeError 导致 updater
+        # 静默崩溃（实测）。QThread 由对话框属性持有，随对话框销毁回收。
         self._thread.start()
 
     def _on_progress(self, text: str):
@@ -226,6 +229,15 @@ class UpdaterDialog(QDialog):
         self._cancel_deadline = time.monotonic() + 20
         self._poll_cancel()
 
+    def _thread_alive(self) -> bool:
+        """后台线程是否仍在运行。QThread 的 C++ 对象可能已被 deleteLater 删除
+        （与 done/finished 信号的竞态），此时访问 isRunning() 抛 RuntimeError——
+        按"线程已结束"处理。"""
+        try:
+            return self._thread is not None and self._thread.isRunning()
+        except RuntimeError:
+            return False
+
     def _poll_cancel(self):
         """每 100ms 轮询后台线程退出状态（非阻塞，保证 GUI 不冻结、取消提示可见）。
 
@@ -240,7 +252,7 @@ class UpdaterDialog(QDialog):
             "yt": {"name": "yt-dlp", "ok": False, "status": "cancelled", "error": "用户取消"},
             "deno": {"name": "Deno", "ok": False, "status": "cancelled", "error": "用户取消"},
         }
-        if self._thread is not None and not self._thread.isRunning():
+        if not self._thread_alive():
             if self._result is None:
                 self._result = cancelled_result
             self._finish()
@@ -248,7 +260,7 @@ class UpdaterDialog(QDialog):
         if time.monotonic() >= self._cancel_deadline:
             if self._worker:
                 self._worker.force_terminate()
-            if self._thread is not None:
+            if self._thread_alive():
                 self._thread.wait(5000)
             if self._result is None:
                 self._result = cancelled_result

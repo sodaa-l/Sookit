@@ -158,10 +158,12 @@ def _download_file(url: str, dest: Path, label: str, progress_cb=None,
                 return
             except DownloadCancelled:
                 tmp.unlink(missing_ok=True)
+                Path(str(tmp) + ".aria2").unlink(missing_ok=True)  # aria2c 控制文件一并清理
                 raise
             except Exception:
                 # aria2c 下载失败 → 回退 urllib 单线程
                 tmp.unlink(missing_ok=True)
+                Path(str(tmp) + ".aria2").unlink(missing_ok=True)
                 if progress_cb:
                     progress_cb(f"{label} — aria2c 下载失败，改用单线程重试…")
 
@@ -621,14 +623,62 @@ def _runas_update(exe: Path, params: str) -> None:
         raise RuntimeError(f"管理员授权失败或已取消 (code={res})")
 
 
-def launch_ytdlp_updater(progress_cb=None, timeout: float = 300) -> tuple:
+def _updater_process_alive() -> bool:
+    """检测 updater.exe 进程是否存活（普通权限 tasklist 可见提权进程）。
+
+    检测本身失败（如 tasklist 异常）时保守返回 True 继续轮询，由绝对上限兜底。
+    """
+    try:
+        out = subprocess.run(
+            ["tasklist", "/FI", "IMAGENAME eq updater.exe"],
+            capture_output=True, timeout=10,
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+        # 输出为 GBK，但进程名是 ASCII，errors="ignore" 解码即可安全匹配
+        return "updater.exe" in (out.stdout or b"").decode("utf-8", errors="ignore")
+    except Exception:  # noqa: BLE001
+        return True
+
+
+def _try_read_updater_result(result_path: str):
+    """结果文件存在则读取并清理后返回结果元组；不存在返回 None；损坏返回失败元组。"""
+    p = Path(result_path)
+    if not p.is_file():
+        return None
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        # 坏结果文件同样要清理，避免 tools/ 下累积 .ytdlp_updater_result_*.json
+        try:
+            p.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return (False, "failed", "读取下载器结果失败",
+                False, "failed", "读取下载器结果失败")
+    # 读取后清理结果文件，避免程序目录累积 .ytdlp_updater_result_*.json
+    try:
+        p.unlink(missing_ok=True)
+    except OSError:
+        pass
+    yt = data.get("yt", {})
+    deno = data.get("deno", {})
+    return (yt.get("ok"), yt.get("status", "failed"),
+            yt.get("error", ""),
+            deno.get("ok"), deno.get("status", "failed"),
+            deno.get("error", ""))
+
+
+def launch_ytdlp_updater(progress_cb=None, timeout: float = 1800) -> tuple:
     """Sookit 侧：提权调起独立 updater.exe 下载/更新 yt-dlp+Deno 并等待结果（供后台线程调用）。
 
     返回与 download_ytdlp/download_deno 组合一致的
     (yt_ok, yt_status, yt_err, deno_ok, deno_status, deno_err)。
 
     流程：生成唯一结果路径 → runas 提权启动 updater.exe(--ytdlp-updater-gui 结果路径) →
-    轮询结果文件直到出现（超时由 timeout 控制，默认 300s，下载器无硬超时自己跑完）→ 读取并返回。
+    轮询「结果文件 + updater 进程存活」：
+    - 结果文件出现 → 读取并返回（下载完成/用户取消/下载失败）；
+    - updater 进程退出但无结果 → 判失败（下载器崩溃或被强行终止）；
+    - updater 仍在运行 → 继续等待（慢网络下载不误报失败）；
+    - timeout（默认 30 分钟）仅为防极端挂死的绝对上限，到点后按超时失败返回。
     """
     result_path = updater_result_path()
     if progress_cb:
@@ -640,28 +690,19 @@ def launch_ytdlp_updater(progress_cb=None, timeout: float = 300) -> tuple:
     _runas_update(exe, f'--ytdlp-updater-gui "{result_path}"')
     deadline = time.time() + timeout
     while time.time() < deadline:
-        if Path(result_path).is_file():
-            try:
-                data = json.loads(Path(result_path).read_text(encoding="utf-8"))
-            except Exception:  # noqa: BLE001
-                # 坏结果文件同样要清理，避免 tools/ 下累积 .ytdlp_updater_result_*.json
-                try:
-                    Path(result_path).unlink(missing_ok=True)
-                except OSError:
-                    pass
-                return (False, "failed", "读取下载器结果失败",
-                        False, "failed", "读取下载器结果失败")
-            # 读取成功后清理结果文件，避免程序目录累积 .ytdlp_updater_result_*.json
-            try:
-                Path(result_path).unlink(missing_ok=True)
-            except OSError:
-                pass
-            yt = data.get("yt", {})
-            deno = data.get("deno", {})
-            return (yt.get("ok"), yt.get("status", "failed"),
-                    yt.get("error", ""),
-                    deno.get("ok"), deno.get("status", "failed"),
-                    deno.get("error", ""))
-        time.sleep(0.3)
-    return (False, "failed", "等待下载器返回超时",
-            False, "failed", "等待下载器返回超时")
+        r = _try_read_updater_result(result_path)
+        if r is not None:
+            return r
+        if not _updater_process_alive():
+            # 进程已退出：最后再查一次结果（退出瞬间可能刚好写出），仍无则判失败
+            r = _try_read_updater_result(result_path)
+            if r is not None:
+                return r
+            msg = "下载器已退出但未返回结果（可能被强行终止）"
+            return (False, "failed", msg, False, "failed", msg)
+        time.sleep(0.5)
+    r = _try_read_updater_result(result_path)
+    if r is not None:
+        return r
+    msg = f"等待下载器返回超时（{int(timeout // 60)} 分钟）"
+    return (False, "failed", msg, False, "failed", msg)
