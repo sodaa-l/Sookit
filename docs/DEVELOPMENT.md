@@ -32,6 +32,7 @@ src/sookit/        代码包 (标准 src 布局)
     │
     └─ widgets/        可复用 UI 组件层
         ├─ cover_image.py   封面自绘控件
+        ├─ combo_box.py     StaticComboBox (单项静态化下拉框)
         └─ task_card.py     任务卡片 (2 种类型 + 工厂函数 + 封面三级加载)
 
 运行时数据 (不在项目根，见 paths.py)：
@@ -88,7 +89,7 @@ flowchart TB
 | `ffmpeg_utils.py` | FFmpeg 路径、子进程执行 (`run_ffmpeg`/`run_ytdlp`)、时长/大小格式化 | `run_ffmpeg()`, `run_ytdlp()`, `check_ffmpeg()`, `extract_video_frame()` |
 | `ytdlp_utils.py` | yt-dlp/Deno 版本检查、下载 (aria2c+urllib 双通道)、独立下载器调起 | `download_ytdlp()`, `download_deno()`, `get_*_version()`, `check_ytdlp_deno_update_needed()`, `launch_ytdlp_updater()` |
 | `updater.py` | **Sookit 自身自动更新** (core/updater.py，注意与顶层 updater.py 区分) | `check_latest_version()`, `download_installer()`, `is_newer()` |
-| `youtube_utils.py` | YouTube ID 提取、缩略图 URL 构建、HTTP 元数据获取 | `extract_youtube_id()`, `build_thumbnails()`, `fetch_youtube_metadata()` |
+| `youtube_utils.py` | YouTube ID 提取、缩略图构建（硬编码 5 档 + 通用规范化）、HTTP 元数据获取 | `extract_youtube_id()`, `build_thumbnails()`, `normalize_thumbnails()`, `fetch_youtube_metadata()` |
 | `task_queue.py` | 任务队列单例。进度、workspace 生命周期、active_workspaces registry、JSON 持久化 | `TaskQueueManager`, `Task`, `TaskStatus`, `TaskType`, `_generate_ulid()` |
 | `workers.py` | 后台线程: Worker(通用) / TaskWorker(队列, 含 workspace/进程树清理) / MonitorWorker(直播轮询) | `TaskWorker`, `MonitorWorker`, `_kill_process_tree()` |
 | `config.py` | JSON 配置文件读写 + 缓存 + 线程锁。主题色、开机自启、下载配置 | `load_config()`, `save_config()`, `load_download_config()` |
@@ -124,7 +125,12 @@ flowchart TB
 
 ### 自定义组件 (`widgets/`)
 
-同上文架构总览（未变化）。
+| 文件 | 职责 |
+| --- | --- |
+| `cover_image.py` | `CoverImageWidget` 封面自绘控件（等比缩放 + 圆角，无黑边） |
+| `combo_box.py` | `StaticComboBox`：qfluentwidgets ComboBox 子类，仅 1 项时静态显示（点击不弹菜单、不画箭头），≥2 项与原生一致；count 动态判断无需刷新 |
+| `task_card.py` | 任务卡片（2 种类型 + 工厂函数 + 封面三级加载） |
+| `infobar.py` | `show_infobar()` 统一提示（见 InfoBar 提示规范） |
 
 ## 关键设计决策
 
@@ -234,6 +240,43 @@ yt-dlp/Deno 下载更新从 Sookit 解耦为独立 `updater.exe`：
 - **「有新版本」Dialog → 常驻 InfoBar**：非阻塞 warning 条（含「前往设置」按钮，与「依赖缺失」条形式一致），引用 `_yt_new_version_bar` 防重复堆积，更新成功后 `close_yt_new_version_bar()` 自动关闭。
 - **`launch_ytdlp_updater` 轮询重写**：终止条件从固定 300s 改为「结果文件出现或 updater.exe 进程消失」（`tasklist` 检测，普通权限可见提权进程；输出 GBK 用 `errors="ignore"` 解码）——慢网络下载不误报失败、强杀/崩溃立即判失败（"下载器已退出但未返回结果"）；`timeout` 语义改为防挂死绝对上限（默认 30 分钟）。
 - **坏 JSON/`.aria2` 残留修复**：`json.loads` 失败分支补 unlink（此前只修了读取成功分支）；`_download_file` 取消/失败清理补删 `.aria2` 控制文件（此前只删 `.part`）。
+
+### 17. 封面机制通用化（2026-09-01）
+
+嗅探页封面从 YouTube 专属改为全站点通用，**YouTube 路径保持现状逐字节不变（零退化）**：
+
+- **分流依据**：`sniff_youtube` 按 `(info.get('extractor') or '').lower().startswith('youtube')` 分流——不用 `extract_youtube_id(url)`（music.youtube.com 提取不到 ID 但 extractor 仍是 youtube）。YouTube 走 `build_thumbnails(id)` 硬编码 5 档；其余走 `normalize_thumbnails(info)`。返回 dict 新增 `extractor` 键供页面判断。
+- **`normalize_thumbnails(info)`**（youtube_utils.py）：完整 URL 去重（**勿按 netloc+path 归并**——X 等站点尺寸靠 query `?name=` 区分，归并会毁掉档位；YouTube 的 `?sqp=` 变体场景已走硬编码表不进此函数）→ preference 降序 stable sort（None 最低）→ 顶层 `thumbnail` 字段（extractor 认定的最佳 URL）定位最佳项移到首位 → **丢弃 width/height**（通用路径无可靠宽高来源，实测 X 的标注 25 档仅 7 档正确）。
+- **X(twitter) 特判**：仅输出 `id=='medium'` 单档并保留其标注宽高（实测 5 条视频 25 档，medium 是唯一 5/5 标注正确的档；thumb/small 系统性偏小、large/orig 系统性虚标；同视频各档 URL 下载结果完全相同——X 忽略 `?name=` 参数）。id 置空使文案只显示分辨率（如 `1200x675`）。
+- **下拉文案三分支**（`_populate_cover_combo`）：有宽高+id 非纯数字 `1280x720 (maxresdefault)`（YouTube）；有宽高+无有效 id `1200x675`；无宽高 `最佳分辨率`/`备选分辨率 N`。空列表占位 `无可用封面`。
+- **下载封面**：URL 取 `cover_combo.currentData()`（不按索引重建列表——通用列表项数与 build_thumbnails 不同会索引错位）；扩展名按 URL path 推断（白名单 .jpg/.jpeg/.png/.webp 默认 .jpg）；完成后 QPixmap 实测分辨率写日志。
+- **入队**：`metadata['cover_url']` 优先 `_sniff_thumbs[0]['url']`（非 YouTube 队列卡片因此可显示封面），YouTube 无列表时兜底 build_thumbnails；`_sniff_video_id` 仅 YouTube 赋值（防 BV 号污染文件名/入队/失败兜底三条消费路径）。
+- **顺带修复的隐性 bug**：旧代码非 YouTube 嗅探成功后 `build_thumbnails(BV号)` 拼出无效 i.ytimg.com URL，下拉框 5 档全 404。
+
+### 18. 封面 loader 代际校验（2026-09-01）
+
+**症状**：封面出现后瞬间消失/跨嗅探错配。根因：`_on_sniff_done` 补载条件只看 `_pixmap.isNull()`（快速路径的成功信号还在主线程队列时误判"无封面"）→ 同 URL 并发双 loader → 晚到的失败无差别 `clearPixmap` 清掉刚成功的成果。
+
+修复（通用模式，新增异步 UI 加载时照此办理）：
+- 信号连接带 worker 身份：`worker.failed.connect(lambda w=worker: self._on_cover_failed(w))`，回调内 `worker is not self._cover_loader_worker` 直接丢弃；
+- 补载/重试前检查 `_cover_loader_worker.isRunning()`，避免同 URL 并发；
+- QThread `finished` 连接清理引用（防运行中被 GC + 保证 busy 判断准确）。
+
+### 19. 封面最终兜底 CoverFallbackWorker（2026-09-01）
+
+部分站点封面"只能下载不能显示"：显示 loader 与 `download_thumbnail` 的 HTTP 层逐字相同（UA/超时/SSL），唯一稳定差异是**解码**——下载纯写字节必成功，显示需 Qt 解码。本机 Qt 不支持 avif/heic/heif/jxl（`QImageReader.supportedImageFormats()` 实测）。
+
+常规 loader 全失败后（`_on_cover_failed` 末尾触发）：
+1. 缓存命中：`covers/fallback_{sha1(url)[:16]}.jpg` 直接加载（重复嗅探免重下）；
+2. `Functions.download_thumbnail` 落盘 `.img`（与"下载封面"按钮同款实现）→ `QImage` 直接解码（覆盖网络抖动型失败）；
+3. 失败且 `check_ffmpeg()` → `run_ffmpeg` 转 jpg → 再解码（覆盖 AVIF/HEIC）；
+4. 仍失败 → 保持占位 + 日志报 `_sniff_image_format` 魔数检测的实际格式。
+
+约束与边界：**QThread.run 内用 QImage 判断解码（QImage 可跨线程），QPixmap 仅主线程**；`run_ffmpeg` 是阻塞同步调用；同 URL 会话内只兜底一次（`_fallback_tried_urls` 防循环）；已知无解：SVG 打包态缺 qsvg 插件且 ffmpeg 默认构建无 SVG 解码器（影响面极小，维持占位+日志）。
+
+### 20. StaticComboBox 单项静态化（2026-09-01）
+
+`widgets/combo_box.py`：qfluentwidgets ComboBox 子类，`count() <= 1` 时 `mouseReleaseEvent` 吞点击（不弹菜单）且 `paintEvent` 跳过箭头绘制（纯静态显示），≥2 项与原生一致；count 动态判断，档位数变化无需刷新。按压/hover 透明度由 `ComboBoxBase.eventFilter` 在 mouseReleaseEvent 之前维护，吞事件不影响视觉状态。嗅探页 cover_combo 已换用（X/Bilibili 单档、"无可用封面"占位均为静态）。
 
 ## AI 编码约定
 
@@ -404,3 +447,8 @@ mkdir -p dist/Sookit/tools && cp -r tools/aria2c tools/ffmpeg dist/Sookit/tools/
 | UAC 提权进程不继承环境变量 | runas 启动重建环境块 | 测试时 Sookit 侧迁就 updater 的 frozen 路径解析（VIDEOTOOLBOX_TOOLS_DIR 指向其 tools） |
 | 长中文文案撑爆 InfoBar | 库内置换行按字符数（上限 120）算，中文显示宽度≈ASCII 两倍 | 统一走 `show_infobar()`，按渲染宽度自动换行 |
 | InfoBar 弹出瞬间整体左偏（右侧空隙过大） | manager 在 show 瞬间按偏大宽度算定 x，之后宽度收缩不触发重定位 | `_settle` 收缩后经 manager 重算位置（slideAni 运行中改 endValue，结束后直接 move） |
+| qfluentwidgets ComboBox `currentData()` 恒为 None | `addItem(text, icon=None, userData=None)` 位置传参第二参是 icon，URL 落进 icon 形参 | `addItem(label, userData=url)` 关键字传参 |
+| 封面出现后瞬间消失/跨嗅探错配 | 晚到的 loader 失败无差别 clearPixmap（无代际校验）+ 补载只看 isNull 造成同 URL 并发 | 回调带 worker 身份丢弃过期结果 + 补载前查 isRunning（见设计决策 18） |
+| 封面"能下载不能显示" | 封面是 Qt 不支持的格式（AVIF/HEIC 等），下载纯写字节不解码 | 最终兜底：落盘 + ffmpeg 转 jpg（见设计决策 19） |
+| QThread.run 内操作 QPixmap 崩溃/不可靠 | QPixmap/QGui 类仅主线程可用 | 工作线程内用 QImage 判断解码，主线程再转 QPixmap |
+| B 站短时重复请求 412 / x.com SSL 间歇被重置 | 站点风控 / 直连干扰 | 间隔数秒重试即可，非代码问题 |
