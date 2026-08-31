@@ -52,7 +52,7 @@ from sookit.core.ffmpeg_utils import (
 )
 from sookit.core.youtube_utils import (
     extract_youtube_id, YOUTUBE_THUMBNAILS, build_thumbnails,
-    fetch_youtube_metadata,
+    normalize_thumbnails, fetch_youtube_metadata,
 )
 from sookit.core.config import (
     get_config_path, load_config, save_config,
@@ -285,7 +285,12 @@ class Functions:
                 'filesize': filesize,
             })
 
-        valid_thumbs = build_thumbnails(info.get('id', ''))
+        if (info.get('extractor') or '').lower().startswith('youtube'):
+            # YouTube：用视频 ID 构建固定档位列表（现状行为不变）
+            valid_thumbs = build_thumbnails(info.get('id', ''))
+        else:
+            # 非 YouTube：用 yt-dlp 通用封面列表（extractor 通用字段）
+            valid_thumbs = normalize_thumbnails(info)
 
         if log: log(f"嗅探完成: {info.get('title', '')}, 共 {len(formats)} 个格式, {len(valid_thumbs)} 个封面")
 
@@ -294,6 +299,7 @@ class Functions:
             'duration': info.get('duration', 0),
             'channel': info.get('channel', '') or info.get('uploader', ''),
             'id': info.get('id', ''),
+            'extractor': info.get('extractor', ''),
             'thumbnail': info.get('thumbnail', ''),
             'formats': formats,
             'thumbnails': valid_thumbs,

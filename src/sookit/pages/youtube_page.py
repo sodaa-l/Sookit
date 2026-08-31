@@ -4,6 +4,7 @@
 import os
 import re
 import urllib.request
+from urllib.parse import urlparse
 
 from PyQt6.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QSplitter, QWidget, QFileDialog,
@@ -12,7 +13,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QThread, QTimer, QRectF, QByteArray, pyqtSignal
 
 from sookit.core.workers import GenericWorker
-from PyQt6.QtGui import QFont, QPixmap, QPainter, QColor, QPainterPath
+from PyQt6.QtGui import QFont, QPixmap, QImage, QPainter, QColor, QPainterPath
 
 import qfluentwidgets as qfw
 
@@ -21,10 +22,46 @@ from sookit.core.functions import (
     load_download_config, DEFAULT_OUTPUT_DIR, ensure_output_dir
 )
 from sookit.widgets.cover_image import CoverImageWidget
+from sookit.widgets.combo_box import StaticComboBox
 from sookit.widgets.infobar import show_infobar
 from sookit.pages.base import PageBase
 from sookit.core.task_queue import TaskType
+from sookit.core.ffmpeg_utils import check_ffmpeg, get_ffmpeg_path, run_ffmpeg
 from sookit.core.utils import get_certifi_ssl_context
+from sookit.paths import get_cover_dir
+
+
+def _sniff_image_format(path):
+    """读文件头魔数检测实际图片格式（仅兜底失败时用于日志说明，不做逻辑分支依据）"""
+    try:
+        with open(path, 'rb') as f:
+            head = f.read(32)
+    except OSError:
+        return '未知'
+    if head[:3] == b'\xff\xd8\xff':
+        return 'JPEG'
+    if head[:8] == b'\x89PNG\r\n\x1a\n':
+        return 'PNG'
+    if head[:4] == b'RIFF' and head[8:12] == b'WEBP':
+        return 'WEBP'
+    if len(head) >= 12 and head[4:8] == b'ftyp':
+        brand = head[8:12].decode('ascii', errors='replace').lower()
+        if brand.startswith('avi'):
+            return 'AVIF'
+        if brand in ('heic', 'heix', 'mif1', 'msf1', 'hevc', 'hevx'):
+            return 'HEIF/HEIC'
+        return brand.upper()
+    if head[:4] in (b'II*\x00', b'MM\x00*'):
+        return 'TIFF'
+    if head[:2] == b'BM':
+        return 'BMP'
+    if head[:2] == b'\xff\x0a' or head[:12] == b'\x00\x00\x00\x0cJXL \r\n\x87\n':
+        return 'JPEG XL'
+    if head[:1] == b'<' and (b'<svg' in head[:64] or head[:5] == b'<?xml'):
+        return 'SVG'
+    if head[:4] == b'\x00\x00\x01\x00':
+        return 'ICO'
+    return '未知'
 
 
 class YouTubePage(PageBase):
@@ -44,6 +81,9 @@ class YouTubePage(PageBase):
         self._cover_loader_worker = None
         self._cover_download_worker = None
         self._cover_data = None  # 封面原始字节数据（供任务队列复用）
+        self._sniff_thumbs = []  # 嗅探得到的封面列表（_populate_cover_combo 有效分支时保存，供入队复用）
+        self._cover_fallback_worker = None  # 最终兜底 worker（落盘下载 + ffmpeg 转码）
+        self._fallback_tried_urls = set()   # 已尝试过兜底的 URL（同 URL 会话内只试一次，防循环）
         self._ytdlp_warning_bar = None  # 「未找到 yt-dlp」常驻 infobar，装好后关闭
 
         # ---- 主布局 ----
@@ -109,7 +149,7 @@ class YouTubePage(PageBase):
         # 封面分辨率选择 + 下载按钮
         cover_control = QHBoxLayout()
         cover_control.addWidget(qfw.BodyLabel("封面分辨率:"))
-        self.cover_combo = qfw.ComboBox()
+        self.cover_combo = StaticComboBox()
         self.cover_combo.setMinimumWidth(180)
         self.cover_combo.setEnabled(False)
         cover_control.addWidget(self.cover_combo)
@@ -269,8 +309,11 @@ class YouTubePage(PageBase):
             return
 
         # 保存嗅探数据（video_id 可能已在 do_sniff 中设置）
+        # 仅 YouTube 赋值，避免非 YouTube 的站点 ID（如 B 站 BV 号）污染 _sniff_video_id
+        # （其消费方：_download_cover 文件名兜底、入队 cover_url、_on_sniff_failed 兜底加载）
         if not self._sniff_video_id:
-            self._sniff_video_id = info.get('id', '') or extract_youtube_id(self._last_sniff_url)
+            if (info.get('extractor') or '').lower().startswith('youtube'):
+                self._sniff_video_id = info.get('id', '') or extract_youtube_id(self._last_sniff_url)
         self._sniff_title = info.get('title', '')
         self._sniff_channel = info.get('channel', '')
         self._sniff_duration = info.get('duration', 0)
@@ -285,6 +328,16 @@ class YouTubePage(PageBase):
         thumbs = info.get('thumbnails', [])
         if thumbs:
             self._populate_cover_combo(thumbs)
+
+        # 嗅探前未显示封面的场景（非 YouTube 嗅探前无从取 URL）：
+        # 嗅探完成后加载最佳封面显示（YouTube 嗅探前已显示，此处自动跳过）。
+        # 已有进行中的加载线程时不再并发补载：isNull 只反映显示状态，快速路径
+        # 的成功信号可能还在主线程队列里，此时并发补载会在其成功后留下一个
+        # 冗余下载，晚到的失败会把刚显示的封面清掉
+        loader_busy = (self._cover_loader_worker is not None
+                       and self._cover_loader_worker.isRunning())
+        if thumbs and self.cover_label._pixmap.isNull() and not loader_busy:
+            self._load_cover_from_url(thumbs[0]['url'])
 
         # 填充格式表格
         fmts = info.get('formats', [])
@@ -429,13 +482,23 @@ class YouTubePage(PageBase):
                     self.failed.emit()
 
         worker = CoverLoader()
-        worker.loaded.connect(self._on_cover_loaded)
-        worker.failed.connect(lambda: self._on_cover_failed())
+        # 带身份转发：过期 worker（已被新 loader 取代）的晚到结果直接丢弃，
+        # 避免晚到的失败清掉新 loader 刚成功显示的封面（跨嗅探同理）
+        worker.loaded.connect(lambda d, w=worker: self._on_cover_loaded(d, w))
+        worker.failed.connect(lambda w=worker: self._on_cover_failed(w))
+        worker.finished.connect(lambda w=worker: self._on_loader_finished(w))
         self._cover_loader_worker = worker
         worker.start()
 
-    def _on_cover_loaded(self, data):
-        """封面加载完成 - 保存数据并显示"""
+    def _on_loader_finished(self, worker):
+        """封面加载线程结束：仍是当前 worker 才清引用（供补载 busy 判断、防 GC）"""
+        if self._cover_loader_worker is worker:
+            self._cover_loader_worker = None
+
+    def _on_cover_loaded(self, data, worker=None):
+        """封面加载完成 - 保存数据并显示（过期 worker 的结果直接丢弃）"""
+        if worker is not None and worker is not self._cover_loader_worker:
+            return
         self._cover_data = data  # 保存供任务队列复用
         pixmap = QPixmap()
         if pixmap.loadFromData(QByteArray(data)):
@@ -445,12 +508,153 @@ class YouTubePage(PageBase):
             self._cover_data = None
             self.cover_label.clearPixmap("封面加载失败")
 
-    def _on_cover_failed(self):
-        """封面加载失败"""
+    def _on_cover_failed(self, worker=None):
+        """封面加载失败（过期 worker 的结果直接丢弃）"""
+        if worker is not None and worker is not self._cover_loader_worker:
+            return
         self._cover_data = None
         self.cover_label.clearPixmap("封面加载失败")
+        self._maybe_start_cover_fallback()
+
+    def _maybe_start_cover_fallback(self):
+        """最终兜底：常规加载路径全部失败后，落盘下载最佳封面并显示。
+
+        条件：嗅探到了封面列表、无进行中的兜底、同 URL 会话内未试过
+        （防循环；失败 URL 不反复重试，跨嗅探保留）。
+        """
+        if not self._sniff_thumbs or self._cover_fallback_worker is not None:
+            return
+        best_url = self._sniff_thumbs[0]['url']
+        if best_url in self._fallback_tried_urls:
+            return
+        self._fallback_tried_urls.add(best_url)
+        self.log("常规封面加载失败，尝试最终兜底（落盘下载 + 转码）...")
+        worker = self.CoverFallbackWorker(best_url)
+        worker.resolved.connect(
+            lambda data, msg, w=worker: self._on_cover_fallback_resolved(data, msg, w))
+        worker.finished.connect(lambda w=worker: self._on_fallback_finished(w))
+        self._cover_fallback_worker = worker
+        worker.start()
+
+    def _on_cover_fallback_resolved(self, data, msg, worker):
+        """兜底结果：成功 → 显示并存 _cover_data；失败 → 保持占位并日志原因"""
+        if self._cover_fallback_worker is not worker:
+            return
+        self._cover_fallback_worker = None
+        if data:
+            pixmap = QPixmap()
+            if pixmap.loadFromData(QByteArray(data)):
+                self._cover_data = data  # 供任务队列复用
+                self.cover_label.setPixmap(pixmap)
+                self.log(f"封面兜底成功: {msg}")
+                return
+            msg = f"兜底字节无法解码: {msg}"
+        self.cover_label.clearPixmap("封面加载失败")
+        self.log(f"封面兜底失败: {msg}")
+
+    def _on_fallback_finished(self, worker):
+        """兜底线程结束：仍是当前 worker 才清引用（防 GC）"""
+        if self._cover_fallback_worker is worker:
+            self._cover_fallback_worker = None
+
+    def _load_cover_from_url(self, cover_url):
+        """按 URL 后台下载封面并显示（非 YouTube 站点嗅探后调用）。
+
+        与 _load_cover_image 内的 CoverLoader 逻辑一致，但以 URL 为入参，
+        不依赖 YouTube 视频 ID；_on_cover_loaded 会存 _cover_data 供任务队列复用。
+        """
+        if not cover_url:
+            return
+
+        class UrlCoverLoader(QThread):
+            loaded = pyqtSignal(bytes)
+            failed = pyqtSignal()
+
+            def run(self):
+                try:
+                    req = urllib.request.Request(
+                        cover_url,
+                        headers={'User-Agent': 'Mozilla/5.0'})
+                    with urllib.request.urlopen(req, timeout=15, context=get_certifi_ssl_context()) as resp:
+                        data = resp.read()
+                    if data:
+                        self.loaded.emit(data)
+                    else:
+                        self.failed.emit()
+                except Exception:
+                    self.failed.emit()
+
+        worker = UrlCoverLoader()
+        worker.loaded.connect(lambda d, w=worker: self._on_cover_loaded(d, w))
+        worker.failed.connect(lambda w=worker: self._on_cover_failed(w))
+        worker.finished.connect(lambda w=worker: self._on_loader_finished(w))
+        self._cover_loader_worker = worker
+        worker.start()
 
     # -------- 封面下载 Worker（独立 QThread，支持并行）--------
+    class CoverFallbackWorker(QThread):
+        """最终兜底 worker：常规 loader 全部失败后启动。
+
+        落盘下载最佳封面（Functions.download_thumbnail，即实测"能下载成功"
+        的同款实现）→ QImage 直接解码 → 失败则用内置 ffmpeg 转码 jpg 再解码
+        （覆盖 Qt 不支持的格式，如 AVIF/HEIC）。
+
+        resolved(bytes|None, msg)：bytes = 可显示的图片字节（供主线程
+        setPixmap + 存 _cover_data）；None = 彻底失败（msg 含原因/实际格式）。
+        注意：线程内用 QImage 判断解码（可跨线程），QPixmap 仅主线程。
+        """
+
+        resolved = pyqtSignal(object, str)
+
+        def __init__(self, url):
+            super().__init__()
+            self.url = url
+
+        def run(self):
+            import hashlib
+            try:
+                cache_dir = get_cover_dir()
+                os.makedirs(cache_dir, exist_ok=True)
+                name = hashlib.sha1(self.url.encode('utf-8')).hexdigest()[:16]
+                raw_path = os.path.join(str(cache_dir), f"fallback_{name}.img")
+                jpg_path = os.path.join(str(cache_dir), f"fallback_{name}.jpg")
+
+                # 0. 缓存命中：上次兜底转码成功的 jpg 直接复用（重复嗅探免重下）
+                if os.path.exists(jpg_path) and not QImage(jpg_path).isNull():
+                    with open(jpg_path, 'rb') as f:
+                        self.resolved.emit(f.read(), "缓存命中，加载成功")
+                    return
+
+                # 1. 落盘下载（与"下载封面"按钮同款实现）
+                Functions.download_thumbnail(self.url, raw_path)
+
+                # 2. 直接解码（覆盖网络抖动型失败：显示 loader 失败但字节有效）
+                if not QImage(raw_path).isNull():
+                    with open(raw_path, 'rb') as f:
+                        self.resolved.emit(f.read(), "落盘后直接加载成功")
+                    return
+
+                # 3. 解码失败 → ffmpeg 转码 jpg（覆盖 Qt 不支持的格式，如 AVIF）
+                fmt = _sniff_image_format(raw_path)
+                if not check_ffmpeg():
+                    self.resolved.emit(None, f"解码失败({fmt})且 ffmpeg 不可用")
+                    return
+                ffmpeg = get_ffmpeg_path()
+                if not os.path.exists(ffmpeg):
+                    ffmpeg = 'ffmpeg'
+                try:
+                    run_ffmpeg([ffmpeg, '-y', '-i', raw_path, jpg_path], None)
+                except Exception as e:
+                    self.resolved.emit(None, f"解码失败({fmt})且转码失败: {e}")
+                    return
+                if not QImage(jpg_path).isNull():
+                    with open(jpg_path, 'rb') as f:
+                        self.resolved.emit(f.read(), f"ffmpeg 转码后加载成功（原格式 {fmt}）")
+                    return
+                self.resolved.emit(None, f"转码后仍无法解码（原格式 {fmt}）")
+            except Exception as e:
+                self.resolved.emit(None, f"兜底下载失败: {e}")
+
     class CoverDownloadWorker(QThread):
         """封面下载专用线程，与视频下载并行执行"""
         log_signal = pyqtSignal(str)
@@ -473,44 +677,52 @@ class YouTubePage(PageBase):
     def _populate_cover_combo(self, thumbs):
         self.cover_combo.clear()
         if thumbs:
-            for t in thumbs:
+            # 保存列表供入队 cover_url 复用（YouTube = 硬编码 5 档，非 YouTube = yt-dlp 通用列表）
+            self._sniff_thumbs = thumbs
+            for i, t in enumerate(thumbs):
                 w = t.get('width', 0) or 0
                 h = t.get('height', 0) or 0
-                tid = t.get('id', 'unknown')
-                label = f"{w}x{h} ({tid})" if w and h else tid
-                self.cover_combo.addItem(label, t['url'])
+                tid = t.get('id', '') or ''
+                if w and h:
+                    # id 为非纯数字（如 maxresdefault）时附加标注；纯数字/缺失（通用列表）则只显示宽高
+                    label = f"{w}x{h} ({tid})" if tid and not tid.isdigit() else f"{w}x{h}"
+                elif i == 0:
+                    label = "最佳分辨率"
+                else:
+                    label = f"备选分辨率 {i + 1}"
+                # 注意：qfluentwidgets ComboBox.addItem(text, icon=None, userData=None)，
+                # URL 必须以 userData 关键字传入（位置传参会落进 icon 形参导致 currentData() 恒为 None）
+                self.cover_combo.addItem(label, userData=t['url'])
             self.cover_combo.setEnabled(True)
             self.cover_btn.setEnabled(True)
             self.log(f"找到 {len(thumbs)} 个封面分辨率")
         else:
+            # 重置残留，避免上一视频的封面列表串入当前无封面场景
+            self._sniff_thumbs = []
             self.cover_combo.addItem("无可用封面")
             self.cover_combo.setEnabled(False)
             self.cover_btn.setEnabled(False)
 
     def _download_cover(self):
         video_id = self._sniff_video_id or extract_youtube_id(self.url_input.text().strip())
-        if not video_id:
-            show_infobar(self, "warning", title="提示", content="该链接不支持封面获取",
-                         duration=3000)
+        # 直接取下拉框当前项的 URL（userData），与显示内容天然一致；
+        # 不按索引重建列表（通用列表项数与 build_thumbnails 不同，重建会索引错位）
+        cover_url = self.cover_combo.currentData()
+        if not cover_url:
+            msg = "请先选择一个封面分辨率" if video_id else "该链接不支持封面获取"
+            show_infobar(self, "warning", title="提示", content=msg, duration=3000)
             return
-
-        idx = self.cover_combo.currentIndex()
-        thumbs = build_thumbnails(video_id)
-        if idx < 0 or idx >= len(thumbs):
-            show_infobar(self, "warning", title="提示", content="请先选择一个封面分辨率",
-                         duration=3000)
-            return
-        cover_url = thumbs[idx]['url']
 
         out_dir = self.out_dir.text().strip() or DEFAULT_OUTPUT_DIR
+        # 扩展名按封面 URL 推断（白名单外默认 .jpg），通用站点封面可能是 png/webp
+        ext = os.path.splitext(urlparse(cover_url).path)[1].lower()
+        if ext not in ('.jpg', '.jpeg', '.png', '.webp'):
+            ext = '.jpg'
         if self._sniff_title:
             safe_base = "".join(c for c in self._sniff_title if c.isalnum() or c in ' _-.,()[]').strip()
-            if safe_base:
-                filename = f"{safe_base}_cover.jpg"
-            else:
-                filename = f"{video_id}_cover.jpg"
+            filename = f"{safe_base or video_id or 'cover'}_cover{ext}"
         else:
-            filename = f"{video_id}_cover.jpg"
+            filename = f"{video_id or 'cover'}_cover{ext}"
 
         path = os.path.join(out_dir, filename)
         if os.path.exists(path):
@@ -536,7 +748,10 @@ class YouTubePage(PageBase):
     def _on_cover_download_done(self, success, path):
         """封面下载完成回调"""
         if success:
-            self.log(f"✓ 封面下载完成: {path}")
+            # 实测分辨率弥补下拉框无宽高档位的信息缺失（QPixmap 读图头，开销可忽略）
+            pixmap = QPixmap(path)
+            size_info = f"（实际分辨率 {pixmap.width()}x{pixmap.height()}）" if not pixmap.isNull() else ""
+            self.log(f"✓ 封面下载完成: {path}{size_info}")
             show_infobar(self, "success", title="封面下载完成",
                          content=f"已保存到: {os.path.basename(path)}", duration=3000)
         else:
@@ -651,8 +866,12 @@ class YouTubePage(PageBase):
             'out_dir': out_dir,
         }
         # 传递封面数据（避免队列中重复下载）
+        # cover_url 优先用嗅探得到的封面列表首项（任意站点通用，非 YouTube 也可入队显示封面）；
+        # 无列表时兜底用视频 ID 构建（YouTube 现状行为）
         video_id = self._sniff_video_id or extract_youtube_id(url)
-        if video_id:
+        if self._sniff_thumbs:
+            metadata['cover_url'] = self._sniff_thumbs[0]['url']
+        elif video_id:
             thumbs = build_thumbnails(video_id)
             if thumbs:
                 metadata['cover_url'] = thumbs[0]['url']
