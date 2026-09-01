@@ -10,7 +10,7 @@ from PyQt6.QtWidgets import (
     QSizePolicy
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QByteArray, QRectF, QUrl
-from PyQt6.QtGui import QPixmap, QFont, QColor, QPainter, QPainterPath
+from PyQt6.QtGui import QPixmap, QFont, QColor, QPainter, QPainterPath, QFontMetrics
 import qfluentwidgets as qfw
 from qfluentwidgets import FluentIcon, ToolTipFilter, qconfig
 from PyQt6.QtGui import QDesktopServices
@@ -18,6 +18,7 @@ from PyQt6.QtGui import QDesktopServices
 from sookit.core.task_queue import Task, TaskType, TaskStatus
 from sookit.core.ffmpeg_utils import format_duration
 from sookit.core.utils import get_certifi_ssl_context
+from sookit.widgets.elided_label import ElidedLabel, count_lines
 
 
 # ---------- 任务卡片基类 ----------
@@ -889,10 +890,9 @@ class CompletedThumbnailCard(QWidget):
         self.cover = CoverAreaWidget(task, self)
         layout.addWidget(self.cover)
 
-        # 标题
-        self.title_label = QLabel(task.title)
-        self.title_label.setFont(self._TITLE_FONT)
-        self.title_label.setWordWrap(True)
+        # 标题（YouTube 风格：最多两行，超出在第二行末尾 … 截断；高度按实际行数）
+        self.title_label = ElidedLabel(task.title, max_lines=2,
+                                       font=self._TITLE_FONT)
         layout.addWidget(self.title_label)
 
         # 元信息
@@ -928,26 +928,37 @@ class CompletedThumbnailCard(QWidget):
         return True
 
     def heightForWidth(self, w: int) -> int:
+        """卡片在宽度 w 下的精确高度（标题按实际行数 1~2 行，各子项高度全部确定）"""
         m = self._MARGIN
         content_w = w - 2 * m
 
-        # 封面高度（16:9）
+        # 封面高度（16:9 随宽度缩放）
         cover_h = max(self.THUMB_H, int(content_w * 9 / 16))
 
-        # 标题高度（根据 content_w 换行估算）
-        fm = QFontMetrics(self._TITLE_FONT)
-        title_rect = fm.boundingRect(
-            0, 0, content_w, 2000,
-            Qt.AlignmentFlag.AlignLeft | Qt.TextFlag.WordBreak,
-            self.task.title)
-        title_h = title_rect.height()
+        # 标题高度：按卡片当前宽度直接计算实际行数（1~2 行）。
+        # 不读标签缓存值——标签宽度更新滞后于卡片，窗口缩放跨过单行/两行
+        # 临界点时会拿到旧行数，导致单行标题空隙回归或两行标题被挤压
+        title_font = self.title_label.font()
+        n = count_lines(self.task.title, title_font, content_w, max_lines=2)
+        title_h = n * QFontMetrics(title_font).height()
 
-        # 元信息单行高度
-        meta_fm = QFontMetrics(self._META_FONT)
-        meta_h = meta_fm.height()
+        # 元信息单行高度（+2px 余量：pre-app QFont 的全局度量与控件内部分辨率
+        # 可能相差 1px，meta 为 Preferred 弹性项自然吸收，避免挤压）
+        meta_h = QFontMetrics(self._META_FONT).height() + 2
 
-        # 总高度：上边距 + 封面 + 间距 + 标题 + 间距 + 元信息 + 下边距 + 补偿
-        return m + cover_h + 6 + max(title_h, 18) + 4 + meta_h + m + 4
+        # 总高度：上边距 + 封面 + 间距 + 标题 + 间距 + 元信息 + 下边距
+        return m + cover_h + 6 + title_h + 4 + meta_h + m + 4
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        # 同步封面固定高度（与 heightForWidth 同一公式，卡内布局零协商空间）
+        content_w = self.width() - 2 * self._MARGIN
+        self.cover.setFixedHeight(max(self.THUMB_H, int(content_w * 9 / 16)))
+        # 锁定卡片总高度：流布局按 sizeHint 分配高度（不查 heightForWidth），
+        # 锁死后 sizeHint 即精确值，布局一轮收敛
+        h = self.heightForWidth(self.width())
+        if h != self.height():
+            self.setFixedHeight(h)
 
 
 # ---------- 创建卡片的工厂函数 ----------
