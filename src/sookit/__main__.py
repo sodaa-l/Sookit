@@ -37,6 +37,25 @@ def _acquire_single_instance():
     return handle
 
 
+def _cleanup_fallback_covers():
+    """启动时清理封面兜底缓存（covers/fallback_*，会话级缓存不跨启动保留）。
+
+    与任务封面缓存 covers/{task_id}.jpg（ULID 命名）互不干扰：
+    已完成任务的封面恢复不经过 fallback_* 文件，清理零影响。
+    """
+    try:
+        import glob
+        from sookit.paths import get_cover_dir
+        cache_dir = str(get_cover_dir())
+        for p in glob.glob(os.path.join(cache_dir, 'fallback_*')):
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+    except Exception:
+        pass
+
+
 def main():
     # ---------- 单实例互斥体 ----------
     # 必须在创建 QApplication 之前检测：已有实例则提示并退出，不启动界面。
@@ -104,6 +123,9 @@ def main():
         )
 
     sys.excepthook = _excepthook
+
+    # 清理上次会话的封面兜底缓存（covers/fallback_*，会话级缓存）
+    _cleanup_fallback_covers()
 
     QApplication.setHighDpiScaleFactorRoundingPolicy(
         Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)

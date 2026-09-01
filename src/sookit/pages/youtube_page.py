@@ -3,6 +3,7 @@
 """
 import os
 import re
+import glob
 import urllib.request
 from urllib.parse import urlparse
 
@@ -26,7 +27,8 @@ from sookit.widgets.combo_box import StaticComboBox
 from sookit.widgets.infobar import show_infobar
 from sookit.pages.base import PageBase
 from sookit.core.task_queue import TaskType
-from sookit.core.ffmpeg_utils import check_ffmpeg, get_ffmpeg_path, run_ffmpeg
+from sookit.core.ffmpeg_utils import run_ytdlp
+from sookit.core.ytdlp_utils import build_ytdlp_cmd
 from sookit.core.utils import get_certifi_ssl_context
 from sookit.paths import get_cover_dir
 
@@ -62,6 +64,16 @@ def _sniff_image_format(path):
     if head[:4] == b'\x00\x00\x01\x00':
         return 'ICO'
     return '未知'
+
+
+def _find_fallback_product(cache_dir, name):
+    """遍历 fallback_{name}.* 兜底产物（排除 .img 原始落盘），返回第一个 QImage 可解的路径"""
+    for p in glob.glob(os.path.join(str(cache_dir), f"fallback_{name}.*")):
+        if p.endswith('.img'):
+            continue
+        if not QImage(p).isNull():
+            return p
+    return None
 
 
 class YouTubePage(PageBase):
@@ -593,14 +605,17 @@ class YouTubePage(PageBase):
 
     # -------- 封面下载 Worker（独立 QThread，支持并行）--------
     class CoverFallbackWorker(QThread):
-        """最终兜底 worker：常规 loader 全部失败后启动。
+        """最终兜底 worker：常规 loader 全部失败后启动。两级链路：
 
-        落盘下载最佳封面（Functions.download_thumbnail，即实测"能下载成功"
-        的同款实现）→ QImage 直接解码 → 失败则用内置 ffmpeg 转码 jpg 再解码
-        （覆盖 Qt 不支持的格式，如 AVIF/HEIC）。
+        0. 缓存命中（遍历 fallback_{hash}.*，jpg/webp/png 均可）
+        1. 落盘下载（Functions.download_thumbnail，即实测"能下载成功"的同款实现）
+           → QImage 直接解码（覆盖网络抖动型失败）；**下载失败（防盗链 403）不中断**
+        2. yt-dlp --write-thumbnail（防盗链兜底：yt-dlp 自带 extractor 的
+           headers/cookies；--socket-timeout/--retries 保证进程时长有界）
+           → 遍历产物 → QImage 解码。
 
-        resolved(bytes|None, msg)：bytes = 可显示的图片字节（供主线程
-        setPixmap + 存 _cover_data）；None = 彻底失败（msg 含原因/实际格式）。
+        解码失败（如 AVIF 等 Qt 不支持的格式）统一放弃：保持占位 + 日志报
+        魔数检测的实际格式。resolved(bytes|None, msg)。
         注意：线程内用 QImage 判断解码（可跨线程），QPixmap 仅主线程。
         """
 
@@ -617,43 +632,56 @@ class YouTubePage(PageBase):
                 os.makedirs(cache_dir, exist_ok=True)
                 name = hashlib.sha1(self.url.encode('utf-8')).hexdigest()[:16]
                 raw_path = os.path.join(str(cache_dir), f"fallback_{name}.img")
-                jpg_path = os.path.join(str(cache_dir), f"fallback_{name}.jpg")
 
-                # 0. 缓存命中：上次兜底转码成功的 jpg 直接复用（重复嗅探免重下）
-                if os.path.exists(jpg_path) and not QImage(jpg_path).isNull():
-                    with open(jpg_path, 'rb') as f:
+                # 0. 缓存命中：遍历上次兜底产物（jpg/webp/png 均可，排除 .img）
+                hit = _find_fallback_product(cache_dir, name)
+                if hit:
+                    with open(hit, 'rb') as f:
                         self.resolved.emit(f.read(), "缓存命中，加载成功")
                     return
 
-                # 1. 落盘下载（与"下载封面"按钮同款实现）
-                Functions.download_thumbnail(self.url, raw_path)
-
-                # 2. 直接解码（覆盖网络抖动型失败：显示 loader 失败但字节有效）
-                if not QImage(raw_path).isNull():
-                    with open(raw_path, 'rb') as f:
-                        self.resolved.emit(f.read(), "落盘后直接加载成功")
-                    return
-
-                # 3. 解码失败 → ffmpeg 转码 jpg（覆盖 Qt 不支持的格式，如 AVIF）
-                fmt = _sniff_image_format(raw_path)
-                if not check_ffmpeg():
-                    self.resolved.emit(None, f"解码失败({fmt})且 ffmpeg 不可用")
-                    return
-                ffmpeg = get_ffmpeg_path()
-                if not os.path.exists(ffmpeg):
-                    ffmpeg = 'ffmpeg'
+                # 1. 落盘下载（与"下载封面"按钮同款实现）；防盗链 403 等失败
+                #    不中断，落到 yt-dlp 兜底（yt-dlp 自带 extractor headers）。
+                #    .img 为纯中间文件：不参与缓存命中，残留由启动清理兜底。
+                data = None
                 try:
-                    run_ffmpeg([ffmpeg, '-y', '-i', raw_path, jpg_path], None)
+                    Functions.download_thumbnail(self.url, raw_path)
+                    if not QImage(raw_path).isNull():
+                        with open(raw_path, 'rb') as f:
+                            data = f.read()
+                except Exception:
+                    data = None
+
+                if data:
+                    self.resolved.emit(data, "落盘后直接加载成功")
+                    return
+
+                # 2. yt-dlp --write-thumbnail（防盗链兜底，最后一级）
+                #    --socket-timeout/--retries 保证进程时长有界（约 1~2 分钟内）
+                try:
+                    template = os.path.join(str(cache_dir), f"fallback_{name}.%(ext)s")
+                    cmd = build_ytdlp_cmd(
+                        '--skip-download', '--no-playlist', '--no-warnings',
+                        '--write-thumbnail', '--socket-timeout', '20', '--retries', '1',
+                        '-o', template, self.url)
+                    run_ytdlp(cmd, None)
                 except Exception as e:
-                    self.resolved.emit(None, f"解码失败({fmt})且转码失败: {e}")
+                    self.resolved.emit(None, f"yt-dlp 兜底失败: {e}")
                     return
-                if not QImage(jpg_path).isNull():
-                    with open(jpg_path, 'rb') as f:
-                        self.resolved.emit(f.read(), f"ffmpeg 转码后加载成功（原格式 {fmt}）")
+                hit = _find_fallback_product(cache_dir, name)
+                if hit:
+                    with open(hit, 'rb') as f:
+                        self.resolved.emit(f.read(), "yt-dlp 兜底加载成功")
                     return
-                self.resolved.emit(None, f"转码后仍无法解码（原格式 {fmt}）")
+                # 无可解产物：若有产物存在（可能格式 Qt 不支持，如 AVIF），日志报实际格式
+                any_prod = [p for p in glob.glob(os.path.join(str(cache_dir), f"fallback_{name}.*"))
+                            if not p.endswith('.img')]
+                if any_prod:
+                    self.resolved.emit(None, f"yt-dlp 产物无法解码（{_sniff_image_format(any_prod[0])}）")
+                    return
+                self.resolved.emit(None, "yt-dlp 兜底未产出可用封面")
             except Exception as e:
-                self.resolved.emit(None, f"兜底下载失败: {e}")
+                self.resolved.emit(None, f"兜底失败: {e}")
 
     class CoverDownloadWorker(QThread):
         """封面下载专用线程，与视频下载并行执行"""
@@ -714,9 +742,9 @@ class YouTubePage(PageBase):
             return
 
         out_dir = self.out_dir.text().strip() or DEFAULT_OUTPUT_DIR
-        # 扩展名按封面 URL 推断（白名单外默认 .jpg），通用站点封面可能是 png/webp
+        # 扩展名按封面 URL 推断（白名单外默认 .jpg），通用站点封面可能是 png/webp/avif
         ext = os.path.splitext(urlparse(cover_url).path)[1].lower()
-        if ext not in ('.jpg', '.jpeg', '.png', '.webp'):
+        if ext not in ('.jpg', '.jpeg', '.png', '.webp', '.avif'):
             ext = '.jpg'
         if self._sniff_title:
             safe_base = "".join(c for c in self._sniff_title if c.isalnum() or c in ' _-.,()[]').strip()
