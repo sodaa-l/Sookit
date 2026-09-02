@@ -117,7 +117,7 @@ class YouTubePage(PageBase):
         # ---- URL 输入行 ----
         url_row = QHBoxLayout()
         self.url_input = qfw.LineEdit()
-        self.url_input.setPlaceholderText("粘贴 YouTube 视频链接...")
+        self.url_input.setPlaceholderText("粘贴视频链接...")
         # 蓝色嗅探按钮
         self.sniff_btn = qfw.PrimaryPushButton("嗅探")
         self.sniff_btn.setFixedWidth(100)
@@ -260,7 +260,7 @@ class YouTubePage(PageBase):
     def do_sniff(self):
         url = self.url_input.text().strip()
         if not url:
-            show_infobar(self, "warning", title="提示", content="请先输入 YouTube 链接",
+            show_infobar(self, "warning", title="提示", content="请先输入视频链接",
                          duration=3000)
             return
         # 切换按钮：隐藏蓝色嗅探，显示灰色停止嗅探
