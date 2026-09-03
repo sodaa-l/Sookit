@@ -13,7 +13,8 @@ from PyQt6.QtCore import Qt, QThread, QObject, pyqtSignal, pyqtSlot, QTimer, QBy
 from PyQt6.QtGui import QTextCursor, QIcon
 
 import qfluentwidgets as qfw
-from qfluentwidgets import FluentIcon as FIF, NavigationItemPosition, InfoBadge, InfoBadgePosition
+from qfluentwidgets import FluentIcon as FIF, NavigationItemPosition, \
+    InfoBadge, InfoBadgePosition, DotInfoBadge
 
 from sookit import APP_NAME, APP_VERSION
 from sookit.paths import get_icon_path
@@ -87,8 +88,14 @@ class MainWindow(qfw.FluentWindow):
 
         qfw.setThemeColor(load_theme_color())
 
+        # 更新状态（驱动导航"设置" Badge）：Sookit 新版本号 / yt-dlp 有新版或未安装
+        self._sookit_update = None
+        self._ytdlp_update = False
+
         # 延时创建任务队列 Badge（确保导航界面已完全初始化）
         QTimer.singleShot(0, self._setup_queue_badge)
+        # 延时创建"设置"导航项 Badge（更新来源红点：Sookit / yt-dlp）
+        QTimer.singleShot(0, self._setup_settings_badge)
 
         # 延时自动检查更新（避免阻塞启动渲染；release 未上传/查询失败时静默跳过）
         QTimer.singleShot(2000, self._check_update_at_startup)
@@ -125,6 +132,46 @@ class MainWindow(qfw.FluentWindow):
             self._queue_badge.setVisible(True)
         else:
             self._queue_badge.setVisible(False)
+
+    # ========== "设置"导航项更新 Badge ==========
+
+    def _setup_settings_badge(self):
+        """创建"设置"导航项的空文案 error InfoBadge（尺寸与任务队列 badge 等高）"""
+        nav_item = self.navigationInterface.widget(self.settings_page.objectName())
+        if not nav_item:
+            return
+
+        self._settings_badge = InfoBadge.error(
+            "", parent=self, target=nav_item, position=InfoBadgePosition.TOP_RIGHT)
+        # 与任务队列文字 badge 等高（任务队列 badge 先创建，高度即其样式高度）
+        h = self._queue_badge.height() if hasattr(self, "_queue_badge") else 16
+        self._settings_badge.setFixedSize(h, h)
+        # make() 仅在创建时按空文案的初始小宽度定位一次，放大后（左上角锚定）
+        # 圆心会右/下偏移，须按最终尺寸重新对位
+        self._settings_badge.move(self._settings_badge.manager.position())
+        self._settings_badge.setVisible(False)
+        self._update_settings_badge()
+
+    def _update_settings_badge(self):
+        """刷新设置圆点：任一来源（Sookit / yt-dlp）有更新即显示，无更新时隐藏"""
+        if not hasattr(self, "_settings_badge"):
+            return
+
+        count = (1 if self._sookit_update else 0) + (1 if self._ytdlp_update else 0)
+        self._settings_badge.setVisible(count > 0)
+
+        # 同步设置页"检查更新"按钮上的圆点（Sookit 有新版时亮）
+        self.settings_page.set_sookit_update_dot(bool(self._sookit_update))
+
+    def _set_sookit_update(self, latest):
+        """记录 Sookit 新版本状态并刷新 Badge（None = 无更新/已被忽略，跟随静默）"""
+        self._sookit_update = latest
+        self._update_settings_badge()
+
+    def notify_ytdlp_update(self, available: bool):
+        """SettingsPage 回调：yt-dlp 有新版本/未安装(True) 或 已更新(False)，刷新 Badge"""
+        self._ytdlp_update = available
+        self._update_settings_badge()
 
     def _center_on_screen(self):
         """在 show() 之前居中，用 width/height 而非 frameGeometry"""
@@ -219,8 +266,9 @@ class MainWindow(qfw.FluentWindow):
 
     @pyqtSlot(object)
     def _on_startup_check_done(self, latest):
-        """启动检查结果：有新版 → 弹更新 Dialog（无新版/失败静默）"""
+        """启动检查结果：有新版 → 点亮 Badge 并弹更新 Dialog（无新版/失败静默）"""
         if latest:
+            self._set_sookit_update(latest)
             self.prompt_update(latest)
 
     def check_update_manual(self):
@@ -231,8 +279,10 @@ class MainWindow(qfw.FluentWindow):
     def _on_manual_check_done(self, latest):
         """手动检查结果：有新版弹 Dialog，无新版提示已是最新"""
         if latest:
+            self._set_sookit_update(latest)
             self.prompt_update(latest)
         else:
+            self._set_sookit_update(None)
             show_infobar(self._info_parent(), "info", title="已是最新版本",
                          content=f"当前已是最新版本（{get_current_version()}）", duration=5000)
 
@@ -256,6 +306,8 @@ class MainWindow(qfw.FluentWindow):
         def _on_ignore():
             self._ignore_handled = True
             set_ignored_version(latest)
+            # 忽略后跟随静默：清除 Sookit 更新状态（Badge/圆点随之熄灭）
+            self._set_sookit_update(None)
             try:
                 dialog.reject()
             except Exception:

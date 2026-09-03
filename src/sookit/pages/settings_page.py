@@ -8,6 +8,7 @@ from PyQt6.QtWidgets import QVBoxLayout, QHBoxLayout, QWidget, QScrollArea, QFra
 from PyQt6.QtCore import Qt, QThread, QObject, pyqtSignal, pyqtSlot, QTimer
 
 import qfluentwidgets as qfw
+from qfluentwidgets import DotInfoBadge, InfoBadgePosition
 
 from sookit.core.functions import (
     is_ytdlp_available, get_ytdlp_source, build_ytdlp_cmd,
@@ -244,6 +245,17 @@ class SettingsPage(QWidget):
         aria2c_lay.addWidget(self.aria2c_label, 1)
         layout.addWidget(self.aria2c_card)
 
+        # 按钮圆点 badge（DotInfoBadge 无文字，点击穿透，随卡片滚动；
+        # error 红色在主题色按钮上醒目，默认 4px 太小故放大到 10px）
+        self._yt_btn_dot = DotInfoBadge.error(
+            parent=self.yt_card, target=self.yt_btn, position=InfoBadgePosition.TOP_RIGHT)
+        self._yt_btn_dot.setFixedSize(10, 10)
+        self._yt_btn_dot.setVisible(False)
+        self._check_btn_dot = DotInfoBadge.error(
+            parent=about_card, target=self.check_update_btn, position=InfoBadgePosition.TOP_RIGHT)
+        self._check_btn_dot.setFixedSize(10, 10)
+        self._check_btn_dot.setVisible(False)
+
         layout.addStretch()
 
     def _connect_signals(self):
@@ -366,6 +378,9 @@ class SettingsPage(QWidget):
                     self._deno_ver = ""
         else:
             self._yt_ver = ""
+            # 未安装 yt-dlp：视同待处理，点亮圆点并同步主窗口 Badge 引导安装
+            self._set_yt_dot(True)
+            self._notify_ytdlp_update(True)
             self._render_yt_label()
         # ffmpeg（版本信息在 stderr）
         if check_ffmpeg():
@@ -529,24 +544,52 @@ class SettingsPage(QWidget):
 
     @pyqtSlot(str)
     def _on_latest_version(self, ver):
-        """在主线程比较版本，有新版本则弹常驻 InfoBar（含前往设置按钮，非阻塞）"""
+        """在主线程比较版本，有新版本则点亮圆点并弹常驻 InfoBar（含前往设置按钮，非阻塞）"""
         if not ver:
             return
         cur = self._normalize_version(self._yt_current_ver)
         lat = self._normalize_version(ver)
-        if lat and cur and lat > cur and self._yt_new_version_bar is None:
-            self._yt_new_version_bar = show_infobar(
-                self, "warning", title="yt-dlp 有新版本",
-                content=f"当前版本 {cur}，最新版本 {lat}。不更新可能导致视频嗅探失败，请前往设置页更新。",
-                duration=-1)
-            btn = qfw.PushButton("前往设置")
-            btn.clicked.connect(self._go_to_settings)
-            self._yt_new_version_bar.addWidget(btn)
+        if lat and cur and lat > cur:
+            self._set_yt_dot(True)
+            self._notify_ytdlp_update(True)
+            if self._yt_new_version_bar is None:
+                self._yt_new_version_bar = show_infobar(
+                    self, "warning", title="yt-dlp 有新版本",
+                    content=f"当前版本 {cur}，最新版本 {lat}。不更新可能导致视频嗅探失败，请前往设置页更新。",
+                    duration=-1)
+                btn = qfw.PushButton("前往设置")
+                btn.clicked.connect(self._go_to_settings)
+                self._yt_new_version_bar.addWidget(btn)
 
     def _go_to_settings(self):
         win = self.window()
         if win is not None and hasattr(win, "switchTo"):
             win.switchTo(win.settings_page)
+
+    # ========== 更新状态圆点（按钮 badge） ==========
+
+    def _set_yt_dot(self, visible: bool):
+        """控制 yt-dlp「下载/更新」按钮圆点显示"""
+        dot = getattr(self, "_yt_btn_dot", None)
+        if dot is not None:
+            dot.setVisible(visible)
+
+    def set_sookit_update_dot(self, visible: bool):
+        """供主窗口调用：Sookit 有新版本时点亮「检查更新」按钮圆点"""
+        dot = getattr(self, "_check_btn_dot", None)
+        if dot is not None:
+            dot.setVisible(visible)
+
+    def _notify_ytdlp_update(self, available: bool):
+        """把 yt-dlp 更新状态同步给主窗口（刷新导航"设置" Badge）"""
+        win = self.window()
+        if win is not None and hasattr(win, "notify_ytdlp_update"):
+            win.notify_ytdlp_update(available)
+
+    def _clear_yt_update_state(self):
+        """更新完成/已最新：清圆点并同步主窗口"""
+        self._set_yt_dot(False)
+        self._notify_ytdlp_update(False)
 
     def close_yt_new_version_bar(self):
         """更新成功后关闭「有新版本」提示条（避免过时提示）"""
@@ -712,6 +755,7 @@ class SettingsPage(QWidget):
         if all_up_to_date:
             # 两者都已最新
             self.yt_label.setText("yt-dlp / Deno  —  已是最新版本")
+            self._clear_yt_update_state()
             show_infobar(self, "info", title="提示",
                          content="yt-dlp 与 Deno 均已是最新版本，无需更新",
                          duration=5000)
@@ -730,6 +774,7 @@ class SettingsPage(QWidget):
             show_infobar(self, "success", title="完成",
                          content=f"{yt_state}；{deno_state}", duration=5000)
             self.close_yt_new_version_bar()  # 更新成功，关闭「有新版本」提示条
+            self._clear_yt_update_state()   # 更新成功，清圆点并同步主窗口 Badge
             # 装好后刷新主窗口及各页面「未找到 yt-dlp」提示（修复2）
             win = self.window()
             if win is not None and hasattr(win, "refresh_ytdlp_status"):

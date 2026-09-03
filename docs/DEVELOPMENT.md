@@ -17,7 +17,8 @@ src/sookit/        代码包 (标准 src 布局)
     ├─ assets/            静态资源 (960x960.png 应用图标)
     │
     ├─ pages/          UI 页面层 (7 个页面)
-    │   └─ base.py     PageBase 基类 — 拖放、run_queued_task、自动关机
+    │   ├─ base.py     PageBase 基类 — 拖放、run_queued_task、自动关机
+    │   └─ ...         youtube_page (视频嗅探, 类名保留 YouTubePage 但已全站点通用) 等
     │
     ├─ core/           业务逻辑层
     │   ├─ functions.py     Functions 类 — 聚合所有功能接口 + 模块再导出
@@ -26,13 +27,15 @@ src/sookit/        代码包 (标准 src 布局)
     │   ├─ ffmpeg_utils.py  FFmpeg/yt-dlp/aria2c 路径查找和子进程管理
     │   ├─ ytdlp_utils.py   yt-dlp/Deno 集中管理：版本检查、下载、独立下载器调起
     │   ├─ updater.py       Sookit 自身自动更新 (core/updater.py)
-    │   ├─ youtube_utils.py YouTube 元数据提取 (HTTP 降级方案)
+    │   ├─ youtube_utils.py 元数据提取 + 缩略图构建/通用规范化 (HTTP 降级方案)
     │   ├─ config.py        配置管理 (JSON 缓存 + 线程锁)
     │   └─ utils.py         滚动条样式等杂项
     │
     └─ widgets/        可复用 UI 组件层
         ├─ cover_image.py   封面自绘控件
         ├─ combo_box.py     StaticComboBox (单项静态化下拉框)
+        ├─ elided_label.py  ElidedLabel (多行省略标签, 1~2 行自适应)
+        ├─ infobar.py       show_infobar() 统一提示 (自动分级换行)
         └─ task_card.py     任务卡片 (2 种类型 + 工厂函数 + 封面三级加载)
 
 运行时数据 (不在项目根，见 paths.py)：
@@ -121,7 +124,7 @@ flowchart TB
 
 ### 页面 (`pages/`)
 
-所有页面继承 `PageBase(QWidget)`，通过 `run_queued_task()` 加入任务队列。7 个页面：视频嗅探（youtube_page，文案已通用化但类名保留 YouTubePage）、直播监控、字幕烧录、音频覆盖、音频提取、任务队列、设置。
+所有页面继承 `PageBase(QWidget)`，通过 `run_queued_task()` 加入任务队列。7 个页面：视频嗅探（youtube_page，嗅探/下载/封面/占位符与提示文案均已通用化，仅类名保留 YouTubePage）、直播监控（monitor_page，定位仍是 YouTube 轮询）、字幕烧录、音频覆盖、音频提取、任务队列、设置。
 
 ### 自定义组件 (`widgets/`)
 
@@ -129,6 +132,7 @@ flowchart TB
 | --- | --- |
 | `cover_image.py` | `CoverImageWidget` 封面自绘控件（等比缩放 + 圆角，无黑边） |
 | `combo_box.py` | `StaticComboBox`：qfluentwidgets ComboBox 子类，仅 1 项时静态显示（点击不弹菜单、不画箭头），≥2 项与原生一致；count 动态判断无需刷新 |
+| `elided_label.py` | `ElidedLabel`：多行省略标签（已完成页卡片标题最多两行，超宽末尾加 …，行数 1~2 自适应）；QTextLayout 算截断点 + `fm.elidedText`，注意 UTF-16 偏移换算与字体度量同源（见设计决策 21） |
 | `task_card.py` | 任务卡片（2 种类型 + 工厂函数 + 封面三级加载） |
 | `infobar.py` | `show_infobar()` 统一提示（见 InfoBar 提示规范） |
 
@@ -282,6 +286,27 @@ yt-dlp/Deno 下载更新从 Sookit 解耦为独立 `updater.exe`：
 ### 20. StaticComboBox 单项静态化（2026-09-01）
 
 `widgets/combo_box.py`：qfluentwidgets ComboBox 子类，`count() <= 1` 时 `mouseReleaseEvent` 吞点击（不弹菜单）且 `paintEvent` 跳过箭头绘制（纯静态显示），≥2 项与原生一致；count 动态判断，档位数变化无需刷新。按压/hover 透明度由 `ComboBoxBase.eventFilter` 在 mouseReleaseEvent 之前维护，吞事件不影响视觉状态。嗅探页 cover_combo 已换用（X/Bilibili 单档、"无可用封面"占位均为静态）。
+
+### 21. ElidedLabel 多行省略标签与卡片高度自适应（2026-09-01/02）
+
+已完成页卡片标题用 `widgets/elided_label.py` 的 `ElidedLabel`（YouTube 风格，最多两行、超宽末尾加 …）：
+
+- **截断计算**：QTextLayout（WordWrap 模式，与 QLabel 渲染一致）定位截断点 + `fm.elidedText` 给末行加 …，行间插 `\n`。`textStart()` 返回 **UTF-16 偏移**，含 emoji 标题需换算成 Python 码点偏移（`_u16_to_py`）。
+- **高度按实际行数自适应（1~2 行）**，单行标题不预留空行。卡片 `resizeEvent` 锁总高，根治 AdaptiveFlowLayout 不查 heightForWidth 导致的标题叠封面（`_doLayout` 只用 `sizeHint().height()`）。
+- **卡片 `heightForWidth` 必须用 `count_lines(task.title, title_label.font(), content_w, 2)` 按卡片当前宽度实时算行数**——勿读标签缓存行数（标签宽度更新滞后于卡片，窗口缩放跨单行/两行临界点时拿到旧行数 → 高度滞后一行）。
+- **字体度量两个坑**：① `QWidget.setFont` 非虚函数，Python 重写不被调用，字体须经构造参数传入、运行时变化靠 `changeEvent(FontChange)` 重算；② pre-app 构造的类属性 QFont（全局度量）与控件上下文度量可差 1px，行数与行高计算一律用 `title_label.font()` 同源度量。
+- 已知边界：超长无空格单词/纯 emoji 串在 WordWrap 下不可断行 → 不省略、横向裁切（与 QLabel 渲染一致，可接受）。
+
+### 22. 更新状态 Badge：导航双 badge + 设置页按钮圆点（2026-09-04）
+
+两层更新提示体系，数据源为 Sookit 自更新（`core/updater.py`）与 yt-dlp/Deno（`ytdlp_utils.py`）：
+
+- **导航"任务队列" badge**：`InfoBadge.attension` 文字胶囊，数字 = `get_active_tasks()` 数量，信号驱动（`task_added`/`task_completed`/`task_removed` → `_update_queue_badge`），归零隐藏。
+- **导航"设置" badge**：`InfoBadge.error("")` 空文案红点，任一更新来源（Sookit 新版 / yt-dlp 有新版或未安装）命中即显示。状态由 `MainWindow._sookit_update`/`_ytdlp_update` 两个标志聚合；**尺寸动态取任务队列 badge 的 `height()`（17px）等高对齐**。Sookit 侧接线：启动/手动检查有新版点亮（与更新 Dialog 并存）、手动检查无新版清除、**「忽略此版本」清除（跟随静默，复用 `check_latest_version()` 的忽略过滤）**。
+- **设置页按钮圆点**：`DotInfoBadge.error` 10px（`setFixedSize(10,10)`），挂 yt_card/about_card 上 target 按钮。「下载/更新」圆点由 SettingsPage 自管：`_on_latest_version` 有新版或 `_check_versions` 未安装分支点亮，`_on_ytdlp_download_done` 的 up_to_date/updated 分支清除（`_clear_yt_update_state` 同时经 `notify_ytdlp_update` 同步主窗口）；「检查更新」圆点由主窗口经 `set_sookit_update_dot` 控制。
+- **配色坑**：`attension` 级 = 主题色，圆点贴在主题色 `PrimaryPushButton` 上会隐形——按钮圆点必须用 `error`/`warning` 级。
+- **InfoBadge 定位坑（重要）**：`InfoBadgeManager` 只监听 **target** 的 Move/Resize 重定位，badge 自身 resize 不触发；且 `make()` 仅在创建时按当时尺寸定位一次。空文案 badge 初始宽度极小（~9px），`setFixedSize` 放大为左上角锚定 → 圆心右/下偏 ~4px。**修复：放大后手动 `badge.move(badge.manager.position())` 重算**。同理，文字 badge `setText` 后位数变化（如 9→10）需 `adjustSize()` + 重算位置。
+- 页面级（SettingsPage → MainWindow）通信用 `self.window()` 弱引用回调（与 `_go_to_settings` 同模式），不引入信号耦合。
 
 ## AI 编码约定
 
