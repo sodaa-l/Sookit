@@ -222,8 +222,9 @@ class YouTubePage(PageBase):
         right_layout.addWidget(self.format_table, stretch=1)
 
         # 下载按钮
-        self.download_btn = qfw.PrimaryPushButton("▶ 下载选中格式")
+        self.download_btn = qfw.PrimaryPushButton("▶ 下载并合并选中格式")
         self.download_btn.setFixedWidth(240)
+        self.download_btn.setEnabled(False)  # 嗅探完毕且有可用格式后才可点击
         self.download_btn.clicked.connect(self.do_download)
         right_layout.addWidget(self.download_btn, alignment=Qt.AlignmentFlag.AlignCenter)
 
@@ -271,6 +272,7 @@ class YouTubePage(PageBase):
         self.stop_sniff_btn.setVisible(True)
         self.format_table.setRowCount(0)
         self._formats_data = []
+        self.download_btn.setEnabled(False)  # 新嗅探开始，重置按钮可用性
         self._sniff_timed_out = False
         self._last_sniff_url = url
         # 清空封面
@@ -396,6 +398,7 @@ class YouTubePage(PageBase):
         # 填充完成后强制恢复列宽（Fixed 模式，防止勾选框撑宽"选择"列）
         self._fix_format_table_columns()
 
+        self.download_btn.setEnabled(True)
         self.log(f"嗅探完成，共 {len(fmts)} 个格式")
         show_infobar(self, "success", title="完成",
                      content=f"找到 {len(fmts)} 个可用格式", duration=3000)
@@ -829,77 +832,19 @@ class YouTubePage(PageBase):
     # -------- 格式下载 --------
     def do_download(self):
         checked = []
-        checked_video = []
-        checked_audio = []
         for row in range(self.format_table.rowCount()):
             item = self.format_table.item(row, 0)
             if item and item.checkState() == Qt.CheckState.Checked:
                 if row < len(self._formats_data):
-                    fmt = self._formats_data[row]
-                    checked.append(fmt['format_id'])
-                    if fmt['type'] == '视频流':
-                        checked_video.append(fmt['format_id'])
-                    elif fmt['type'] == '音频流':
-                        checked_audio.append(fmt['format_id'])
+                    checked.append(self._formats_data[row]['format_id'])
 
         if not checked:
             show_infobar(self, "warning", title="提示", content="请至少勾选一个格式",
                          duration=3000)
             return
 
-        # 视频流+音频流各一个 → TeachingTip 询问是否合并
-        if len(checked_video) == 1 and len(checked_audio) == 1 and len(checked) == 2:
-            from qfluentwidgets import TeachingTip, TeachingTipView, TeachingTipTailPosition
-            from PyQt6.QtWidgets import QHBoxLayout, QWidget
-            from PyQt6.QtGui import QFont
-
-            view = TeachingTipView(
-                title="",
-                content="勾选了一个视频流格式和一个音频流格式。\n是否将它们合并为一个有声视频？",
-                isClosable=True,
-            )
-            view.setMinimumWidth(280)
-            font = view.contentLabel.font()
-            font.setPointSize(font.pointSize() + 2)
-            view.contentLabel.setFont(font)
-
-            # 按钮容器
-            btn_widget = QWidget()
-            btn_layout = QHBoxLayout(btn_widget)
-            btn_layout.setContentsMargins(0, 0, 0, 0)
-
-            btn_yes = qfw.PrimaryPushButton("是（合并）")
-            btn_no = qfw.PushButton("否（分开下载）")
-            btn_yes.setFixedWidth(130)
-            btn_no.setFixedWidth(130)
-            btn_layout.addStretch()
-            btn_layout.addWidget(btn_yes)
-            btn_layout.addWidget(btn_no)
-            btn_layout.addStretch()
-
-            view.addWidget(btn_widget, 0, Qt.AlignmentFlag.AlignCenter)
-
-            tip = TeachingTip.make(
-                view=view,
-                target=self.download_btn,
-                duration=-1,
-                tailPosition=TeachingTipTailPosition.BOTTOM,
-                parent=self,
-            )
-            view.closed.connect(tip.close)
-
-            def _on_yes():
-                tip.close()
-                self._start_download('+'.join(checked))
-
-            def _on_no():
-                tip.close()
-                self._start_download(','.join(checked))
-
-            btn_yes.clicked.connect(_on_yes)
-            btn_no.clicked.connect(_on_no)
-        else:
-            self._start_download('+'.join(checked))
+        # '+' 拼接交 yt-dlp：视频流+音频流自动用 ffmpeg 合并为一个有声视频
+        self._start_download('+'.join(checked))
 
     def _start_download(self, format_spec):
         url = self.url_input.text().strip()
