@@ -1,0 +1,79 @@
+# tag 触发自动打包：git tag build.260830.2 && git push --tags
+# 产物：dist/Sookit-Setup-<版本>.exe，自动挂到 GitHub Release
+# tag 必须用 build.YYMMDD.rev 格式（与 APP_VERSION 一致）：
+# core/updater.py 的 is_newer 靠 "build." 前缀识别日期版，v 前缀纯数字 tag
+# 会被误判为语义化版本，导致"检查新版本"永远误报
+name: Release
+
+on:
+  push:
+    tags: ["build.*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 校验版本号一致性（tag = APP_VERSION，剥 build. 后 = pyproject）
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+          if ($tag -notmatch '^[vV]?build\.(\d{6}(?:\.\d+)?)$') {
+            Write-Error "tag ($tag) 格式应为 build.YYMMDD 或 build.YYMMDD.rev"; exit 1
+          }
+          $ver = $Matches[1]
+          $pyproject = (Select-String -Path pyproject.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
+          $appver = (Select-String -Path src/sookit/__init__.py -Pattern 'APP_VERSION = "build\.(.+)"').Matches[0].Groups[1].Value
+          Write-Host "tag=$tag pyproject=$pyproject app_version=$appver"
+          if ($ver -ne $pyproject) { Write-Error "pyproject.toml version ($pyproject) 与 tag ($tag) 不一致"; exit 1 }
+          if ($ver -ne $appver) { Write-Error "APP_VERSION ($appver) 与 tag ($tag) 不一致"; exit 1 }
+          Add-Content $env:GITHUB_ENV "VERSION=$ver"
+
+      - uses: astral-sh/setup-uv@v5
+
+      - name: 安装依赖
+        run: uv sync
+
+      - name: PyInstaller 打包
+        run: uv run pyinstaller --noconfirm packaging/sookit.spec
+
+      - name: 下载 ffmpeg / aria2c（tools/ 不入库，按本地目录结构补齐）
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          # ffmpeg essentials（共享构建，bin/ 含 exe + DLL），只取 ffmpeg/ffprobe/DLL，排除 ffplay
+          Invoke-WebRequest -Uri "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip" -OutFile ffmpeg.zip
+          Expand-Archive ffmpeg.zip -DestinationPath ffmpeg_tmp
+          New-Item -ItemType Directory -Force dist/Sookit/tools/ffmpeg | Out-Null
+          Copy-Item ffmpeg_tmp/*/bin/ffmpeg.exe   dist/Sookit/tools/ffmpeg/
+          Copy-Item ffmpeg_tmp/*/bin/ffprobe.exe  dist/Sookit/tools/ffmpeg/
+          Copy-Item ffmpeg_tmp/*/bin/*.dll        dist/Sookit/tools/ffmpeg/
+          # aria2
+          Invoke-WebRequest -Uri "https://github.com/aria2/aria2/releases/download/release-1.37.0/aria2-1.37.0-win-64bit-build1.zip" -OutFile aria2.zip
+          Expand-Archive aria2.zip -DestinationPath aria2_tmp
+          New-Item -ItemType Directory -Force dist/Sookit/tools/aria2c | Out-Null
+          Copy-Item aria2_tmp/*/aria2c.exe dist/Sookit/tools/aria2c/
+          Remove-Item -Recurse -Force ffmpeg_tmp, aria2_tmp, ffmpeg.zip, aria2.zip
+
+      - name: 替换 installer.iss 版本号
+        shell: pwsh
+        run: |
+          $iss = Get-Content packaging/installer.iss -Raw
+          $iss = $iss -replace '#define MyAppVersion ".*"', "#define MyAppVersion `"$env:VERSION`""
+          Set-Content packaging/installer.iss $iss -NoNewline
+
+      - name: 编译 Inno Setup 安装器
+        shell: pwsh
+        run: |
+          choco install innosetup -y --no-progress
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" packaging/installer.iss
+
+      - name: 发布到 GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/Sookit-Setup-*.exe
+          generate_release_notes: true
