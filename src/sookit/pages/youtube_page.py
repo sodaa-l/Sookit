@@ -97,6 +97,7 @@ class YouTubePage(PageBase):
         self._cover_fallback_worker = None  # 最终兜底 worker（落盘下载 + ffmpeg 转码）
         self._fallback_tried_urls = set()   # 已尝试过兜底的 URL（同 URL 会话内只试一次，防循环）
         self._ytdlp_warning_bar = None  # 「未找到 yt-dlp」常驻 infobar，装好后关闭
+        self._format_updating = False  # 格式表填充/互斥反勾期间守卫，防止 itemChanged 递归误触发
 
         # ---- 主布局 ----
         layout = QVBoxLayout(self)
@@ -216,6 +217,8 @@ class YouTubePage(PageBase):
         self.format_table.setAlternatingRowColors(True)
         self.format_table.setMinimumHeight(150)
         self._fix_format_table_columns()
+        # 同类型互斥勾选：勾选某项时自动取消同类型其他已勾项（"其他"类型不限）
+        self.format_table.itemChanged.connect(self._on_format_item_changed)
         right_layout.addWidget(self.format_table, stretch=1)
 
         # 下载按钮
@@ -365,25 +368,30 @@ class YouTubePage(PageBase):
         self._formats_data = sorted_fmts
         self.format_table.setRowCount(len(sorted_fmts))
 
-        for row, fmt in enumerate(sorted_fmts):
-            item = QTableWidgetItem()
-            item.setFlags(Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
-            is_best = (fmt['type'] == '视频+音频' and '1080' in fmt['quality']) or \
-                      (fmt['type'] == '视频+音频' and row == 0)
-            item.setCheckState(Qt.CheckState.Checked if is_best else Qt.CheckState.Unchecked)
-            self.format_table.setItem(row, 0, item)
-            self.format_table.setItem(row, 1, QTableWidgetItem(fmt['type']))
-            self.format_table.setItem(row, 2, QTableWidgetItem(fmt['quality']))
-            codec = fmt.get('vcodec', '')
-            if fmt['type'] == '仅音频':
-                codec = fmt.get('acodec', '')
-            elif fmt['type'] == '视频+音频':
-                v = fmt.get('vcodec', '')
-                a = fmt.get('acodec', '')
-                codec = f"{v}+{a}" if v and a else (v or a)
-            self.format_table.setItem(row, 3, QTableWidgetItem(codec))
-            lang = fmt.get('language', '')
-            self.format_table.setItem(row, 4, QTableWidgetItem(lang))
+        # 填充期间屏蔽互斥处理（setItem/setCheckState 会触发 itemChanged）
+        self._format_updating = True
+        try:
+            for row, fmt in enumerate(sorted_fmts):
+                item = QTableWidgetItem()
+                item.setFlags(Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+                is_best = (fmt['type'] == '视频+音频' and '1080' in fmt['quality']) or \
+                          (fmt['type'] == '视频+音频' and row == 0)
+                item.setCheckState(Qt.CheckState.Checked if is_best else Qt.CheckState.Unchecked)
+                self.format_table.setItem(row, 0, item)
+                self.format_table.setItem(row, 1, QTableWidgetItem(fmt['type']))
+                self.format_table.setItem(row, 2, QTableWidgetItem(fmt['quality']))
+                codec = fmt.get('vcodec', '')
+                if fmt['type'] == '音频流':
+                    codec = fmt.get('acodec', '')
+                elif fmt['type'] == '视频+音频':
+                    v = fmt.get('vcodec', '')
+                    a = fmt.get('acodec', '')
+                    codec = f"{v}+{a}" if v and a else (v or a)
+                self.format_table.setItem(row, 3, QTableWidgetItem(codec))
+                lang = fmt.get('language', '')
+                self.format_table.setItem(row, 4, QTableWidgetItem(lang))
+        finally:
+            self._format_updating = False
 
         # 填充完成后强制恢复列宽（Fixed 模式，防止勾选框撑宽"选择"列）
         self._fix_format_table_columns()
@@ -421,7 +429,7 @@ class YouTubePage(PageBase):
         return 0
 
     def _format_sort_key(self, fmt):
-        """排序：视频+音频(高→低分辨率) → 仅音频(高→低码率) → 仅视频(高→低分辨率) → 其他"""
+        """排序：视频+音频(高→低分辨率) → 音频流(高→低码率) → 视频流(高→低分辨率) → 其他"""
         t = fmt['type']
         if FormatType.VIDEO_AUDIO in t:
             cat = 0
@@ -792,6 +800,32 @@ class YouTubePage(PageBase):
         """Fixed 模式 + 按比例分配填满，每次 resize 自动重算"""
         self.format_table._distribute_columns()
 
+    # -------- 格式表同类型互斥勾选 --------
+    def _on_format_item_changed(self, item):
+        """勾选某项时自动取消同类型其他已勾项；"其他"类型不限制"""
+        if self._format_updating or item.column() != 0:
+            return
+        if item.checkState() != Qt.CheckState.Checked:
+            return
+        row = item.row()
+        if row >= len(self._formats_data):
+            return
+        fmt_type = self._formats_data[row].get('type', '')
+        if fmt_type not in (FormatType.VIDEO_AUDIO, FormatType.AUDIO_ONLY, FormatType.VIDEO_ONLY):
+            return
+        self._format_updating = True
+        try:
+            for r in range(self.format_table.rowCount()):
+                if r == row:
+                    continue
+                other = self.format_table.item(r, 0)
+                if (other and other.checkState() == Qt.CheckState.Checked
+                        and r < len(self._formats_data)
+                        and self._formats_data[r].get('type') == fmt_type):
+                    other.setCheckState(Qt.CheckState.Unchecked)
+        finally:
+            self._format_updating = False
+
     # -------- 格式下载 --------
     def do_download(self):
         checked = []
@@ -803,9 +837,9 @@ class YouTubePage(PageBase):
                 if row < len(self._formats_data):
                     fmt = self._formats_data[row]
                     checked.append(fmt['format_id'])
-                    if fmt['type'] == '仅视频':
+                    if fmt['type'] == '视频流':
                         checked_video.append(fmt['format_id'])
-                    elif fmt['type'] == '仅音频':
+                    elif fmt['type'] == '音频流':
                         checked_audio.append(fmt['format_id'])
 
         if not checked:
@@ -813,7 +847,7 @@ class YouTubePage(PageBase):
                          duration=3000)
             return
 
-        # 仅视频+仅音频各一个 → TeachingTip 询问是否合并
+        # 视频流+音频流各一个 → TeachingTip 询问是否合并
         if len(checked_video) == 1 and len(checked_audio) == 1 and len(checked) == 2:
             from qfluentwidgets import TeachingTip, TeachingTipView, TeachingTipTailPosition
             from PyQt6.QtWidgets import QHBoxLayout, QWidget
@@ -821,7 +855,7 @@ class YouTubePage(PageBase):
 
             view = TeachingTipView(
                 title="",
-                content="勾选了一个仅视频格式和一个仅音频格式。\n是否将它们合并为一个有声视频？",
+                content="勾选了一个视频流格式和一个音频流格式。\n是否将它们合并为一个有声视频？",
                 isClosable=True,
             )
             view.setMinimumWidth(280)

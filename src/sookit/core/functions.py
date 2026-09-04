@@ -147,8 +147,8 @@ def sanitize_filename(name):
 class FormatType:
     """格式类型常量 (替代中文字符串比较)"""
     VIDEO_AUDIO = "视频+音频"
-    AUDIO_ONLY = "仅音频"
-    VIDEO_ONLY = "仅视频"
+    AUDIO_ONLY = "音频流"
+    VIDEO_ONLY = "视频流"
     OTHER = "其他"
 
 
@@ -248,19 +248,19 @@ class Functions:
             if vcodec != 'none' and acodec != 'none':
                 fmt_type = '视频+音频'
             elif vcodec != 'none':
-                fmt_type = '仅视频'
+                fmt_type = '视频流'
             elif acodec != 'none':
-                fmt_type = '仅音频'
+                fmt_type = '音频流'
             else:
                 fmt_type = '其他'
 
             height = f.get('height', 0) or 0
             tbr = f.get('tbr', 0) or 0
-            if fmt_type == '仅视频' and height:
+            if fmt_type == '视频流' and height:
                 quality = f"{height}p"
                 if f.get('fps'):
                     quality += f" {int(f.get('fps', 0))}fps"
-            elif fmt_type == '仅音频':
+            elif fmt_type == '音频流':
                 quality = f"{int(tbr)}kbps" if tbr else ''
             elif fmt_type == '视频+音频':
                 quality = f"{height}p" if height else f"{int(tbr)}kbps"
