@@ -370,15 +370,23 @@ class YouTubePage(PageBase):
         self._formats_data = sorted_fmts
         self.format_table.setRowCount(len(sorted_fmts))
 
+        # 预勾选：有"视频+音频"勾首行（即最佳 VA）；否则勾最佳"视频流"+"音频流"各一。
+        # 排序保证每类型首次出现的行即该类型最佳项（视频流按分辨率、音频流按码率降序）。
+        first_row = {}
+        for row, fmt in enumerate(sorted_fmts):
+            first_row.setdefault(fmt['type'], row)
+        if '视频+音频' in first_row:
+            precheck_rows = {first_row['视频+音频']}
+        else:
+            precheck_rows = {first_row[t] for t in ('视频流', '音频流') if t in first_row}
+
         # 填充期间屏蔽互斥处理（setItem/setCheckState 会触发 itemChanged）
         self._format_updating = True
         try:
             for row, fmt in enumerate(sorted_fmts):
                 item = QTableWidgetItem()
                 item.setFlags(Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
-                is_best = (fmt['type'] == '视频+音频' and '1080' in fmt['quality']) or \
-                          (fmt['type'] == '视频+音频' and row == 0)
-                item.setCheckState(Qt.CheckState.Checked if is_best else Qt.CheckState.Unchecked)
+                item.setCheckState(Qt.CheckState.Checked if row in precheck_rows else Qt.CheckState.Unchecked)
                 self.format_table.setItem(row, 0, item)
                 self.format_table.setItem(row, 1, QTableWidgetItem(fmt['type']))
                 self.format_table.setItem(row, 2, QTableWidgetItem(fmt['quality']))
