@@ -45,8 +45,8 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          # ffmpeg essentials（共享构建，bin/ 含 exe + DLL），只取 ffmpeg/ffprobe/DLL，排除 ffplay
-          Invoke-WebRequest -Uri "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip" -OutFile ffmpeg.zip
+          # ffmpeg 8.1.2 essentials（固定版本，共享构建，bin/ 含 exe + DLL），只取 ffmpeg/ffprobe/DLL，排除 ffplay
+          Invoke-WebRequest -Uri "https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-8.1.2-essentials_build.zip" -OutFile ffmpeg.zip
           Expand-Archive ffmpeg.zip -DestinationPath ffmpeg_tmp
           New-Item -ItemType Directory -Force dist/Sookit/tools/ffmpeg | Out-Null
           Copy-Item ffmpeg_tmp/*/bin/ffmpeg.exe   dist/Sookit/tools/ffmpeg/
