@@ -86,6 +86,9 @@ class MainWindow(qfw.FluentWindow):
         self.addSubInterface(self.queue_page, FIF.UPDATE, "任务队列", position=NavigationItemPosition.BOTTOM)
         self.addSubInterface(self.settings_page, FIF.SETTING, "设置", position=NavigationItemPosition.BOTTOM)
 
+        # 进入任务队列页时：进行中为空且已完成非空 → 直接落在"已完成"视图
+        self.stackedWidget.currentChanged.connect(self._on_stack_changed)
+
         qfw.setThemeColor(load_theme_color())
 
         # 更新状态（驱动导航"设置" Badge）：Sookit 新版本号 / yt-dlp 有新版或未安装
@@ -99,6 +102,15 @@ class MainWindow(qfw.FluentWindow):
 
         # 延时自动检查更新（避免阻塞启动渲染；release 未上传/查询失败时静默跳过）
         QTimer.singleShot(2000, self._check_update_at_startup)
+
+    def _on_stack_changed(self, index: int):
+        """切换到任务队列页时：进行中为空且已完成非空 → 直接落在"已完成"。"""
+        if self.stackedWidget.widget(index) is not self.queue_page:
+            return
+        from sookit.core.task_queue import TaskQueueManager
+        mgr = TaskQueueManager.instance()
+        if not mgr.get_active_tasks() and mgr.get_completed_tasks():
+            self.queue_page.segment_widget.setCurrentItem("completed")
 
     def _setup_queue_badge(self):
         """创建任务队列的 InfoBadge（显示"进行中"任务数）"""

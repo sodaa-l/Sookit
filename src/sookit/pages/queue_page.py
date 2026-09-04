@@ -124,6 +124,8 @@ class QueuePage(PageBase):
     
     def _on_task_added(self, task: Task):
         """新任务添加"""
+        # 新任务加入后强制回到"进行中"视图（不管当前页面/segment 状态）
+        self.segment_widget.setCurrentItem("active")
         # 创建卡片
         card = create_task_card(task)
         self._active_cards[task.task_id] = card
