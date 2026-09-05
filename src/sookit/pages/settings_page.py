@@ -324,18 +324,38 @@ class SettingsPage(QWidget):
         save_task_complete_action(index)
 
     def _on_check_update(self):
-        """「检查更新」按钮：复用主窗口更新流程（后台查询 → 弹 Dialog）"""
+        """「检查更新」按钮：复用主窗口更新流程（后台查询 → 结果回显）。
+
+        检查在后台线程进行，期间按钮置灰 + 文案「检查中…」+ 常驻「检查中」提示条，
+        完成后由主窗口 _on_check_done 回调 on_manual_check_finished 统一恢复。
+        """
         win = self.window()
-        if win is not None and hasattr(win, "check_update_manual"):
-            self.check_update_btn.setEnabled(False)
-            # 手动检查完成后恢复按钮可用
-            try:
-                win.check_update_manual()
-            finally:
-                self.check_update_btn.setEnabled(True)
-        else:
+        if win is None or not hasattr(win, "check_update_manual"):
             show_infobar(self, "info", title="提示",
                          content="未找到主窗口，无法检查更新", duration=5000)
+            return
+        if getattr(self, "_manual_checking", False):
+            return  # 已在检查中，避免叠加多条提示
+        self._manual_checking = True
+        self.check_update_btn.setEnabled(False)
+        self.check_update_btn.setText("检查中…")
+        self._check_progress_bar = show_infobar(
+            self, "info", title="检查中",
+            content=f"正在检查 {APP_NAME} 的新版本…", closable=False)
+        win.check_update_manual()
+
+    def on_manual_check_finished(self):
+        """手动检查完成（主窗口 _on_check_done 回调）：恢复按钮、关闭「检查中」条"""
+        self._manual_checking = False
+        self.check_update_btn.setEnabled(True)
+        self.check_update_btn.setText("检查更新")
+        bar = getattr(self, "_check_progress_bar", None)
+        if bar is not None:
+            try:
+                bar.close()
+            except RuntimeError:
+                pass
+            self._check_progress_bar = None
 
     @staticmethod
     def _parse_ytdlp_version(text: str) -> str:

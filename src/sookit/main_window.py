@@ -162,18 +162,15 @@ class MainWindow(qfw.FluentWindow):
     # ========== "设置"导航项更新 Badge ==========
 
     def _setup_settings_badge(self):
-        """创建"设置"导航项的空文案 error InfoBadge（尺寸与任务队列 badge 等高）"""
+        """创建"设置"导航项的圆点 badge（复用设置页"检查更新"按钮圆点样式：10px error 圆点）"""
         nav_item = self.navigationInterface.widget(self.settings_page.objectName())
         if not nav_item:
             return
 
-        self._settings_badge = InfoBadge.error(
-            "", parent=self, target=nav_item, position=InfoBadgePosition.TOP_RIGHT)
-        # 与任务队列文字 badge 等高（任务队列 badge 先创建，高度即其样式高度）
-        h = self._queue_badge.height() if hasattr(self, "_queue_badge") else 16
-        self._settings_badge.setFixedSize(h, h)
-        # make() 仅在创建时按空文案的初始小宽度定位一次，放大后（左上角锚定）
-        # 圆心会右/下偏移，须按最终尺寸重新对位
+        self._settings_badge = DotInfoBadge.error(
+            parent=self, target=nav_item, position=InfoBadgePosition.TOP_RIGHT)
+        self._settings_badge.setFixedSize(10, 10)
+        # 创建时按初始尺寸定位一次，放大后（左上角锚定）圆心会偏移，须按最终尺寸重新对位
         self._settings_badge.move(self._settings_badge.manager.position())
         self._settings_badge.setVisible(False)
         self._update_settings_badge()
@@ -343,6 +340,9 @@ class MainWindow(qfw.FluentWindow):
         if not manual:
             # 自动检查循环：无论结果如何都安排下一轮（成功走周期+抖动，失败走退避）
             self._schedule_next_auto_check(ok=(status != "failed"))
+        else:
+            # 手动检查收尾：恢复设置页按钮/关闭「检查中」条（无论结果如何）
+            self.settings_page.on_manual_check_finished()
 
     def _close_update_bar(self):
         """关闭旧的更新状态常驻条（防重复检查叠加多条）"""
@@ -395,6 +395,15 @@ class MainWindow(qfw.FluentWindow):
         bar.addWidget(ignore_btn)
         self._update_bar = bar
 
+        def _on_closed():
+            # 用户点 X 关闭（qfw 自己关条，不走 _close_update_bar）：
+            # 必须清防叠加状态，否则后续手动/自动检查同版本会被 guard 吞掉（表现为"没反应"）
+            if getattr(self, "_update_bar", None) is bar:
+                self._update_bar = None
+                self._update_bar_kind = None
+
+        bar.closedSignal.connect(_on_closed)
+
     def _show_update_failed_bar(self):
         """「检查更新失败」常驻 InfoBar：引导前往 GitHub 手动下载（不误报为已最新）"""
         if getattr(self, "_update_bar_kind", None) == ("failed",):
@@ -410,6 +419,14 @@ class MainWindow(qfw.FluentWindow):
             lambda: QDesktopServices.openUrl(QUrl(RELEASES_URL)))
         bar.addWidget(gh_btn)
         self._update_bar = bar
+
+        def _on_closed():
+            # 同 _show_update_bar：点 X 关闭后清防叠加状态，下次失败才能重新弹条
+            if getattr(self, "_update_bar", None) is bar:
+                self._update_bar = None
+                self._update_bar_kind = None
+
+        bar.closedSignal.connect(_on_closed)
 
     def _do_update(self, latest: str):
         """移交独立 updater.exe 下载安装包（非提权，进度在其小窗回显）。

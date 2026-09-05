@@ -12,6 +12,7 @@ yt-dlp 集中管理：来源解析、命令组装、内置安装与更新。
 
 import ctypes
 import json
+import logging
 import os
 import queue
 import re
@@ -29,6 +30,8 @@ from sookit.core.utils import get_certifi_ssl_context
 from sookit.paths import get_ytdlp_dir, get_tools_dir
 from sookit.core.config import load_download_config
 from sookit.core.ffmpeg_utils import get_aria2c_path
+
+_logger = logging.getLogger("Sookit.ytdlp_utils")
 
 
 class DownloadCancelled(Exception):
@@ -168,8 +171,9 @@ def _download_file(url: str, dest: Path, label: str, progress_cb=None,
                 tmp.unlink(missing_ok=True)
                 Path(str(tmp) + ".aria2").unlink(missing_ok=True)  # aria2c 控制文件一并清理
                 raise
-            except Exception:
+            except Exception as e:  # noqa: BLE001
                 # aria2c 下载失败 → 回退 urllib 单线程
+                _logger.warning("%s：aria2c 下载失败，回退单线程: %s", label, e)
                 tmp.unlink(missing_ok=True)
                 Path(str(tmp) + ".aria2").unlink(missing_ok=True)
                 if progress_cb:
@@ -233,6 +237,7 @@ def _download_file_with_aria2c(aria2c: str, url: str, tmp: Path, label: str,
     total = None
     done = 0
     buf = bytearray()
+    output_tail: list[str] = []   # 保留输出尾部，失败时随异常上抛便于定位
     _PROGRESS_RE = re.compile(r"\[#[a-zA-Z0-9]+\s+([\d.]+)([KMG]?i?B)/([\d.]+)([KMG]?i?B)\s*\((\d+)%\)")
     try:
         while True:
@@ -263,6 +268,7 @@ def _download_file_with_aria2c(aria2c: str, url: str, tmp: Path, label: str,
                     del buf[:pos + 1]
                 if not line:
                     continue
+                output_tail.append(line)
                 m = _PROGRESS_RE.search(line)
                 if m:
                     try:
@@ -278,7 +284,10 @@ def _download_file_with_aria2c(aria2c: str, url: str, tmp: Path, label: str,
         reader.join(timeout=1.0)
     proc.wait()
     if proc.returncode != 0:
-        raise RuntimeError(f"aria2c 退出码 {proc.returncode}")
+        # 截取输出尾部（截断超长行，重定向 NOTICE 可能上千字符）供日志与错误信息定位
+        detail = " / ".join(line[:200] for line in output_tail[-4:])
+        _logger.warning("aria2c 下载失败（退出码 %s）: %s", proc.returncode, detail)
+        raise RuntimeError(f"aria2c 退出码 {proc.returncode}：{detail}")
     if not tmp.is_file() or tmp.stat().st_size == 0:
         raise RuntimeError("aria2c 未生成有效文件")
 
@@ -384,7 +393,8 @@ def _version_from_latest_url(url: str, timeout: float = 20) -> str:
             pass
     except _VersionResolved as r:
         return r.version
-    except Exception:
+    except Exception as e:  # noqa: BLE001
+        _logger.warning("版本查询失败（%s）: %s", url, e)
         return ""
     return ""
 
