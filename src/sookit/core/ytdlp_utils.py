@@ -284,8 +284,9 @@ def _download_file_with_aria2c(aria2c: str, url: str, tmp: Path, label: str,
         reader.join(timeout=1.0)
     proc.wait()
     if proc.returncode != 0:
-        # 截取输出尾部（截断超长行，重定向 NOTICE 可能上千字符）供日志与错误信息定位
-        detail = " / ".join(line[:200] for line in output_tail[-4:])
+        # 优先取含 ERROR 的行（真实报错），否则取输出尾部；截断超长行（重定向 NOTICE 可能上千字符）
+        err_lines = [ln for ln in output_tail if "[ERROR]" in ln or "error" in ln.lower()]
+        detail = " / ".join(ln[:200] for ln in (err_lines or output_tail)[-4:])
         _logger.warning("aria2c 下载失败（退出码 %s）: %s", proc.returncode, detail)
         raise RuntimeError(f"aria2c 退出码 {proc.returncode}：{detail}")
     if not tmp.is_file() or tmp.stat().st_size == 0:
