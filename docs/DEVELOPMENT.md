@@ -340,6 +340,7 @@ yt-dlp/Deno 下载更新从 Sookit 解耦为独立 `updater.exe`：
 - **失败条 `_show_update_failed_bar`**：warning 常驻 +「前往 GitHub 下载」按钮 `QDesktopServices.openUrl(RELEASES_URL)`（releases/latest 页）。**检查失败不得报成功**。
 - 更新流程全部 InfoBar（下载进度/下载完成/失败）parent 统一为主窗口 `self`（原 `_info_parent()` 挂检查时的当前页面，切页即不可见）。
 - 坑：qfw `MessageBox` 没有 `addWidget`（那是 QLayout/QMessageBox 的 API）；qfw 对话框加自定义按钮要走 `buttonLayout.insertWidget` 或改用 `MessageBoxBase.viewLayout`——本方案直接弃用 Dialog，规避该坑。
+- **周期自动检查循环（借鉴 Cherry Studio AppUpdaterService 调度策略，2026-09-05）**：启动首查后不再"查一次就完"，`_schedule_next_auto_check` 用 `QTimer.singleShot` 自重臂成循环——成功 → 正常周期 4h ± 15% 随机抖动（防大量客户端集中打更新源）；失败 → 指数退避 5/10/20/40min 封顶 1h（刻意短于正常周期，瞬态故障尽快恢复；计数成功即清零，仅自动检查的 failed 驱动，手动检查不干扰）。自动检查全程静默（仅未被忽略的新版弹条），同版本常驻条已在展示时（`_update_bar_kind` 记录）跳过重建，防周期检查反复关条重建闪烁。定时器挂主窗口，随窗口销毁失效，无需显式清理。
 
 ## AI 编码约定
 

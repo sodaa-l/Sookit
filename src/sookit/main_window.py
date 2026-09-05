@@ -3,7 +3,9 @@ sookit/main_window.py
 主窗口 MainWindow 类（原单文件脚本的 MainWindow）
 """
 
+import logging
 import os
+import random
 import sys
 
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QFileDialog, \
@@ -44,6 +46,17 @@ from sookit.pages import (
     MonitorPage, QueuePage, SettingsPage
 )
 
+
+# ========== 自动更新周期检查参数（借鉴 Cherry Studio AppUpdaterService 调度策略） ==========
+# 正常自动检查周期（启动首查后，此后每隔该周期 ± 抖动再查）
+_AUTO_CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000   # 4h
+# 每轮周期施加的 ±比例随机抖动，避免大量客户端集中请求更新源
+_AUTO_CHECK_JITTER = 0.15
+# 连续失败的指数退避：5/10/20/40min，封顶 1h（刻意短于正常周期，瞬态故障尽快恢复）
+_AUTO_CHECK_BACKOFF_BASE_MS = 5 * 60 * 1000
+_AUTO_CHECK_BACKOFF_CAP_MS = 60 * 60 * 1000
+
+_logger_mw = logging.getLogger("Sookit.main_window")
 
 # ========== 主窗口 ==========
 class MainWindow(qfw.FluentWindow):
@@ -273,8 +286,31 @@ class MainWindow(qfw.FluentWindow):
         self._check_thread = thread
 
     def _check_update_at_startup(self):
-        """启动时后台查询：仅"未被忽略的新版本"弹常驻条引导更新（失败/无更新/已忽略均静默）"""
+        """启动时首轮自动检查；此后由 _schedule_next_auto_check 自重臂形成周期检查循环"""
+        self._run_auto_check()
+
+    def _run_auto_check(self):
+        """发起一轮自动检查（结果经 _on_check_done(manual=False) 静默分派并重臂下一轮）"""
         self._run_check_update_async(lambda r: self._on_check_done(r, manual=False))
+
+    def _schedule_next_auto_check(self, ok: bool):
+        """安排下一轮自动检查：成功 → 正常周期 ±15% 抖动；失败 → 指数退避（5min 起、封顶 1h）。
+
+        借鉴 Cherry Studio：退避刻意短于正常周期（瞬态故障尽快恢复），成功即清零计数。
+        QTimer.singleShot 挂在主窗口上，窗口销毁时定时器随之失效，无需显式清理。
+        """
+        if ok:
+            self._auto_check_failures = 0
+            jitter = 1 + (random.random() * 2 - 1) * _AUTO_CHECK_JITTER
+            delay = _AUTO_CHECK_INTERVAL_MS * jitter
+        else:
+            self._auto_check_failures = getattr(self, "_auto_check_failures", 0) + 1
+            delay = min(
+                _AUTO_CHECK_BACKOFF_BASE_MS * (2 ** (self._auto_check_failures - 1)),
+                _AUTO_CHECK_BACKOFF_CAP_MS)
+            _logger_mw.warning("自动检查更新失败第 %d 次，退避 %.0f 分钟后重试",
+                               self._auto_check_failures, delay / 60000)
+        QTimer.singleShot(int(delay), self._run_auto_check)
 
     def check_update_manual(self):
         """手动检查更新（设置页按钮调用）：结果一律回显——有新版弹常驻条（含已忽略版本），
@@ -303,6 +339,9 @@ class MainWindow(qfw.FluentWindow):
             self._set_sookit_update(None)
             show_infobar(self, "info", title="已是最新版本",
                          content=f"当前已是最新版本（{get_current_version()}）", duration=5000)
+        if not manual:
+            # 自动检查循环：无论结果如何都安排下一轮（成功走周期+抖动，失败走退避）
+            self._schedule_next_auto_check(ok=(status != "failed"))
 
     def _close_update_bar(self):
         """关闭旧的更新状态常驻条（防重复检查叠加多条）"""
@@ -313,13 +352,18 @@ class MainWindow(qfw.FluentWindow):
             except Exception:  # noqa: BLE001
                 pass
             self._update_bar = None
+        self._update_bar_kind = None
 
     def _show_update_bar(self, latest: str, ignored: bool = False):
         """「发现新版本」常驻 InfoBar（挂主窗口全局可见）：下载更新 / 忽略此版本。
 
         点 X 关闭仅关闭条（不写入忽略），下次检查仍会提示。
+        周期自动检查重复发现同版本时（条仍在展示）直接跳过，避免关了重建导致闪烁。
         """
+        if getattr(self, "_update_bar_kind", None) == ("update", latest):
+            return
         self._close_update_bar()
+        self._update_bar_kind = ("update", latest)
         note = "（此前已忽略）" if ignored else ""
         bar = show_infobar(
             self, "warning", title="发现新版本",
@@ -352,7 +396,10 @@ class MainWindow(qfw.FluentWindow):
 
     def _show_update_failed_bar(self):
         """「检查更新失败」常驻 InfoBar：引导前往 GitHub 手动下载（不误报为已最新）"""
+        if getattr(self, "_update_bar_kind", None) == ("failed",):
+            return
         self._close_update_bar()
+        self._update_bar_kind = ("failed",)
         bar = show_infobar(
             self, "warning", title="检查更新失败",
             content="无法连接 GitHub，请检查网络（可能需要代理）后重试，或前往 GitHub 手动下载最新版本。",
