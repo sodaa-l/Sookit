@@ -26,7 +26,7 @@ src/sookit/        代码包 (标准 src 布局)
     │   ├─ workers.py       QThread 工作线程 (Worker / TaskWorker / MonitorWorker)
     │   ├─ ffmpeg_utils.py  FFmpeg/yt-dlp/aria2c 路径查找和子进程管理
     │   ├─ ytdlp_utils.py   yt-dlp/Deno 集中管理：版本检查、下载、独立下载器调起
-    │   ├─ updater.py       Sookit 自身自动更新 (core/updater.py)
+    │   ├─ app_update.py    Sookit 自身自动更新 (原 core/updater.py，2026-09-05 更名避免与顶层 updater.py 混淆)
     │   ├─ youtube_utils.py 元数据提取 + 缩略图构建/通用规范化 (HTTP 降级方案)
     │   ├─ config.py        配置管理 (JSON 缓存 + 线程锁)
     │   └─ utils.py         滚动条样式等杂项
@@ -91,7 +91,7 @@ flowchart TB
 | `functions.py` | 功能中枢。聚合所有子模块并再导出保持向后兼容 | `Functions` (类, 所有 func 均为 @staticmethod) |
 | `ffmpeg_utils.py` | FFmpeg 路径、子进程执行 (`run_ffmpeg`/`run_ytdlp`)、时长/大小格式化 | `run_ffmpeg()`, `run_ytdlp()`, `check_ffmpeg()`, `extract_video_frame()` |
 | `ytdlp_utils.py` | yt-dlp/Deno 版本检查、下载 (aria2c+urllib 双通道)、独立下载器调起 | `download_ytdlp()`, `download_deno()`, `get_*_version()`, `check_ytdlp_deno_update_needed()`, `launch_ytdlp_updater()` |
-| `updater.py` | **Sookit 自身自动更新** (core/updater.py，注意与顶层 updater.py 区分) | `check_latest_version()`, `download_installer()`, `is_newer()` |
+| `app_update.py` | **Sookit 自身自动更新** (原 core/updater.py，注意与顶层 updater.exe 入口区分) | `check_latest_version()`, `download_installer()`, `is_newer()` |
 | `youtube_utils.py` | YouTube ID 提取、缩略图构建（硬编码 5 档 + 通用规范化）、HTTP 元数据获取 | `extract_youtube_id()`, `build_thumbnails()`, `normalize_thumbnails()`, `fetch_youtube_metadata()` |
 | `task_queue.py` | 任务队列单例。进度、workspace 生命周期、active_workspaces registry、JSON 持久化 | `TaskQueueManager`, `Task`, `TaskStatus`, `TaskType`, `_generate_ulid()` |
 | `workers.py` | 后台线程: Worker(通用) / TaskWorker(队列, 含 workspace/进程树清理) / MonitorWorker(直播轮询) | `TaskWorker`, `MonitorWorker`, `_kill_process_tree()` |
@@ -104,7 +104,7 @@ flowchart TB
 | --- | --- |
 | `__main__.py` | Sookit 主程序入口。`--silent` 静默启动；`_acquire_single_instance()` 单实例互斥体 (Local\Sookit) |
 | `updater.py` (顶层) | 独立下载器 GUI，打包为 `updater.exe`。Sookit 用 `launch_ytdlp_updater` 提权调起，结果文件通信 |
-| `sookit/core/updater.py` | Sookit 自身版本检查 + 安装器下载 (与顶层 updater.py 是不同模块) |
+| `sookit/core/app_update.py` | Sookit 自身版本检查 + 安装器下载 (原 core/updater.py，与顶层 updater.py 是不同模块) |
 
 ### 功能类 `Functions` 方法速查
 
@@ -299,7 +299,7 @@ yt-dlp/Deno 下载更新从 Sookit 解耦为独立 `updater.exe`：
 
 ### 22. 更新状态 Badge：导航双 badge + 设置页按钮圆点（2026-09-04）
 
-两层更新提示体系，数据源为 Sookit 自更新（`core/updater.py`）与 yt-dlp/Deno（`ytdlp_utils.py`）：
+两层更新提示体系，数据源为 Sookit 自更新（`core/app_update.py`）与 yt-dlp/Deno（`ytdlp_utils.py`）：
 
 - **导航"任务队列" badge**：`InfoBadge.attension` 文字胶囊，数字 = `get_active_tasks()` 数量，信号驱动（`task_added`/`task_completed`/`task_removed` → `_update_queue_badge`），归零隐藏。
 - **导航"设置" badge**：`InfoBadge.error("")` 空文案红点，任一更新来源（Sookit 新版 / yt-dlp 有新版或未安装）命中即显示。状态由 `MainWindow._sookit_update`/`_ytdlp_update` 两个标志聚合；**尺寸动态取任务队列 badge 的 `height()`（17px）等高对齐**。Sookit 侧接线：启动/手动检查有新版点亮（与更新 Dialog 并存）、手动检查无新版清除、**「忽略此版本」清除（跟随静默，复用 `check_latest_version()` 的忽略过滤）**。
@@ -328,6 +328,18 @@ yt-dlp/Deno 下载更新从 Sookit 解耦为独立 `updater.exe`：
 - **默认合并下载**：删除"勾视频流+音频流时弹 TeachingTip 问合并/分开"机制，`do_download` 收敛为"收集勾选 → `'+'` 拼接交 yt-dlp"（`+` 语义即 ffmpeg 合并为一个有声视频）。分开下载视频流+音频流的替代路径：分两次各勾一个下载。
 - **下载按钮门控**：`download_btn` 初始 disabled；`do_sniff` 开始时重置 disabled；仅 `_on_sniff_done` 有格式填充成功后 enable。嗅探失败/超时/停止/空格式均保持禁用。
 - 验证方式：`QT_QPA_PLATFORM=offscreen` 直接调用 `_on_sniff_done` 喂伪造 info dict，断言预勾结果与互斥联动（7 场景）。
+
+### 25. Sookit 自更新：四态检查 + 常驻 InfoBar 取代模态 Dialog（2026-09-05）
+
+背景：`build.260830.1` 用户点「检查更新」无反应——检查其实成功，但 `prompt_update` 里 `qfw.MessageBox.addWidget()` 不存在（AttributeError），槽内未捕获异常被全局钩子吞掉，Dialog 没建出来。趁修复重构整个检查回显流程：
+
+- **`core/updater.py` 更名 `core/app_update.py`**：与顶层 `sookit/updater.py`（updater.exe 入口）重名易混淆。updater.exe 入口文件名与 spec 的 Analysis 对应且 exe 名不变，故改 core 侧；引用点仅 `functions.py` 一处 import（main_window 经 functions 再导出）。
+- **`check_latest_version()` 改四态返回 `(status, version)`**：`newer` / `ignored` / `latest` / `failed`。旧签名返回 `None` 混合了"查询失败/已最新/已忽略"三义，导致**网络失败被误报为"已是最新版本"**。状态如实上报，处理策略由 UI 层决定。
+- **UI 分派 `_on_check_done(result, manual)`（四态 × 自动/手动）**：`newer` → 常驻条（点亮 Badge）；`ignored` → 手动视同新版弹条（文案注明"此前已忽略"），自动静默；`latest` → 手动提示已最新，自动静默；`failed` → 手动弹失败条引导 GitHub，自动静默。
+- **模态 Dialog → 常驻 InfoBar**（`_show_update_bar`，warning 级挂**主窗口**全局可见，duration=-1）：`PrimaryPushButton「下载更新」`→ 关条进 `_do_update`；`PushButton「忽略此版本」`→ 写忽略 + 关条 + 清 Badge。点 X 仅关条不写忽略。引用 `self._update_bar` 防重复检查叠加，新建前先关旧条。
+- **失败条 `_show_update_failed_bar`**：warning 常驻 +「前往 GitHub 下载」按钮 `QDesktopServices.openUrl(RELEASES_URL)`（releases/latest 页）。**检查失败不得报成功**。
+- 更新流程全部 InfoBar（下载进度/下载完成/失败）parent 统一为主窗口 `self`（原 `_info_parent()` 挂检查时的当前页面，切页即不可见）。
+- 坑：qfw `MessageBox` 没有 `addWidget`（那是 QLayout/QMessageBox 的 API）；qfw 对话框加自定义按钮要走 `buttonLayout.insertWidget` 或改用 `MessageBoxBase.viewLayout`——本方案直接弃用 Dialog，规避该坑。
 
 ## AI 编码约定
 
@@ -444,7 +456,7 @@ from sookit.pages.base import PageBase
 | `packaging/installer.iss` | `#define MyAppVersion` | `"260827.1"` |
 
 **发布 Release 的 tag 命名（重要）**：tag 必须用**带 `build.` 前缀**的完整版本号（如 `build.260827.1`，
-与 `APP_VERSION` 一致）。原因：`core/updater.py` 的 `is_newer` 日期版比较要求远程 tag 带 `build.` 前缀，
+与 `APP_VERSION` 一致）。原因：`core/app_update.py` 的 `is_newer` 日期版比较要求远程 tag 带 `build.` 前缀，
 否则纯数字 `260827.1` 会被当作语义化版本、每次启动都误报「发现新版本」。release 的 **asset 直接上传
 `installer.iss` 产物原样**（`Sookit-Setup-260827.1.exe`，不带 `build.` 前缀）；`download_installer` 下载时会
 自动剥离 `build.` 前缀拼资产名/本地文件名，两者正好对上

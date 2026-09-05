@@ -1,5 +1,5 @@
 """
-core/updater.py
+core/app_update.py（原 core/updater.py，2026-09-05 更名避免与顶层 updater.py 混淆）
 Sookit 自动更新核心逻辑：版本比较换算、最新版本查询、安装器下载、忽略版本记忆。
 
 设计要点：
@@ -26,6 +26,9 @@ from sookit.core.ytdlp_utils import _version_from_latest_url, _download_file
 
 # 分发仓库（GitHub Releases 源，由用户确认）
 REPO = "sodaa-l/Sookit"
+
+# Releases 最新版页面（检查失败时引导用户手动下载）
+RELEASES_URL = f"https://github.com/{REPO}/releases/latest"
 
 # 安装器文件名前缀（与 packaging/installer.iss 的 OutputBaseFilename 一致）
 _SETUP_PREFIX = "Sookit-Setup-"
@@ -107,20 +110,26 @@ def get_latest_version() -> str:
     return _version_from_latest_url(f"https://github.com/{REPO}/releases/latest")
 
 
-def check_latest_version() -> str | None:
-    """后台线程调用：返回比当前新且未被忽略的远程版本号；无更新/查询失败返回 None。
+def check_latest_version() -> tuple[str, str]:
+    """后台线程调用：返回 (status, version)，四态区分检查结果。
 
-    - 查询失败（网络错误/无 release）→ 返回 None（不打扰用户）。
-    - 有新版本但等于忽略版本 → 返回 None。
+    status:
+    - "newer":   有新版本且未被忽略，version 为远程版本号
+    - "ignored": 有新版本但等于用户忽略的版本，version 为该版本号
+    - "latest":  无更新，version 为空串
+    - "failed":  查询失败（网络错误/无 release），version 为空串
+
+    注意 ignored 与 failed 的处理策略由 UI 层决定（自动检查 vs 手动检查），
+    本函数只如实上报。
     """
     latest = get_latest_version()
     if not latest:
-        return None
+        return ("failed", "")
     if not is_newer(get_current_version(), latest):
-        return None
+        return ("latest", "")
     if latest == load_ignored_update_version():
-        return None
-    return latest
+        return ("ignored", latest)
+    return ("newer", latest)
 
 
 def get_ignored_version() -> str:

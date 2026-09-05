@@ -9,8 +9,8 @@ import sys
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QFileDialog, \
     QApplication, QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView, \
     QSplitter, QLabel, QSizePolicy, QSystemTrayIcon
-from PyQt6.QtCore import Qt, QThread, QObject, pyqtSignal, pyqtSlot, QTimer, QByteArray, QSize
-from PyQt6.QtGui import QTextCursor, QIcon
+from PyQt6.QtCore import Qt, QThread, QObject, pyqtSignal, pyqtSlot, QTimer, QByteArray, QSize, QUrl
+from PyQt6.QtGui import QTextCursor, QIcon, QDesktopServices
 
 import qfluentwidgets as qfw
 from qfluentwidgets import FluentIcon as FIF, NavigationItemPosition, \
@@ -30,7 +30,7 @@ from sookit.core.functions import (
     fetch_youtube_metadata, get_video_duration, run_ffmpeg, run_ytdlp,
     load_theme_color, load_close_action, DEFAULT_OUTPUT_DIR, ensure_output_dir,
     check_latest_version, get_current_version, get_ignored_version,
-    set_ignored_version, download_installer,
+    set_ignored_version, download_installer, RELEASES_URL,
 )
 
 # ---------- 从 core.workers 导入工作线程 ----------
@@ -251,14 +251,14 @@ class MainWindow(qfw.FluentWindow):
         return page if page is not None else self
 
     def _run_check_update_async(self, done_cb):
-        """后台线程查询是否有新版本，结果回主线程交给 done_cb(latest|None)。"""
+        """后台线程查询更新状态，结果回主线程交给 done_cb((status, version))。"""
         class _CheckWorker(QObject):
             done = pyqtSignal(object)
             def run(s):
                 try:
                     s.done.emit(check_latest_version())
                 except Exception:
-                    s.done.emit(None)
+                    s.done.emit(("failed", ""))
 
         thread = QThread(self)
         w = _CheckWorker()
@@ -273,75 +273,100 @@ class MainWindow(qfw.FluentWindow):
         self._check_thread = thread
 
     def _check_update_at_startup(self):
-        """启动时后台查询是否有新版本，有则弹 Dialog 引导更新（查询失败静默跳过）"""
-        self._run_check_update_async(self._on_startup_check_done)
-
-    @pyqtSlot(object)
-    def _on_startup_check_done(self, latest):
-        """启动检查结果：有新版 → 点亮 Badge 并弹更新 Dialog（无新版/失败静默）"""
-        if latest:
-            self._set_sookit_update(latest)
-            self.prompt_update(latest)
+        """启动时后台查询：仅"未被忽略的新版本"弹常驻条引导更新（失败/无更新/已忽略均静默）"""
+        self._run_check_update_async(lambda r: self._on_check_done(r, manual=False))
 
     def check_update_manual(self):
-        """手动检查更新（设置页按钮调用）：后台查询，有新版弹 Dialog，无新版提示已最新。"""
-        self._run_check_update_async(self._on_manual_check_done)
+        """手动检查更新（设置页按钮调用）：结果一律回显——有新版弹常驻条（含已忽略版本），
+        无新版提示已最新，失败提示检查失败并引导 GitHub。"""
+        self._run_check_update_async(lambda r: self._on_check_done(r, manual=True))
 
     @pyqtSlot(object)
-    def _on_manual_check_done(self, latest):
-        """手动检查结果：有新版弹 Dialog，无新版提示已是最新"""
-        if latest:
-            self._set_sookit_update(latest)
-            self.prompt_update(latest)
-        else:
+    def _on_check_done(self, result, manual: bool = False):
+        """检查结果分派（四态 × 自动/手动）：
+
+        - newer            → 常驻条引导更新（点亮 Badge）
+        - ignored + 手动   → 视同有新版弹常驻条（文案注明此前已忽略）；自动检查静默
+        - latest  + 手动   → 提示已是最新；自动检查静默
+        - failed  + 手动   → 失败条引导 GitHub；自动检查静默
+        """
+        status, version = result
+        if status == "newer" or (manual and status == "ignored"):
+            self._set_sookit_update(version)
+            self._show_update_bar(version, ignored=(status == "ignored"))
+        elif status == "failed":
+            if manual:
+                self._show_update_failed_bar()
+        elif manual:
+            # 到这里只剩：latest（手动检查）→ 提示已最新；
+            # 自动检查的 latest / ignored 不进入本分支（静默，不触碰 Badge）
             self._set_sookit_update(None)
-            show_infobar(self._info_parent(), "info", title="已是最新版本",
+            show_infobar(self, "info", title="已是最新版本",
                          content=f"当前已是最新版本（{get_current_version()}）", duration=5000)
 
-    def prompt_update(self, latest: str):
-        """弹出「发现新版本」Dialog（更新/忽略此版本/取消）。latest 须为已查询到的版本号。"""
-        if not latest:
-            return
+    def _close_update_bar(self):
+        """关闭旧的更新状态常驻条（防重复检查叠加多条）"""
+        bar = getattr(self, "_update_bar", None)
+        if bar is not None:
+            try:
+                bar.close()
+            except Exception:  # noqa: BLE001
+                pass
+            self._update_bar = None
 
-        dialog = qfw.MessageBox(
-            "发现新版本",
-            f"当前版本：{get_current_version()}\n最新版本：{latest}\n\n"
-            "是否下载安装器进行更新？下载后需手动运行安装器完成覆盖安装。",
-            self)
-        dialog.yesButton.setText("更新")
-        dialog.cancelButton.setText("取消")
+    def _show_update_bar(self, latest: str, ignored: bool = False):
+        """「发现新版本」常驻 InfoBar（挂主窗口全局可见）：下载更新 / 忽略此版本。
 
-        # 在按钮区追加「忽略此版本」按钮：点击后持久化忽略并关闭 Dialog
-        self._ignore_handled = False
-        ignore_btn = qfw.PushButton("忽略此版本")
+        点 X 关闭仅关闭条（不写入忽略），下次检查仍会提示。
+        """
+        self._close_update_bar()
+        note = "（此前已忽略）" if ignored else ""
+        bar = show_infobar(
+            self, "warning", title="发现新版本",
+            content=f"Sookit {latest} 已发布{note}，当前版本 {get_current_version()}。"
+                    "下载安装器后需手动运行完成覆盖安装。",
+            duration=-1)
+
+        dl_btn = qfw.PrimaryPushButton("下载更新")
+
+        def _on_download():
+            self._close_update_bar()
+            self._do_update(latest)
+
+        dl_btn.clicked.connect(_on_download)
+        bar.addWidget(dl_btn)
 
         def _on_ignore():
-            self._ignore_handled = True
             set_ignored_version(latest)
+            self._close_update_bar()
             # 忽略后跟随静默：清除 Sookit 更新状态（Badge/圆点随之熄灭）
             self._set_sookit_update(None)
-            try:
-                dialog.reject()
-            except Exception:
-                dialog.close()
-            show_infobar(self._info_parent(), "info", title="已忽略",
+            show_infobar(self, "info", title="已忽略",
                          content=f"已忽略版本 {latest}，将在出现更新版本后重新提醒。",
                          duration=5000)
 
+        ignore_btn = qfw.PushButton("忽略此版本")
         ignore_btn.clicked.connect(_on_ignore)
-        dialog.addWidget(ignore_btn)
+        bar.addWidget(ignore_btn)
+        self._update_bar = bar
 
-        if dialog.exec():
-            # 点「更新」
-            self._do_update(latest)
-        elif not self._ignore_handled:
-            # 点「取消」或关闭 → 不做任何事
-            pass
+    def _show_update_failed_bar(self):
+        """「检查更新失败」常驻 InfoBar：引导前往 GitHub 手动下载（不误报为已最新）"""
+        self._close_update_bar()
+        bar = show_infobar(
+            self, "warning", title="检查更新失败",
+            content="无法连接 GitHub，请检查网络（可能需要代理）后重试，或前往 GitHub 手动下载最新版本。",
+            duration=-1)
+        gh_btn = qfw.PushButton("前往 GitHub 下载")
+        gh_btn.clicked.connect(
+            lambda: QDesktopServices.openUrl(QUrl(RELEASES_URL)))
+        bar.addWidget(gh_btn)
+        self._update_bar = bar
 
     def _do_update(self, latest: str):
         """后台下载安装器，进度经 InfoBar 回显，完成后提示路径 + 打开按钮"""
         self._update_infobar = show_infobar(
-            self._info_parent(), "info", title="正在下载更新",
+            self, "info", title="正在下载更新",
             content=f"正在下载 Sookit {latest} 安装器…", closable=False)
 
         class _DownloadWorker(QObject):
@@ -384,12 +409,12 @@ class MainWindow(qfw.FluentWindow):
             self._update_infobar = None
         status, payload = result
         if status != "ok":
-            show_infobar(self._info_parent(), "error", title="更新失败",
-                                 content=f"安装器下载失败：{payload}")
+            show_infobar(self, "error", title="更新失败",
+                         content=f"安装器下载失败：{payload}")
             return
         path = payload
-        bar = show_infobar(self._info_parent(), "success", title="下载完成",
-                                   content=f"安装器已保存到：\n{path}，\n\n请运行安装器完成更新。")
+        bar = show_infobar(self, "success", title="下载完成",
+                           content=f"安装器已保存到：\n{path}，\n\n请运行安装器完成更新。")
         open_btn = qfw.PushButton("打开文件")
         open_btn.clicked.connect(lambda: self._open_file(path))
         bar.addWidget(open_btn)
@@ -402,7 +427,7 @@ class MainWindow(qfw.FluentWindow):
         try:
             os.startfile(path)  # Windows 专用
         except Exception as e:  # noqa: BLE001
-            show_infobar(self._info_parent(), "warning", title="无法打开",
+            show_infobar(self, "warning", title="无法打开",
                          content=f"{e}", duration=6000)
 
     def _open_folder(self, path: str):
@@ -411,5 +436,5 @@ class MainWindow(qfw.FluentWindow):
         try:
             subprocess.Popen(["explorer", "/select,", str(path)])
         except Exception as e:  # noqa: BLE001
-            show_infobar(self._info_parent(), "warning", title="无法打开",
+            show_infobar(self, "warning", title="无法打开",
                          content=f"{e}", duration=6000)

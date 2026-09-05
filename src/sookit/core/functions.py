@@ -71,10 +71,10 @@ from sookit.core.ytdlp_utils import (
     get_ytdlp_latest_version, get_deno_latest_version,
     check_ytdlp_deno_update_needed, launch_ytdlp_updater,
 )
-from sookit.core.updater import (
+from sookit.core.app_update import (
     is_newer, get_current_version, get_latest_version,
     check_latest_version, get_ignored_version, set_ignored_version,
-    download_installer,
+    download_installer, RELEASES_URL,
 )
 
 # deprecated: import 时快照，请改用 is_ytdlp_available()（动态检测，内置版安装后无需重启即生效）
