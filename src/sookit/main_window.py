@@ -32,7 +32,8 @@ from sookit.core.functions import (
     fetch_youtube_metadata, get_video_duration, run_ffmpeg, run_ytdlp,
     load_theme_color, load_close_action, DEFAULT_OUTPUT_DIR, ensure_output_dir,
     check_latest_version, get_current_version, get_ignored_version,
-    set_ignored_version, download_installer, RELEASES_URL,
+    set_ignored_version, is_updater_available, launch_app_setup_downloader,
+    RELEASES_URL,
 )
 
 # ---------- 从 core.workers 导入工作线程 ----------
@@ -411,63 +412,74 @@ class MainWindow(qfw.FluentWindow):
         self._update_bar = bar
 
     def _do_update(self, latest: str):
-        """后台下载安装器，进度经 InfoBar 回显，完成后提示路径 + 打开按钮"""
-        self._update_infobar = show_infobar(
-            self, "info", title="正在下载更新",
-            content=f"正在下载 Sookit {latest} 安装器…", closable=False)
+        """移交独立 updater.exe 下载安装包（非提权，进度在其小窗回显）。
 
-        class _DownloadWorker(QObject):
-            progress = pyqtSignal(str)
+        Sookit 只负责检查更新与结果回显：
+        - updater.exe 不存在（源码运行态）→ 静默返回，无任何提示；
+        - 下载中重复点击 → 提示已在下载中；
+        - 下载由独立进程执行，主程序中途退出不影响（下次下载由 skip-if-exists 接上）。
+        """
+        if not is_updater_available():
+            return
+        if getattr(self, "_setup_downloading", False):
+            show_infobar(self, "info", title="正在下载中",
+                         content=f"Sookit {latest} 安装包正在下载，请稍候。", duration=5000)
+            return
+        self._setup_downloading = True
+        self._close_setup_bar()
+        # 下载条：进行中不可关，结果回来统一关闭
+        self._setup_bar = show_infobar(
+            self, "info", title=f"正在下载 {latest}",
+            content="独立更新器窗口中可查看进度与取消。", closable=False)
+
+        class _SetupWaitWorker(QObject):
             done = pyqtSignal(object)
             def run(s):
-                try:
-                    path = download_installer(latest, lambda t: s.progress.emit(t))
-                    s.done.emit(("ok", str(path)))
-                except Exception as e:  # noqa: BLE001
-                    s.done.emit(("error", str(e)))
+                s.done.emit(launch_app_setup_downloader(latest))
 
         thread = QThread(self)
-        w = _DownloadWorker()
+        w = _SetupWaitWorker()
         w.moveToThread(thread)
         thread.started.connect(w.run)
-        w.progress.connect(self._on_update_progress)
-        w.done.connect(self._on_update_download_done)
+        w.done.connect(self._on_setup_download_done)
         w.done.connect(thread.quit)
         w.done.connect(w.deleteLater)
         thread.finished.connect(thread.deleteLater)
         thread.start()
-        self._update_dl_worker = w
-        self._update_dl_thread = thread
+        self._setup_dl_worker = w
+        self._setup_dl_thread = thread
 
-    @pyqtSlot(str)
-    def _on_update_progress(self, text: str):
-        """下载进度 → 更新 InfoBar 内容"""
-        if getattr(self, "_update_infobar", None) is not None:
-            self._update_infobar.setContent(text)
+    def _close_setup_bar(self):
+        """关闭"正在下载"状态条（结果回显前统一收口）"""
+        bar = getattr(self, "_setup_bar", None)
+        if bar is not None:
+            try:
+                bar.close()
+            except Exception:  # noqa: BLE001
+                pass
+            self._setup_bar = None
 
     @pyqtSlot(object)
-    def _on_update_download_done(self, result):
-        """下载完成：成功提示路径 + 打开按钮；失败弹错误"""
-        if getattr(self, "_update_infobar", None) is not None:
-            try:
-                self._update_infobar.close()
-            except Exception:
-                pass
-            self._update_infobar = None
-        status, payload = result
-        if status != "ok":
+    def _on_setup_download_done(self, result):
+        """updater.exe 下载结果回显：ok/cancelled/failed（no_updater 不会到达）"""
+        self._setup_downloading = False
+        self._close_setup_bar()
+        ok, status, error, path = result
+        if ok:
+            bar = show_infobar(self, "success", title="安装器已就绪",
+                               content=f"安装器已保存到：\n{path}，\n\n请运行安装器完成更新。")
+            open_btn = qfw.PushButton("运行安装器")
+            open_btn.clicked.connect(lambda: self._open_file(path))
+            bar.addWidget(open_btn)
+            folder_btn = qfw.PushButton("打开所在文件夹")
+            folder_btn.clicked.connect(lambda: self._open_folder(path))
+            bar.addWidget(folder_btn)
+        elif status == "cancelled":
+            show_infobar(self, "info", title="已取消",
+                         content="安装包下载已取消，可随时重新检查更新。", duration=5000)
+        else:
             show_infobar(self, "error", title="更新失败",
-                         content=f"安装器下载失败：{payload}")
-            return
-        path = payload
-        bar = show_infobar(self, "success", title="下载完成",
-                           content=f"安装器已保存到：\n{path}，\n\n请运行安装器完成更新。")
-        open_btn = qfw.PushButton("打开文件")
-        open_btn.clicked.connect(lambda: self._open_file(path))
-        bar.addWidget(open_btn)
-        folder_btn = qfw.PushButton("打开所在文件夹")
-        folder_btn.clicked.connect(lambda: self._open_folder(path))
-        bar.addWidget(folder_btn)
+                         content=f"安装包下载失败：{error}")
 
     def _open_file(self, path: str):
         """用系统默认程序打开文件（运行安装器）"""

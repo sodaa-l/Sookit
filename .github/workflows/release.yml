@@ -72,8 +72,19 @@ jobs:
           choco install innosetup -y --no-progress
           & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" packaging/installer.iss
 
+      # 生成安装器 sha256 校验文件（updater.exe 下载后校验 + skip-if-exists 完整性判定）。
+      # 内容格式 "<hex>  <文件名>"（与 sha256sum -c 兼容），解析侧取首个 64 位 hex 即可。
+      - name: 生成安装器 sha256 校验文件
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem dist/Sookit-Setup-*.exe | Select-Object -First 1
+          if (-not $exe) { Write-Error "未找到安装器产物 dist/Sookit-Setup-*.exe"; exit 1 }
+          $hash = (Get-FileHash $exe.FullName -Algorithm SHA256).Hash.ToLower()
+          Set-Content "$($exe.FullName).sha256" "$hash  $($exe.Name)" -NoNewline -Encoding ascii
+          Write-Host "$hash  $($exe.Name)"
+
       - name: 发布到 GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/Sookit-Setup-*.exe
+          files: dist/Sookit-Setup-*
           generate_release_notes: true
