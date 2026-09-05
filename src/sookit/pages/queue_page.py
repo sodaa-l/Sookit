@@ -13,6 +13,7 @@ from sookit.core.task_queue import TaskQueueManager, Task, TaskStatus
 from sookit.widgets.task_card import create_task_card, TaskCardBase, CompletedThumbnailCard
 from sookit.pages.base import PageBase
 from sookit.widgets.infobar import show_infobar
+from sookit.core.utils import set_smooth_scroll_params
 
 
 class QueuePage(PageBase):
@@ -108,6 +109,10 @@ class QueuePage(PageBase):
             card = CompletedThumbnailCard(task)
             self._completed_cards[task.task_id] = card
             self.completed_flow_layout.addWidget(card)
+
+        # 平滑滚动调参：duration 250ms（库默认 400 偏绵长）+ fps 120 更细腻
+        set_smooth_scroll_params(self.active_scroll)
+        set_smooth_scroll_params(self.completed_scroll)
 
     def _on_segment_changed(self, key: str):
         """切换进行中/已完成页面"""

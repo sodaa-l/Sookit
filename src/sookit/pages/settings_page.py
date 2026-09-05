@@ -21,6 +21,7 @@ from sookit.core.functions import (
     set_autostart, is_autostart, load_close_action, save_close_action,
     load_task_complete_action, save_task_complete_action,
 )
+from sookit.core.utils import set_smooth_scroll_params
 from sookit import APP_NAME, APP_VERSION
 from sookit.widgets.infobar import show_infobar
 
@@ -62,6 +63,8 @@ class SettingsPage(QWidget):
         # 设置滚动区域的内容
         self.scroll_area.setWidget(scroll_content)
         self.scroll_area.enableTransparentBackground()
+        # 平滑滚动调参：duration 250ms（库默认 400 偏绵长）+ fps 120 更细腻
+        set_smooth_scroll_params(self.scroll_area)
         
         # 将滚动区域添加到主布局
         main_layout = QVBoxLayout(self)
