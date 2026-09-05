@@ -1,6 +1,6 @@
 [project]
 name = "sookit"
-version = "260905.4"
+version = "260906.1"
 description = "Sookit - 一个 Windows 桌面音视频工具箱"
 readme = "README.md"
 license = "GPL-3.0-or-later"

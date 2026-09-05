@@ -198,6 +198,8 @@ def _download_file_with_aria2c(aria2c: str, url: str, tmp: Path, label: str,
     on_proc(proc) 可选：Popen 后回调，向调用方暴露 aria2c 的 Popen 对象（含 pid），
     供强制终止兜底使用。
     """
+    # 成功路径也落日志（此前仅失败回退有 warning，日志无法回答"走了哪个通道"）
+    _logger.info("%s：使用 aria2c 多连接下载（-x%d）", label, connections)
     cmd = [
         aria2c,
         "-x", str(connections),
@@ -307,6 +309,7 @@ def _download_file_with_urllib(url: str, dest: Path, label: str, progress_cb=Non
 
     cancel_cb 返回 True 时中断下载、删除临时文件并抛 DownloadCancelled。
     """
+    _logger.info("%s：使用 urllib 单线程下载", label)
     req = urllib.request.Request(url, headers=_UA)
     # 用 certifi 证书包构造 SSL context，解决 PyInstaller 打包态下
     # Python 默认证书路径（C:\Program Files\Common Files\SSL\...）不存在导致验证失败的问题
