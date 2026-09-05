@@ -16,6 +16,7 @@ sookit/updater.py
 """
 
 import json
+import logging
 import os
 import re
 import subprocess
@@ -59,6 +60,26 @@ def _log(msg: str) -> None:
         with open(_log_path(), "a", encoding="utf-8") as f:
             f.write(msg + "\n")
     except OSError:
+        pass
+
+
+def _setup_logging() -> None:
+    """把 logging 模块日志（Sookit.* 记录器）接入 updater.log。
+
+    updater.exe 是独立入口，不经过 __main__.py 的日志初始化；
+    不配置的话 core 层（ytdlp_utils 等）的 warning 全部丢失，
+    aria2c 失败原因、版本查询异常等无从定位。
+    """
+    try:
+        from logging.handlers import RotatingFileHandler
+        handler = RotatingFileHandler(
+            _log_path(), maxBytes=512 * 1024, backupCount=2, encoding="utf-8")
+        handler.setFormatter(logging.Formatter(
+            "%(asctime)s [%(name)s] %(levelname)s: %(message)s"))
+        root = logging.getLogger("Sookit")
+        root.addHandler(handler)
+        root.setLevel(logging.INFO)
+    except Exception:  # noqa: BLE001
         pass
 
 
@@ -419,6 +440,7 @@ def main() -> int:
     全程 try 兜底：任何阶段异常都记录日志并写结果文件（含 traceback），
     保证 Sookit 能拿到结果而非永久等待。
     """
+    _setup_logging()
     if "--app-setup" in sys.argv:
         return _main_app_setup()
 
