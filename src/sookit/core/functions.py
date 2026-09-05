@@ -70,6 +70,7 @@ from sookit.core.ytdlp_utils import (
     get_ytdlp_current_version, get_deno_current_version,
     get_ytdlp_latest_version, get_deno_latest_version,
     check_ytdlp_deno_update_needed, launch_ytdlp_updater,
+    check_path_ytdlp_update, check_tools_ytdlp_update,
 )
 from sookit.core.app_update import (
     is_newer, get_current_version, get_latest_version,

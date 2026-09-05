@@ -33,7 +33,7 @@ from sookit.core.functions import (
     load_theme_color, load_close_action, DEFAULT_OUTPUT_DIR, ensure_output_dir,
     check_latest_version, get_current_version, get_ignored_version,
     set_ignored_version, is_updater_available, launch_app_setup_downloader,
-    RELEASES_URL,
+    check_path_ytdlp_update, check_tools_ytdlp_update, RELEASES_URL,
 )
 
 # ---------- 从 core.workers 导入工作线程 ----------
@@ -108,6 +108,13 @@ class MainWindow(qfw.FluentWindow):
         # 更新状态（驱动导航"设置" Badge）：Sookit 新版本号 / yt-dlp 有新版或未安装
         self._sookit_update = None
         self._ytdlp_update = False
+        # PATH 来源 yt-dlp 更新提示（仅 InfoBar，不点亮 Badge）：
+        # _path_ytdlp_notified 记录会话内已提示过的版本号（同版本不重复弹）
+        self._path_ytdlp_bar = None
+        self._path_ytdlp_notified = None
+        # 内置 tools 来源 yt-dlp 更新提示（点亮 Badge/圆点 + 弹条引导设置页更新）
+        self._tools_ytdlp_bar = None
+        self._tools_ytdlp_notified = None
 
         # 延时创建任务队列 Badge（确保导航界面已完全初始化）
         QTimer.singleShot(0, self._setup_queue_badge)
@@ -195,6 +202,10 @@ class MainWindow(qfw.FluentWindow):
         """SettingsPage 回调：yt-dlp 有新版本/未安装(True) 或 已更新(False)，刷新 Badge"""
         self._ytdlp_update = available
         self._update_settings_badge()
+        if not available:
+            # 更新完成/状态清除：收口主窗口的「yt-dlp 有新版本」提示条（tools 来源）
+            self._close_tools_ytdlp_bar()
+            self._tools_ytdlp_notified = None
 
     def _center_on_screen(self):
         """在 show() 之前居中，用 width/height 而非 frameGeometry"""
@@ -262,14 +273,29 @@ class MainWindow(qfw.FluentWindow):
         return page if page is not None else self
 
     def _run_check_update_async(self, done_cb):
-        """后台线程查询更新状态，结果回主线程交给 done_cb((status, version))。"""
+        """后台线程查询更新状态，结果回主线程交给 done_cb((sookit, path_ytdlp, tools_ytdlp))。
+
+        sookit: (status, version) 四态；path_ytdlp / tools_ytdlp: (status, current, latest)
+        （yt-dlp 按当前生效来源顺带同查：PATH 来源仅弹 InfoBar 提示自行更新，
+        tools 来源点亮 Badge 并弹条引导设置页更新；两检查互斥，只有来源方真正发请求）。
+        """
         class _CheckWorker(QObject):
             done = pyqtSignal(object)
             def run(s):
+                sookit = ("failed", "")
                 try:
-                    s.done.emit(check_latest_version())
+                    sookit = check_latest_version()
                 except Exception:
-                    s.done.emit(("failed", ""))
+                    pass
+                try:
+                    path_ytdlp = check_path_ytdlp_update()
+                except Exception:
+                    path_ytdlp = ("failed", "", "")
+                try:
+                    tools_ytdlp = check_tools_ytdlp_update()
+                except Exception:
+                    tools_ytdlp = ("failed", "", "")
+                s.done.emit((sookit, path_ytdlp, tools_ytdlp))
 
         thread = QThread(self)
         w = _CheckWorker()
@@ -323,8 +349,12 @@ class MainWindow(qfw.FluentWindow):
         - ignored + 手动   → 视同有新版弹常驻条（文案注明此前已忽略）；自动检查静默
         - latest  + 手动   → 提示已是最新；自动检查静默
         - failed  + 手动   → 失败条引导 GitHub；自动检查静默
+
+        result 同时携带 PATH / tools 来源 yt-dlp 的检查结果，
+        分别交 _on_path_ytdlp_check_done / _on_tools_ytdlp_check_done 独立处理。
         """
-        status, version = result
+        sookit, path_ytdlp, tools_ytdlp = result
+        status, version = sookit
         if status == "newer" or (manual and status == "ignored"):
             self._set_sookit_update(version)
             self._show_update_bar(version, ignored=(status == "ignored"))
@@ -337,12 +367,92 @@ class MainWindow(qfw.FluentWindow):
             self._set_sookit_update(None)
             show_infobar(self, "info", title="已是最新版本",
                          content=f"当前已是最新版本（{get_current_version()}）", duration=5000)
+        # PATH 来源 yt-dlp 检查结果独立分派（仅 InfoBar 提示自行更新，不点亮 Badge）
+        self._on_path_ytdlp_check_done(path_ytdlp)
+        # 内置 tools 来源 yt-dlp 检查结果独立分派（点亮 Badge/圆点 + 弹条引导设置页更新）
+        self._on_tools_ytdlp_check_done(tools_ytdlp)
         if not manual:
             # 自动检查循环：无论结果如何都安排下一轮（成功走周期+抖动，失败走退避）
             self._schedule_next_auto_check(ok=(status != "failed"))
         else:
             # 手动检查收尾：恢复设置页按钮/关闭「检查中」条（无论结果如何）
             self.settings_page.on_manual_check_finished()
+
+    def _on_path_ytdlp_check_done(self, result):
+        """PATH 来源 yt-dlp 检查结果：有新版仅弹常驻 InfoBar 提示自行更新。
+
+        PATH 副本由用户自行管理，Sookit 不代下载、不点亮设置 Badge（2026-09-06 决策），
+        只做一次性告知。会话内同版本仅提示一次（4h 周期检查防重）；
+        出现更新版本时关旧条弹新条；latest/failed/skipped 一律静默。
+        """
+        status, _current, latest = result
+        if status != "newer" or not latest:
+            return
+        if self._path_ytdlp_notified == latest:
+            return
+        old = self._path_ytdlp_bar
+        if old is not None:
+            try:
+                old.close()
+            except Exception:  # noqa: BLE001
+                pass
+            self._path_ytdlp_bar = None
+        self._path_ytdlp_notified = latest
+        bar = show_infobar(
+            self, "warning", title="yt-dlp 有新版本",
+            content="检测到 PATH 中的 yt-dlp 可更新，请自行更新。",
+            duration=-1)
+
+        def _on_closed():
+            # 点 X 关闭后清引用（防叠加状态），出现更新版本时仍可再弹
+            if getattr(self, "_path_ytdlp_bar", None) is bar:
+                self._path_ytdlp_bar = None
+
+        bar.closedSignal.connect(_on_closed)
+        self._path_ytdlp_bar = bar
+
+    def _on_tools_ytdlp_check_done(self, result):
+        """内置 tools 来源 yt-dlp 检查结果：点亮 Badge/圆点并弹常驻 InfoBar 引导设置页更新。
+
+        tools 版可由应用内提权更新，与设置页自检同口径（亮 Badge 引导）；
+        会话内同版本仅提示一次（4h 周期防重）；latest/failed/skipped 一律静默。
+        """
+        status, current, latest = result
+        if status != "newer" or not latest:
+            return
+        if self._tools_ytdlp_notified == latest:
+            return
+        self._close_tools_ytdlp_bar()
+        self._tools_ytdlp_notified = latest
+        # 与设置页自检同口径：点亮导航设置 Badge 与「下载/更新」按钮圆点
+        self.notify_ytdlp_update(True)
+        self.settings_page.set_ytdlp_update_dot(True)
+        bar = show_infobar(
+            self, "warning", title="yt-dlp 有新版本",
+            content=f"当前版本 {current}，最新版本 {latest}。"
+                    "不更新可能导致视频嗅探失败，请前往设置页更新。",
+            duration=-1)
+        go_btn = qfw.PushButton("前往设置")
+        go_btn.clicked.connect(lambda: self.switchTo(self.settings_page))
+        bar.addWidget(go_btn)
+
+        def _on_closed():
+            # 点 X 关闭后清引用（防叠加状态），出现更新版本时仍可再弹
+            if getattr(self, "_tools_ytdlp_bar", None) is bar:
+                self._tools_ytdlp_bar = None
+
+        bar.closedSignal.connect(_on_closed)
+        self._tools_ytdlp_bar = bar
+
+    def _close_tools_ytdlp_bar(self):
+        """关闭 tools 来源「yt-dlp 有新版本」提示条（更新完成后统一收口）"""
+        bar = getattr(self, "_tools_ytdlp_bar", None)
+        if bar is not None:
+            try:
+                bar.close()
+            except Exception:  # noqa: BLE001
+                pass
+            self._tools_ytdlp_bar = None
 
     def _close_update_bar(self):
         """关闭旧的更新状态常驻条（防重复检查叠加多条）"""

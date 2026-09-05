@@ -494,6 +494,58 @@ def check_ytdlp_deno_update_needed() -> tuple:
     return yt_needed, deno_needed, yt_state, deno_state
 
 
+def check_path_ytdlp_update() -> tuple[str, str, str]:
+    """检查 PATH 中的 yt-dlp 是否有新版本（只查不装，副本由用户自行管理）。
+
+    仅对 PATH 来源生效；内置 tools 来源的更新由设置页提权流程负责，不在本函数范围。
+    返回 (status, current, latest)：
+    - "newer":   PATH 版本落后于 GitHub 最新版
+    - "latest":  PATH 版本已最新
+    - "failed":  当前版本或最新版本查询失败（网络等），调用方按静默处理
+    - "skipped": 当前生效来源不是 PATH（或 PATH 解析异常），无需检查
+    """
+    if get_ytdlp_source() != "path":
+        return ("skipped", "", "")
+    exe = _which("yt-dlp")
+    if not exe:
+        return ("skipped", "", "")
+    current = _run_version_cmd(Path(exe), "")
+    if not current:
+        return ("failed", "", "")
+    latest = get_ytdlp_latest_version()
+    if not latest:
+        return ("failed", current, "")
+    if _normalize_version(current) < _normalize_version(latest):
+        return ("newer", current, latest)
+    return ("latest", current, latest)
+
+
+def check_tools_ytdlp_update() -> tuple[str, str, str]:
+    """检查内置 tools yt-dlp 是否有新版本（只查不装，更新走设置页提权流程）。
+
+    仅对 tools 来源生效；PATH 来源由 check_path_ytdlp_update 负责（两函数互斥，
+    同一时刻只有当前生效来源会真正发请求）。
+    返回 (status, current, latest)：
+    - "newer":   内置版本落后于 GitHub 最新版
+    - "latest":  内置版本已最新
+    - "failed":  版本查询失败（网络等），调用方按静默处理
+    - "skipped": 当前生效来源不是 tools（或未安装，由设置页引导安装）
+    """
+    if get_ytdlp_source() != "tools":
+        return ("skipped", "", "")
+    if not get_ytdlp_exe_path().is_file():
+        return ("skipped", "", "")
+    current = get_ytdlp_current_version()
+    if not current:
+        return ("failed", "", "")
+    latest = get_ytdlp_latest_version()
+    if not latest:
+        return ("failed", current, "")
+    if _normalize_version(current) < _normalize_version(latest):
+        return ("newer", current, latest)
+    return ("latest", current, latest)
+
+
 def download_ytdlp(progress_cb=None, check_latest=True, cancel_cb=None,
                    on_proc=None) -> str:
     """下载安装/更新内置 yt-dlp 到 tools/yt-dlp/（仅 yt-dlp，与 Deno 相互独立）。

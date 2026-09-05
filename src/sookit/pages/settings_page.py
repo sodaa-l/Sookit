@@ -559,14 +559,22 @@ class SettingsPage(QWidget):
 
     @pyqtSlot(str)
     def _on_latest_version(self, ver):
-        """在主线程比较版本，有新版本则点亮圆点并弹常驻 InfoBar（含前往设置按钮，非阻塞）"""
+        """在主线程比较版本，有新版本则点亮圆点并弹常驻 InfoBar（含前往设置按钮，非阻塞）。
+
+        PATH 来源例外：仅弹 InfoBar 提示，不点亮圆点/Badge（副本由用户自行管理，
+        设置页无法代更新；主窗口自动检查会另行弹全局提示条）。
+        """
         if not ver:
             return
         cur = self._normalize_version(self._yt_current_ver)
         lat = self._normalize_version(ver)
         if lat and cur and lat > cur:
-            self._set_yt_dot(True)
-            self._notify_ytdlp_update(True)
+            if get_ytdlp_source() == "path":
+                # PATH 来源：不点亮圆点与 Badge（2026-09-06 决策），保留 InfoBar 提示
+                pass
+            else:
+                self._set_yt_dot(True)
+                self._notify_ytdlp_update(True)
             if self._yt_new_version_bar is None:
                 self._yt_new_version_bar = show_infobar(
                     self, "warning", title="yt-dlp 有新版本",
@@ -594,6 +602,10 @@ class SettingsPage(QWidget):
         dot = getattr(self, "_check_btn_dot", None)
         if dot is not None:
             dot.setVisible(visible)
+
+    def set_ytdlp_update_dot(self, visible: bool):
+        """供主窗口调用：yt-dlp 有新版本时点亮「下载/更新」按钮圆点"""
+        self._set_yt_dot(visible)
 
     def _notify_ytdlp_update(self, available: bool):
         """把 yt-dlp 更新状态同步给主窗口（刷新导航"设置" Badge）"""
