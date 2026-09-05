@@ -90,7 +90,7 @@ flowchart TB
 | --- | --- | --- |
 | `functions.py` | 功能中枢。聚合所有子模块并再导出保持向后兼容 | `Functions` (类, 所有 func 均为 @staticmethod) |
 | `ffmpeg_utils.py` | FFmpeg 路径、子进程执行 (`run_ffmpeg`/`run_ytdlp`)、时长/大小格式化 | `run_ffmpeg()`, `run_ytdlp()`, `check_ffmpeg()`, `extract_video_frame()` |
-| `ytdlp_utils.py` | yt-dlp/Deno 版本检查、下载 (aria2c+urllib 双通道)、独立下载器调起 | `download_ytdlp()`, `download_deno()`, `get_*_version()`, `check_ytdlp_deno_update_needed()`, `launch_ytdlp_updater()` |
+| `ytdlp_utils.py` | yt-dlp/Deno 版本检查、下载 (aria2c+urllib 双通道)、独立下载器调起 | `download_ytdlp()`, `download_deno()`, `get_*_version()`, `check_ytdlp_deno_update_needed()`, `check_path_ytdlp_update()`, `check_tools_ytdlp_update()`, `launch_ytdlp_updater()` |
 | `app_update.py` | **Sookit 自身自动更新** (原 core/updater.py，注意与顶层 updater.exe 入口区分) | `check_latest_version()`, `download_installer()`, `is_newer()` |
 | `youtube_utils.py` | YouTube ID 提取、缩略图构建（硬编码 5 档 + 通用规范化）、HTTP 元数据获取 | `extract_youtube_id()`, `build_thumbnails()`, `normalize_thumbnails()`, `fetch_youtube_metadata()` |
 | `task_queue.py` | 任务队列单例。进度、workspace 生命周期、active_workspaces registry、JSON 持久化 | `TaskQueueManager`, `Task`, `TaskStatus`, `TaskType`, `_generate_ulid()` |
@@ -303,7 +303,7 @@ yt-dlp/Deno 下载更新从 Sookit 解耦为独立 `updater.exe`：
 
 - **导航"任务队列" badge**：`InfoBadge.attension` 文字胶囊，数字 = `get_active_tasks()` 数量，信号驱动（`task_added`/`task_completed`/`task_removed` → `_update_queue_badge`），归零隐藏。
 - **导航"设置" badge**：`InfoBadge.error("")` 空文案红点，任一更新来源（Sookit 新版 / yt-dlp 有新版或未安装）命中即显示。状态由 `MainWindow._sookit_update`/`_ytdlp_update` 两个标志聚合；**尺寸动态取任务队列 badge 的 `height()`（17px）等高对齐**。Sookit 侧接线：启动/手动检查有新版点亮（与更新 Dialog 并存）、手动检查无新版清除、**「忽略此版本」清除（跟随静默，复用 `check_latest_version()` 的忽略过滤）**。
-- **设置页按钮圆点**：`DotInfoBadge.error` 10px（`setFixedSize(10,10)`），挂 yt_card/about_card 上 target 按钮。「下载/更新」圆点由 SettingsPage 自管：`_on_latest_version` 有新版或 `_check_versions` 未安装分支点亮，`_on_ytdlp_download_done` 的 up_to_date/updated 分支清除（`_clear_yt_update_state` 同时经 `notify_ytdlp_update` 同步主窗口）；「检查更新」圆点由主窗口经 `set_sookit_update_dot` 控制。
+- **设置页按钮圆点**：`DotInfoBadge.error` 10px（`setFixedSize(10,10)`），挂 yt_card/about_card 上 target 按钮。「下载/更新」圆点由 SettingsPage 自管：`_on_latest_version` 有新版（仅 tools 来源，PATH 提前 return）或 `_check_versions` 未安装分支点亮，主窗口周期检查发现 tools 来源有新版时亦经 `set_ytdlp_update_dot` 点亮（见决策 28），`_on_ytdlp_download_done` 的 up_to_date/updated 分支清除（`_clear_yt_update_state` 同时经 `notify_ytdlp_update` 同步主窗口）；「检查更新」圆点由主窗口经 `set_sookit_update_dot` 控制。
 - **配色坑**：`attension` 级 = 主题色，圆点贴在主题色 `PrimaryPushButton` 上会隐形——按钮圆点必须用 `error`/`warning` 级。
 - **InfoBadge 定位坑（重要）**：`InfoBadgeManager` 只监听 **target** 的 Move/Resize 重定位，badge 自身 resize 不触发；且 `make()` 仅在创建时按当时尺寸定位一次。空文案 badge 初始宽度极小（~9px），`setFixedSize` 放大为左上角锚定 → 圆心右/下偏 ~4px。**修复：放大后手动 `badge.move(badge.manager.position())` 重算**。同理，文字 badge `setText` 后位数变化（如 9→10）需 `adjustSize()` + 重算位置。
 - 页面级（SettingsPage → MainWindow）通信用 `self.window()` 弱引用回调（与 `_go_to_settings` 同模式），不引入信号耦合。
@@ -368,6 +368,30 @@ yt-dlp/Deno 下载更新从 Sookit 解耦为独立 `updater.exe`：
 **修复**：`_finish()` 里 `accept()` 之后显式 `QApplication.quit()`——直接退出事件循环，不依赖 `quitOnLastWindowClosed` 隐式链，覆盖所有收尾路径（自然完成 / 取消 / 点 X 转取消）。`main()` 与 `_main_app_setup()` 在 `app.exec()` 返回后补 `[EXIT]` 日志行（此前日志无"进程退出"记录，无法区分"结果已写但进程未退"）。
 
 **教训**：QDialog 的"忽略关闭 + 稍后自行收尾"模式（closeEvent 里 ignore）**必须配显式 `QApplication.quit()` 兜底**；仅依赖 accept/lastWindowClosed 隐式链，在 closeEvent 被 ignore 过一次后即永久失效（is_closing 不复位）。验证三连：offscreen 最小复现（ignore+hide → accept 挂死；accept+quit 正常返回）→ 打包态 WM_CLOSE 场景（修复前残留 202MB 进程，修复后 15s 内退出且结果 JSON 正常）→ 完成路径回归（下载完成自动退出无变化）。
+
+### 28. yt-dlp 按生效来源挂进主窗口更新周期检查（2026-09-06）
+
+背景：主窗口自动检查周期（决策 25）原本只查 Sookit 自身；yt-dlp 的检查仅设置页构造时跑一次（提示条挂隐藏页面，进入设置页才可见），长会话中 yt-dlp 发新版无感知。PATH 来源副本由用户自行管理（scoop/pip 等），应用无法也不应代更新。
+
+**检查层（`ytdlp_utils.py`，经 functions 再导出）**：
+
+- `check_path_ytdlp_update()` / `check_tools_ytdlp_update()` 返回 `(status, current, latest)` 四态：`newer` / `latest` / `failed` / `skipped`；
+- **两函数按 `get_ytdlp_source()` 互斥**：仅当前生效来源真正跑 `--version` 子进程 + GitHub 请求，另一来源直接 `skipped`（tools 侧 exe 不存在同样 `skipped`，未安装引导归设置页）；
+- 复用 `_run_version_cmd` / `get_ytdlp_latest_version` / `_normalize_version`，与既有检查同源同口径。
+
+**主窗口接线**：`_CheckWorker` 在 Sookit 检查后串行追加两个 yt-dlp 检查，done 载荷扩为 `(sookit, path_ytdlp, tools_ytdlp)` 三元组，共用同一 4h ± 抖动/指数退避循环（**yt-dlp 检查失败不影响 Sookit 退避计数**）。结果分派 `_on_path_ytdlp_check_done` / `_on_tools_ytdlp_check_done`：`newer` 才动作，`latest/failed/skipped` 一律静默；会话内同版本防重（`_path_ytdlp_notified` / `_tools_ytdlp_notified`，不写 config，重启后重新提示一次），出现更新版本时关旧条弹新条。
+
+**通知策略（产品决策）**：
+
+- **PATH**：仅主窗口常驻 InfoBar「检测到 PATH 中的 yt-dlp 可更新，请自行更新」（无按钮、**不点亮 Badge/圆点**）——提示即全部职责，更新动作完全归用户；
+- **tools**：点亮导航设置 Badge（`notify_ytdlp_update(True)`）+ 「下载/更新」按钮圆点（新增公开方法 `SettingsPage.set_ytdlp_update_dot`）+ 常驻 InfoBar（含版本号与「前往设置」按钮）——tools 可由应用内提权更新，与设置页自检同口径引导；**收口链路**：更新成功 → `_clear_yt_update_state` → `notify_ytdlp_update(False)` → 关闭该条并清防重状态（挂在 notify 回调上天然覆盖所有成功清除路径；取消/失败不清，提示保留）。
+
+**设置页同步调整**：
+
+- `_on_latest_version` 对 PATH 来源**提前 return**：不亮圆点/Badge、不弹「前往设置」条——该条对 PATH 是死循环引导（去设置页点「下载/更新」仍回到"请自行更新"）；PATH 新版提示单一归主窗口；
+- `_update_ytdlp` 的 PATH 分支从"仅弹 6s 固定提示"（死按钮）改为**主动检查并回显**（`_start_path_check` / `_on_path_check_done`，worker 模式与 tools `_start_check` 一致，复用 `_update_worker/_update_thread` 引用）：`newer` → warning 8s（当前/最新版本号 + 引导自行更新）、`latest` → info 5s、`failed` → error 常驻（同 tools 查询失败口径，不误报已最新）、`skipped` → info 5s。结果条用短时而非常驻——PATH 的常驻提醒单一归主窗口，避免双条叠加。
+
+验证：py_compile/lint 零错；冒烟 `check_path_ytdlp_update()` → `('latest', '2026.08.19', '2026.08.19')`、`check_tools_ytdlp_update()` → `('skipped', '', '')`（PATH 来源下互斥正确）。
 
 ## AI 编码约定
 

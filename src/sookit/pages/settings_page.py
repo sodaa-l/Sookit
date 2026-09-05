@@ -14,7 +14,7 @@ from sookit.core.functions import (
     is_ytdlp_available, get_ytdlp_source, build_ytdlp_cmd,
     launch_ytdlp_updater,
     get_ytdlp_current_version, get_deno_current_version,
-    check_ytdlp_deno_update_needed,
+    check_ytdlp_deno_update_needed, check_path_ytdlp_update,
     get_ytdlp_latest_version,
     check_ffmpeg, check_aria2c, load_download_config, save_download_config,
     load_theme_color, save_theme_color, THEME_COLORS, get_ffmpeg_path,
@@ -561,28 +561,28 @@ class SettingsPage(QWidget):
     def _on_latest_version(self, ver):
         """在主线程比较版本，有新版本则点亮圆点并弹常驻 InfoBar（含前往设置按钮，非阻塞）。
 
-        PATH 来源例外：仅弹 InfoBar 提示，不点亮圆点/Badge（副本由用户自行管理，
-        设置页无法代更新；主窗口自动检查会另行弹全局提示条）。
+        PATH 来源例外：不点亮圆点/Badge、不弹「前往设置」条——PATH 副本由用户
+        自行管理，设置页无代更新入口，「前往设置」会形成死循环引导（点按钮仍提示
+        自行更新）；PATH 的新版提示由主窗口周期检查的全局 InfoBar 负责（2026-09-06 决策）。
         """
         if not ver:
             return
         cur = self._normalize_version(self._yt_current_ver)
         lat = self._normalize_version(ver)
-        if lat and cur and lat > cur:
-            if get_ytdlp_source() == "path":
-                # PATH 来源：不点亮圆点与 Badge（2026-09-06 决策），保留 InfoBar 提示
-                pass
-            else:
-                self._set_yt_dot(True)
-                self._notify_ytdlp_update(True)
-            if self._yt_new_version_bar is None:
-                self._yt_new_version_bar = show_infobar(
-                    self, "warning", title="yt-dlp 有新版本",
-                    content=f"当前版本 {cur}，最新版本 {lat}。不更新可能导致视频嗅探失败，请前往设置页更新。",
-                    duration=-1)
-                btn = qfw.PushButton("前往设置")
-                btn.clicked.connect(self._go_to_settings)
-                self._yt_new_version_bar.addWidget(btn)
+        if not (lat and cur and lat > cur):
+            return
+        if get_ytdlp_source() == "path":
+            return
+        self._set_yt_dot(True)
+        self._notify_ytdlp_update(True)
+        if self._yt_new_version_bar is None:
+            self._yt_new_version_bar = show_infobar(
+                self, "warning", title="yt-dlp 有新版本",
+                content=f"当前版本 {cur}，最新版本 {lat}。不更新可能导致视频嗅探失败，请前往设置页更新。",
+                duration=-1)
+            btn = qfw.PushButton("前往设置")
+            btn.clicked.connect(self._go_to_settings)
+            self._yt_new_version_bar.addWidget(btn)
 
     def _go_to_settings(self):
         win = self.window()
@@ -630,16 +630,23 @@ class SettingsPage(QWidget):
 
     def _update_ytdlp(self, skip_check: bool = False):
         """按来源三分支处理下载/更新：
-        - path → 仅提示自行更新
+        - path → 主动跑一次 PATH 版本检查并回显结果（有新版引导自行更新，不代下载）
         - tools → 先「检查中」查新版本（skip_check=True 时跳过，如自动更新路径已确认有新版），
                   确需更新才切「更新中」提权下载；查询失败如实弹错误并引导手动更新
         - None  → 未安装，直接「安装中」提权下载到 tools/yt-dlp/（含 Deno 运行时）
         """
         source = get_ytdlp_source()
         if source == "path":
-            show_infobar(self, "info", title="提示",
-                         content="检测到 PATH 中的全局 yt-dlp，请自行更新",
-                         duration=6000)
+            # PATH 副本由用户自行管理：按钮不做下载，改为主动检查一次并回显结果
+            self.yt_btn.setEnabled(False)
+            self.yt_btn.setText("检查中…")
+            self.yt_label.setText("yt-dlp（PATH）  —  正在检查新版本…")
+            if self._update_progress:
+                self._update_progress.close()
+            self._update_progress = show_infobar(
+                self, "info", title="检查中",
+                content="正在检查 PATH 中 yt-dlp 的新版本…", closable=False)
+            self._start_path_check()
             return
 
         action = "更新" if source == "tools" else "安装"
@@ -721,6 +728,59 @@ class SettingsPage(QWidget):
             self, "info", title="更新中",
             content="正在更新 yt-dlp（含 Deno 运行时）…", closable=False)
         self._start_download()
+
+    def _start_path_check(self):
+        """后台线程检查 PATH 来源 yt-dlp 是否有新版本（只查不装，副本由用户自行更新）"""
+        class _PathYtdlpCheckWorker(QObject):
+            done = pyqtSignal(object)
+            def run(s):
+                try:
+                    s.done.emit(check_path_ytdlp_update())
+                except Exception as e:  # noqa: BLE001 极端异常按查询失败处理
+                    s.done.emit(("failed", "", str(e)))
+
+        thread = QThread(self)
+        w = _PathYtdlpCheckWorker()
+        w.moveToThread(thread)
+        thread.started.connect(w.run)
+        w.done.connect(self._on_path_check_done)
+        w.done.connect(thread.quit)
+        w.done.connect(w.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.start()
+        self._update_worker = w
+        self._update_thread = thread
+
+    @pyqtSlot(object)
+    def _on_path_check_done(self, result):
+        """PATH 检查结果回显：有新版→带版本号引导自行更新；已最新→提示；
+        查询失败→如实报错并引导手动更新（与 tools 查询失败同口径，不误报已最新）"""
+        if self._update_progress:
+            self._update_progress.close()
+            self._update_progress = None
+        self.yt_btn.setEnabled(True)
+        self.yt_btn.setText("下载/更新")
+        self._render_yt_label()
+
+        status, current, latest = result
+        if status == "newer":
+            show_infobar(
+                self, "warning", title="yt-dlp 有新版本",
+                content=f"PATH 中的 yt-dlp 可更新：当前 {current}，最新 {latest}。"
+                        "该副本由系统 PATH 管理，请自行更新（如 scoop update yt-dlp）。",
+                duration=8000)
+        elif status == "latest":
+            show_infobar(
+                self, "info", title="已是最新版本",
+                content=f"PATH 中的 yt-dlp 已是最新版本（{current}）", duration=5000)
+        elif status == "skipped":
+            show_infobar(self, "info", title="提示",
+                         content="未检测到 PATH 中的 yt-dlp", duration=5000)
+        else:
+            show_infobar(
+                self, "error", title="检查更新失败",
+                content="无法从 GitHub 获取 yt-dlp 最新版本信息，请检查网络或代理后重试；"
+                        "也可前往 https://github.com/yt-dlp/yt-dlp/releases 手动更新 PATH 中的 yt-dlp")
 
     def _start_download(self):
         """后台线程提权调起 updater.exe 下载/更新 yt-dlp 与 Deno，
