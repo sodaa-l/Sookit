@@ -197,6 +197,9 @@ def _fetch_expected_sha256(base: str, tag: str, name: str) -> str | None:
     缺失导致更新整体不可用，仅记警告日志。
     """
     for prefix in ("v", ""):
+        # build.* tag 的 v 前缀组合（vbuild.*）必然 404，跳过省去无效请求
+        if prefix == "v" and tag.lower().startswith("build."):
+            continue
         url = f"{base}/{prefix}{tag}/{name}.sha256"
         try:
             _logger.info("获取安装器 sha256: %s", url)
@@ -255,6 +258,9 @@ def download_installer(tag: str, progress_cb=None, cancel_cb=None, on_proc=None)
 
     last_err: Exception | None = None
     for prefix in ("v", ""):
+        # build.* tag 的 v 前缀组合（vbuild.*）必然 404，跳过省去无效请求
+        if prefix == "v" and tag.lower().startswith("build."):
+            continue
         url = f"{base}/{prefix}{tag}/{name}"
         try:
             _logger.info("下载安装器: %s", url)
