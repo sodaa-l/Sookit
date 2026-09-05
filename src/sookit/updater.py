@@ -374,6 +374,13 @@ class UpdaterDialog(QDialog):
         _log(f"[DONE] 下载器结束, result_path={self._result_path}, result={self._result}")
         _write_result(self._result_path, self._result)
         self.accept()
+        # 显式退出事件循环，不依赖 quitOnLastWindowClosed 链。
+        # 根因（实测复现）：closeEvent 里 e.ignore()+hide() 拒绝过一次关闭后，
+        # Qt 内部 data.is_closing 残留，此后的 accept()→done()→QDialogPrivate::close()
+        # 走 else{hide()} 分支（不触发 lastWindowClosed），事件循环永不退出 →
+        # 进程无窗残留，且所有后续关闭请求（含安装器 WM_CLOSE）被 close_helper
+        # 开头的 is_closing 检查短路成 no-op → 安装器"关闭 updater 失败"。
+        QApplication.quit()
 
     def closeEvent(self, e):
         # 用户直接点窗口关闭按钮：按取消处理。
@@ -426,7 +433,9 @@ def _main_app_setup() -> int:
         dialog.start()
         dialog.show()
         _log("[START] GUI 已显示, 开始下载安装包")
-        return app.exec()
+        rc = app.exec()
+        _log("[EXIT] 事件循环退出, 进程即将结束")
+        return rc
     except Exception as e:  # noqa: BLE001
         _log("[FATAL] app-setup 启动失败:\n" + traceback.format_exc())
         _write_result(result_path, {"task": "app_setup", "ok": False, "status": "failed",
@@ -453,7 +462,9 @@ def main() -> int:
         dialog.start()
         dialog.show()
         _log("[START] GUI 已显示, 开始下载")
-        return app.exec()
+        rc = app.exec()
+        _log("[EXIT] 事件循环退出, 进程即将结束")
+        return rc
     except Exception as e:  # noqa: BLE001
         _log("[FATAL] updater 启动失败:\n" + traceback.format_exc())
         _write_result(result_path, {
