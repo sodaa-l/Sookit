@@ -5,7 +5,7 @@ pages/queue_page.py
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QFont
-from PyQt6.QtWidgets import QVBoxLayout, QHBoxLayout, QWidget, QScrollArea, QFrame
+from PyQt6.QtWidgets import QVBoxLayout, QHBoxLayout, QWidget, QFrame
 
 import qfluentwidgets as qfw
 
@@ -13,7 +13,6 @@ from sookit.core.task_queue import TaskQueueManager, Task, TaskStatus
 from sookit.widgets.task_card import create_task_card, TaskCardBase, CompletedThumbnailCard
 from sookit.pages.base import PageBase
 from sookit.widgets.infobar import show_infobar
-from sookit.core.utils import get_scrollbar_style
 
 
 class QueuePage(PageBase):
@@ -45,8 +44,8 @@ class QueuePage(PageBase):
         active_layout.setContentsMargins(0, 0, 0, 0)
         active_layout.setSpacing(8)
         
-        # 进行中滚动区域
-        self.active_scroll = QScrollArea()
+        # 进行中滚动区域（qfw.ScrollArea 自带平滑滚动 + Fluent 滚动条）
+        self.active_scroll = qfw.ScrollArea()
         self.active_scroll.setWidgetResizable(True)
         self.active_scroll.setFrameShape(QFrame.Shape.NoFrame)
         self.active_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -59,6 +58,7 @@ class QueuePage(PageBase):
         self.active_cards_layout.addStretch()
         
         self.active_scroll.setWidget(self.active_scroll_content)
+        self.active_scroll.enableTransparentBackground()
         active_layout.addWidget(self.active_scroll)
         
         layout.addWidget(self.active_page)
@@ -69,8 +69,8 @@ class QueuePage(PageBase):
         completed_layout.setContentsMargins(0, 0, 0, 0)
         completed_layout.setSpacing(0)
 
-        # 已完成滚动区域
-        self.completed_scroll = QScrollArea()
+        # 已完成滚动区域（qfw.ScrollArea 自带平滑滚动 + Fluent 滚动条）
+        self.completed_scroll = qfw.ScrollArea()
         self.completed_scroll.setWidgetResizable(True)
         self.completed_scroll.setFrameShape(QFrame.Shape.NoFrame)
         self.completed_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -87,6 +87,7 @@ class QueuePage(PageBase):
         self.completed_flow_layout.setContentsMargins(8, 8, 8, 8)
 
         self.completed_scroll.setWidget(self.completed_scroll_content)
+        self.completed_scroll.enableTransparentBackground()
         completed_layout.addWidget(self.completed_scroll)
 
         layout.addWidget(self.completed_page)
@@ -108,11 +109,6 @@ class QueuePage(PageBase):
             self._completed_cards[task.task_id] = card
             self.completed_flow_layout.addWidget(card)
 
-        # 更新滚动条样式
-        self._update_scrollbar_style()
-        # 主题变化时刷新滚动条颜色
-        qfw.qconfig.themeChangedFinished.connect(self._update_scrollbar_style)
-    
     def _on_segment_changed(self, key: str):
         """切换进行中/已完成页面"""
         if key == "active":
@@ -185,9 +181,3 @@ class QueuePage(PageBase):
             completed_card.deleteLater()
         # 触发布局重排，使后续卡片自动前移填补空缺
         self.completed_flow_layout.update()
-    
-    def _update_scrollbar_style(self):
-        """根据当前主题更新滚动条样式（与设置页一致）"""
-        style = get_scrollbar_style(qfw.isDarkTheme())
-        self.active_scroll.setStyleSheet(style)
-        self.completed_scroll.setStyleSheet(style)

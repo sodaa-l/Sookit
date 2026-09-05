@@ -4,7 +4,7 @@
 import os
 import re
 
-from PyQt6.QtWidgets import QVBoxLayout, QHBoxLayout, QWidget, QScrollArea, QFrame
+from PyQt6.QtWidgets import QVBoxLayout, QHBoxLayout, QWidget, QFrame
 from PyQt6.QtCore import Qt, QThread, QObject, pyqtSignal, pyqtSlot, QTimer
 
 import qfluentwidgets as qfw
@@ -21,7 +21,6 @@ from sookit.core.functions import (
     set_autostart, is_autostart, load_close_action, save_close_action,
     load_task_complete_action, save_task_complete_action,
 )
-from sookit.core.utils import get_scrollbar_style
 from sookit import APP_NAME, APP_VERSION
 from sookit.widgets.infobar import show_infobar
 
@@ -44,8 +43,8 @@ class SettingsPage(QWidget):
         QTimer.singleShot(200, self._check_versions)
 
     def _init_ui(self):
-        # 创建滚动区域
-        self.scroll_area = QScrollArea(self)
+        # 创建滚动区域（qfw.ScrollArea 自带平滑滚动 + Fluent 滚动条）
+        self.scroll_area = qfw.ScrollArea(self)
         self.scroll_area.setWidgetResizable(True)
         self.scroll_area.setFrameShape(QFrame.Shape.NoFrame)
         self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -56,14 +55,13 @@ class SettingsPage(QWidget):
         # 让滚动区域和内容容器背景透明，以正确跟随深色/浅色主题
         scroll_content.setStyleSheet("QWidget { background: transparent; }")
         
-        # 设置滚动条样式（根据主题）
-        self._update_scrollbar_style()
         layout = QVBoxLayout(scroll_content)
         layout.setContentsMargins(24, 24, 24, 24)
         layout.setSpacing(4)
 
         # 设置滚动区域的内容
         self.scroll_area.setWidget(scroll_content)
+        self.scroll_area.enableTransparentBackground()
         
         # 将滚动区域添加到主布局
         main_layout = QVBoxLayout(self)
@@ -278,8 +276,6 @@ class SettingsPage(QWidget):
     def _on_theme_changed(self, idx):
         mapping = {0: qfw.Theme.LIGHT, 1: qfw.Theme.DARK, 2: qfw.Theme.AUTO}
         qfw.setTheme(mapping[idx], save=True)
-        # 主题改变后更新滚动条样式
-        QTimer.singleShot(100, self._update_scrollbar_style)
     
     def _on_color_changed(self, action):
         """主题颜色变更处理"""
@@ -294,10 +290,6 @@ class SettingsPage(QWidget):
             for a in self._color_actions:
                 a.setChecked(a == action)
     
-    def _update_scrollbar_style(self):
-        """根据当前主题更新滚动条样式"""
-        self.scroll_area.setStyleSheet(get_scrollbar_style(qfw.isDarkTheme()))
-
     def _on_download_setting_changed(self):
         """下载设置改变时保存配置"""
         download_config = {
