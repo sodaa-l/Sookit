@@ -104,6 +104,11 @@ def build_ytdlp_cmd(*args: str) -> list[str]:
     内置来源且 deno.exe 存在时，自动追加 --js-runtimes deno:<绝对路径>，
     确保 YouTube JavaScript 挑战求解器可用；PATH 来源不干预（由用户自管理，
     yt-dlp 会自动发现 PATH 中的 deno）。
+
+    内置 ffmpeg 齐全（ffmpeg.exe + ffprobe.exe）时追加 --ffmpeg-location
+    指向 tools/ffmpeg 目录，统一所有 yt-dlp 调用（含 PATH 来源的 yt-dlp）
+    使用内置 ffmpeg；不齐全则不传该参数，由 yt-dlp 通过 PATH 自行查找
+    （yt-dlp 对不存在的 ffmpeg-location 不会回退 PATH，故必须由本侧判断）。
     """
     cmd = get_ytdlp_cmd()
     if cmd is None:
@@ -113,6 +118,9 @@ def build_ytdlp_cmd(*args: str) -> list[str]:
         deno = get_ytdlp_deno_path()
         if deno is not None:
             extra = ["--js-runtimes", f"deno:{deno}"]
+    ffmpeg_dir = get_tools_dir() / "ffmpeg"
+    if (ffmpeg_dir / "ffmpeg.exe").is_file() and (ffmpeg_dir / "ffprobe.exe").is_file():
+        extra += ["--ffmpeg-location", str(ffmpeg_dir)]
     return cmd + extra + list(args)
 
 
