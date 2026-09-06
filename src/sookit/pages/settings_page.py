@@ -210,7 +210,7 @@ class SettingsPage(QWidget):
         about_card.setMinimumHeight(70)
         about_lay = QHBoxLayout(about_card)
         about_lay.setContentsMargins(15, 12, 15, 12)
-        about_lay.addWidget(qfw.BodyLabel(f"{APP_NAME} {APP_VERSION}"))
+        about_lay.addWidget(qfw.BodyLabel(f"{APP_NAME}  —  {APP_VERSION}"))
         about_lay.addStretch()
         self.check_update_btn = qfw.PrimaryPushButton("检查更新")
         about_lay.addWidget(self.check_update_btn)
