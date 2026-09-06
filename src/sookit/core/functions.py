@@ -308,8 +308,8 @@ class Functions:
         }
 
     @staticmethod
-    def download_youtube(url, format_spec, output_dir, remote_components, 
-                        concurrent_fragments=10, use_aria2c=True, aria2c_connections=16,
+    def download_youtube(url, format_spec, output_dir, remote_components,
+                        use_aria2c=True, aria2c_connections=16,
                         log=None, process_ref=None, on_process_created=None,
                         workspace=None):
         Functions._check_ytdlp()
@@ -318,9 +318,6 @@ class Functions:
         output_template = os.path.join(out, '%(title)s.%(ext)s')
         cmd = build_ytdlp_cmd('-f', format_spec, '-o', output_template, '--newline',
                               '--no-overwrites', url)
-        
-        if concurrent_fragments > 1:
-            cmd.extend(['--concurrent-fragments', str(concurrent_fragments)])
         
         if use_aria2c:
             aria2c_path = get_aria2c_path()

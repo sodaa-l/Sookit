@@ -108,14 +108,13 @@ class MonitorWorker(QThread):
     #                      task_id, url, output_dir, format_spec, download_config, info
 
     def __init__(self, task_id, url, output_dir, interval, remote_components,
-                 concurrent_fragments=10, use_aria2c=True, aria2c_connections=16):
+                 use_aria2c=True, aria2c_connections=16):
         super().__init__()
         self.task_id = task_id
         self.url = url
         self.output_dir = output_dir
         self.interval = interval
         self.remote = remote_components
-        self.concurrent_fragments = concurrent_fragments
         self.use_aria2c = use_aria2c
         self.aria2c_connections = aria2c_connections
         self._stop_flag = False
@@ -152,7 +151,6 @@ class MonitorWorker(QThread):
                     self.status_signal.emit(self.task_id, '下载中')
                     config = {
                         'format_spec': 'bestvideo+bestaudio/best',
-                        'concurrent_fragments': self.concurrent_fragments,
                         'use_aria2c': self.use_aria2c,
                         'aria2c_connections': self.aria2c_connections,
                         'remote': self.remote,

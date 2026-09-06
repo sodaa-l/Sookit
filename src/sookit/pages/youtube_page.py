@@ -865,7 +865,6 @@ class YouTubePage(PageBase):
 
         # 加载下载配置
         download_config = load_download_config()
-        concurrent_fragments = download_config['concurrent_fragments']
         use_aria2c = download_config['use_aria2c']
         aria2c_connections = download_config['aria2c_connections']
 
@@ -895,7 +894,7 @@ class YouTubePage(PageBase):
         # 添加到任务队列
         self.run_queued_task(
             func=Functions.download_youtube,
-            args=(url, format_spec, out_dir, remote, concurrent_fragments, use_aria2c, aria2c_connections),
+            args=(url, format_spec, out_dir, remote, use_aria2c, aria2c_connections),
             task_type=TaskType.YTDLP,
             title=self._sniff_title or f"视频下载 - {video_id}",
             metadata=metadata

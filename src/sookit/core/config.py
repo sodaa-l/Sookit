@@ -62,7 +62,6 @@ def load_download_config():
     config = load_config()
     download_config = config.get('download', {})
     return {
-        'concurrent_fragments': download_config.get('concurrent_fragments', 10),
         'use_aria2c': download_config.get('use_aria2c', True),
         'aria2c_connections': download_config.get('aria2c_connections', 16),
     }

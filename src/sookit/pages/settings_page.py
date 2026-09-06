@@ -137,35 +137,22 @@ class SettingsPage(QWidget):
         layout.addWidget(qfw.SubtitleLabel("下载设置"))
         layout.addSpacing(12)
 
-        # 并发分片数
-        fragments_card = qfw.CardWidget(self)
-        fragments_card.setMinimumHeight(70)
-        fragments_lay = QHBoxLayout(fragments_card)
-        fragments_lay.setContentsMargins(15, 12, 15, 12)
-        fragments_lay.addWidget(qfw.BodyLabel("并发分片数"))
-        fragments_lay.addStretch()
-        self.fragments_combo = qfw.ComboBox()
-        self.fragments_combo.addItems([str(i) for i in range(1, 17)])
-        self.fragments_combo.setCurrentIndex(9)  # 默认10
-        fragments_lay.addWidget(self.fragments_combo)
-        layout.addWidget(fragments_card)
-
         # aria2c 开关
-        aria2c_switch_card = qfw.CardWidget(self)
-        aria2c_switch_card.setMinimumHeight(70)
-        aria2c_switch_lay = QHBoxLayout(aria2c_switch_card)
+        self.aria2c_switch_card = qfw.CardWidget(self)
+        self.aria2c_switch_card.setMinimumHeight(70)
+        aria2c_switch_lay = QHBoxLayout(self.aria2c_switch_card)
         aria2c_switch_lay.setContentsMargins(15, 12, 15, 12)
         aria2c_switch_lay.addWidget(qfw.BodyLabel("使用 aria2c 加速"))
         aria2c_switch_lay.addStretch()
         self.aria2c_switch = qfw.SwitchButton()
         self.aria2c_switch.setChecked(True)
         aria2c_switch_lay.addWidget(self.aria2c_switch)
-        layout.addWidget(aria2c_switch_card)
+        layout.addWidget(self.aria2c_switch_card)
 
         # aria2c 连接数
-        connections_card = qfw.CardWidget(self)
-        connections_card.setMinimumHeight(70)
-        connections_lay = QHBoxLayout(connections_card)
+        self.connections_card = qfw.CardWidget(self)
+        self.connections_card.setMinimumHeight(70)
+        connections_lay = QHBoxLayout(self.connections_card)
         connections_lay.setContentsMargins(15, 12, 15, 12)
         connections_lay.addWidget(qfw.BodyLabel("aria2c 连接数"))
         connections_lay.addStretch()
@@ -173,7 +160,7 @@ class SettingsPage(QWidget):
         self.connections_combo.addItems([str(i) for i in range(4, 33, 4)])
         self.connections_combo.setCurrentIndex(3)  # 默认16
         connections_lay.addWidget(self.connections_combo)
-        layout.addWidget(connections_card)
+        layout.addWidget(self.connections_card)
 
         layout.addSpacing(16)
 
@@ -264,7 +251,6 @@ class SettingsPage(QWidget):
         self.color_menu.triggered.connect(self._on_color_changed)
         self.yt_btn.clicked.connect(lambda: self._update_ytdlp())
         # 下载设置信号连接
-        self.fragments_combo.currentIndexChanged.connect(self._on_download_setting_changed)
         self.aria2c_switch.checkedChanged.connect(self._on_download_setting_changed)
         self.connections_combo.currentIndexChanged.connect(self._on_download_setting_changed)
         # 开机自启信号连接
@@ -296,7 +282,6 @@ class SettingsPage(QWidget):
     def _on_download_setting_changed(self):
         """下载设置改变时保存配置"""
         download_config = {
-            'concurrent_fragments': int(self.fragments_combo.currentText()),
             'use_aria2c': self.aria2c_switch.isChecked(),
             'aria2c_connections': int(self.connections_combo.currentText()),
         }
@@ -412,12 +397,11 @@ class SettingsPage(QWidget):
                 w.thread().start()
         else:
             self.ff_label.setText("FFmpeg  —  未安装")
-        # aria2c 版本检测
+        # aria2c 版本检测；未检测到时灰化相关设置卡片（下载侧已有回退默认下载器的兜底）
         aria2c_ok, aria2c_ver = check_aria2c()
-        if aria2c_ok:
-            self.aria2c_label.setText(f"aria2c  —  {aria2c_ver}")
-        else:
-            self.aria2c_label.setText(f"aria2c  —  {aria2c_ver}")
+        self.aria2c_label.setText(f"aria2c  —  {aria2c_ver}")
+        self.aria2c_switch_card.setEnabled(aria2c_ok)
+        self.connections_card.setEnabled(aria2c_ok)
         
         # 加载常规配置
         self._load_general_config()
@@ -429,7 +413,6 @@ class SettingsPage(QWidget):
     def _load_download_config(self):
         """加载下载配置到 UI"""
         config = load_download_config()
-        self.fragments_combo.setCurrentText(str(config['concurrent_fragments']))
         self.aria2c_switch.setChecked(config['use_aria2c'])
         self.connections_combo.setCurrentText(str(config['aria2c_connections']))
     
