@@ -122,7 +122,19 @@ class QueuePage(PageBase):
         else:
             self.active_page.setVisible(False)
             self.completed_page.setVisible(True)
-    
+
+    def _maybe_auto_switch_to_completed(self):
+        """进行中卡片已清空且用户正停留在"进行中"视图 → 自动切到"已完成"。
+
+        仅由 task_completed 触发（用户确认：task_removed / task_failed 不触发）。
+        用户不在队列页 / 不在"进行中" segment / 已完成页也为空 → 不动。
+        """
+        if self._active_cards or not self.active_page.isVisible():
+            return
+        if not self._completed_cards:
+            return
+        self.segment_widget.setCurrentItem("completed")
+
     def _on_task_added(self, task: Task):
         """新任务添加"""
         # 新任务加入后强制回到"进行中"视图（不管当前页面/segment 状态）
@@ -158,6 +170,9 @@ class QueuePage(PageBase):
 
         # 插入到最前面（最新在上）
         self.completed_flow_layout.insertWidget(0, thumb_card)
+
+        # 最后一个任务完成且用户停留在"进行中"视图 → 自动切到"已完成"
+        self._maybe_auto_switch_to_completed()
     
     def _on_task_failed(self, task: Task):
         """任务失败 - 保留在进行中列表 + 弹常显错误提示（需手动关闭）"""
