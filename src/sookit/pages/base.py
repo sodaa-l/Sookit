@@ -13,6 +13,7 @@ from PyQt6.QtGui import QFont, QDragEnterEvent, QDropEvent
 import qfluentwidgets as qfw
 from sookit.core.workers import Worker
 from sookit.core.config import load_task_complete_action
+from sookit.core.ffmpeg_utils import get_video_duration
 from sookit.core.task_queue import TaskQueueManager, TaskType
 from sookit.widgets.infobar import show_infobar
 
@@ -148,6 +149,16 @@ class PageBase(QWidget):
     def run_queued_task(self, func, args, task_type: TaskType, title: str, metadata: dict = None):
         """将任务添加到任务队列管理器"""
         mgr = TaskQueueManager.instance()
+        if task_type == TaskType.FFMPEG and args:
+            # FFMPEG 任务统一探测输入时长写入 metadata['duration']（进度百分比主来源）。
+            # 探测失败不写键，运行时由 ffmpeg 输出的 Duration 行兜底。
+            video = args[0]
+            if isinstance(video, str) and os.path.isfile(video):
+                duration = get_video_duration(video)
+                if duration and duration > 0:
+                    if metadata is None:
+                        metadata = {}
+                    metadata.setdefault('duration', duration)
         task = mgr.add_task(
             task_type=task_type,
             title=title,

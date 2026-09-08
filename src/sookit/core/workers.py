@@ -4,6 +4,7 @@ core/workers.py
 """
 
 import os
+import re
 import sys
 import threading
 import subprocess
@@ -200,12 +201,13 @@ class TaskWorker(QThread):
     progress_signal = pyqtSignal(dict)   # {"progress", "speed", "eta"}
     finished_signal = pyqtSignal(bool)
 
-    def __init__(self, task_id, task_type, func, args, workspace=""):
+    def __init__(self, task_id, task_type, func, args, workspace="", metadata=None):
         super().__init__()
         self.task_id = task_id
         self.task_type = task_type
         self.func = func
         self.args = args
+        self.metadata = metadata or {}   # 任务元数据（FFMPEG 进度时长主来源 metadata['duration']）
         self._paused = False
         self._cancelled = False
         self._process = None
@@ -294,6 +296,14 @@ class TaskWorker(QThread):
 
     def run(self):
         """执行任务"""
+        # FFMPEG 进度总时长：主来源 metadata['duration']（任务创建时 ffprobe 探测），
+        # 缺失时由 log_with_progress 捕获 ffmpeg 输出的 "Duration:" 行兜底
+        self._total_duration = None
+        if self.task_type == TaskType.FFMPEG:
+            try:
+                self._total_duration = float(self.metadata.get('duration') or 0) or None
+            except (TypeError, ValueError):
+                pass
         try:
             # 包装 log 回调以支持进度解析
             def log_with_progress(msg):
@@ -311,9 +321,15 @@ class TaskWorker(QThread):
                 if self.task_type == TaskType.YTDLP:
                     progress_data = ProgressParser.parse_ytdlp_output(msg)
                 elif self.task_type == TaskType.FFMPEG:
-                    # ffmpeg 需要 total_duration，从 metadata 获取
-                    total_duration = self.args[-1] if len(self.args) > 0 and isinstance(self.args[-1], (int, float)) else None
-                    progress_data = ProgressParser.parse_ffmpeg_output(msg, total_duration)
+                    # metadata 未探测到时长时，以 ffmpeg 头部 "Duration: HH:MM:SS.cc" 行兜底
+                    # （该行先于一切 time= 统计行出现，缓存必然先就位）
+                    if self._total_duration is None:
+                        m = re.search(r'Duration:\s*(\d+):(\d{2}):(\d{2})\.(\d+)', msg)
+                        if m:
+                            self._total_duration = (
+                                int(m.group(1)) * 3600 + int(m.group(2)) * 60
+                                + int(m.group(3)) + int(m.group(4)) / 100.0)
+                    progress_data = ProgressParser.parse_ffmpeg_output(msg, self._total_duration)
                 
                 if progress_data:
                     self.progress_signal.emit(progress_data)

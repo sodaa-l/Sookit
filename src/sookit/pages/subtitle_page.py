@@ -41,7 +41,7 @@ class SubtitlePage(PageBase):
         self.sub = self.add_file_row(grid, "字幕文件", 1, "浏览字幕",
             "字幕文件 (*.ass *.srt);;所有文件 (*)")
         self.out = self.add_dir_row(grid, "输出目录", 2, "浏览")
-        self.out.setPlaceholderText("留空则自动生成")
+        self.out.setPlaceholderText("默认与视频文件同目录")
 
         layout.addLayout(grid)
         layout.addSpacing(10)

@@ -41,7 +41,7 @@ class ReplaceAudioPage(PageBase):
         self.audio = self.add_file_row(grid, "音频文件", 1, "浏览音频",
             "音频文件 (*.mp3 *.wav *.flac *.aac)")
         self.out = self.add_dir_row(grid, "输出目录", 2, "浏览")
-        self.out.setPlaceholderText("留空则自动生成")
+        self.out.setPlaceholderText("默认与视频文件同目录")
 
         grid.addWidget(qfw.BodyLabel("模式"), 3, 0)
         self.mode = qfw.ComboBox()

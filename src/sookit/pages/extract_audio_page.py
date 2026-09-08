@@ -40,7 +40,7 @@ class ExtractAudioPage(PageBase):
             "视频文件 (*.mp4 *.mkv *.avi *.mov)")
         self._drop_target = self.video  # 拖放文件自动填入
         self.out = self.add_dir_row(grid, "输出目录", 1, "浏览")
-        self.out.setPlaceholderText("留空则自动生成 (与视频同目录)")
+        self.out.setPlaceholderText("默认与视频文件同目录")
 
         layout.addLayout(grid)
         layout.addSpacing(10)

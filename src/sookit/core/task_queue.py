@@ -288,7 +288,7 @@ class TaskQueueManager(QObject):
         # 创建并启动 worker
         from sookit.core.workers import TaskWorker
         worker = TaskWorker(task_id, task.task_type, task.func, task.args,
-                            workspace=task.workspace)
+                            workspace=task.workspace, metadata=task.metadata)
         task.worker = worker
         
         # 连接信号
