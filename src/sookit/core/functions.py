@@ -162,7 +162,7 @@ class Functions:
                        on_process_created=None):
         """烧录字幕到视频 - 通过切换工作目录规避驱动器冒号分隔符问题"""
         if encoder == 'software':
-            vcodec = ['-c:v', 'libx264', '-preset', 'slow', '-crf', '23']
+            vcodec = ['-c:v', 'libx265', '-preset', 'slow', '-crf', '18']
         else:
             vcodec = ['-c:v', 'h264_nvenc', '-preset', 'p6', '-tune', 'll', '-cq', '23']
         ffmpeg = get_ffmpeg_path()
