@@ -16,7 +16,7 @@ jobs:
   build:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: 校验版本号一致性（tag = APP_VERSION，剥 build. 后 = pyproject）
         shell: pwsh
@@ -33,7 +33,7 @@ jobs:
           if ($ver -ne $appver) { Write-Error "APP_VERSION ($appver) 与 tag ($tag) 不一致"; exit 1 }
           Add-Content $env:GITHUB_ENV "VERSION=$ver"
 
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v10
 
       - name: 安装依赖
         run: uv sync
@@ -84,7 +84,7 @@ jobs:
           Write-Host "$hash  $($exe.Name)"
 
       - name: 发布到 GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: dist/Sookit-Setup-*
           generate_release_notes: true
