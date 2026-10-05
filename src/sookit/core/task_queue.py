@@ -57,6 +57,7 @@ class TaskStatus(Enum):
 class TaskType(Enum):
     YTDLP = "ytdlp"      # yt-dlp 下载任务
     FFMPEG = "ffmpeg"    # ffmpeg 转码任务
+    GIF = "gif"          # MP4 → GIF 自动参数决策转码
 
 
 # ---------- 任务数据模型 ----------

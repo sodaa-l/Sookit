@@ -54,6 +54,7 @@ from sookit.core.youtube_utils import (
     extract_youtube_id, YOUTUBE_THUMBNAILS, build_thumbnails,
     normalize_thumbnails, fetch_youtube_metadata,
 )
+from sookit.core.gif_utils import convert_to_gif
 from sookit.core.config import (
     get_config_path, load_config, save_config,
     load_download_config, save_download_config,
@@ -221,6 +222,16 @@ class Functions:
             ffmpeg = "ffmpeg"
         cmd = [ffmpeg, '-y', '-i', video, '-vn', '-acodec', 'copy', output]
         return run_ffmpeg(cmd, log, None, on_process_created)
+
+    @staticmethod
+    def convert_to_gif(video, output, *args, **kwargs):
+        """MP4 → GIF（按 quality 档位自动决策帧率/色数/分辨率）。
+
+        参数透传给 core/gif_utils.convert_to_gif（第 3 位为 quality 档位）。
+        返回最终 GIF 路径。
+        """
+        from sookit.core.gif_utils import convert_to_gif as _impl
+        return _impl(video, output, *args, **kwargs)
 
     # ---------- YouTube 嗅探与下载 ----------
     @staticmethod

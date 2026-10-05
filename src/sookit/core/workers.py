@@ -345,10 +345,22 @@ class TaskWorker(QThread):
                 # ffmpeg 任务也需要保存进程句柄，取消时才能 taskkill 终止
                 result = self.func(*self.args, log=log_with_progress,
                                    on_process_created=self._on_process_created)
+            elif self.task_type == TaskType.GIF:
+                # GIF 转码：多轮试编码，无法用 ffmpeg time= 行算进度，
+                # 由函数内部按阶段回调上报（详见 core/gif_utils.py）
+                result = self.func(
+                    *self.args, log=log_with_progress,
+                    on_process_created=self._on_process_created,
+                    on_progress=lambda p: self.progress_signal.emit(
+                        {"progress": p}))
             else:
                 result = self.func(*self.args, log=log_with_progress)
             # 捕获返回的最终输出路径列表（yt-dlp 多格式可能返回多个）
-            if isinstance(result, list):
+            if isinstance(result, str) and result:
+                # 单文件产物（如 GIF 转码返回的路径）
+                self.output_files = [result]
+                self._output_path = result
+            elif isinstance(result, list):
                 self.output_files = [p for p in result if p]
                 if self.output_files:
                     self._output_path = self.output_files[0]

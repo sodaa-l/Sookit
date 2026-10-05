@@ -29,7 +29,8 @@ src/sookit/        代码包 (标准 src 布局)
     │   ├─ app_update.py    Sookit 自身自动更新 (原 core/updater.py，2026-09-05 更名避免与顶层 updater.py 混淆)
     │   ├─ youtube_utils.py 元数据提取 + 缩略图构建/通用规范化 (HTTP 降级方案)
     │   ├─ config.py        配置管理 (JSON 缓存 + 线程锁)
-    │   └─ utils.py         滚动条样式等杂项
+    │   ├─ utils.py         滚动条样式等杂项
+    │   └─ gif_utils.py     MP4→GIF 自动参数决策转码 (移植自外部脚本，依赖 numpy+Pillow)
     │
     └─ widgets/        可复用 UI 组件层
         ├─ cover_image.py   封面自绘控件
@@ -97,6 +98,7 @@ flowchart TB
 | `workers.py` | 后台线程: Worker(通用) / TaskWorker(队列, 含 workspace/进程树清理) / MonitorWorker(直播轮询) | `TaskWorker`, `MonitorWorker`, `_kill_process_tree()` |
 | `config.py` | JSON 配置文件读写 + 缓存 + 线程锁。主题色、开机自启、下载配置 | `load_config()`, `save_config()`, `load_download_config()` |
 | `utils.py` | 滚动条样式、SSL 上下文 | `get_scrollbar_style()`, `get_certifi_ssl_context()` |
+| `gif_utils.py` | MP4→GIF 自动参数决策转码（帧率锁死 / 色数 MAE 决策 / 预算内最大化宽度）。依赖 numpy+Pillow（延迟 import） | `convert_to_gif()` |
 
 ### 入口与下载器
 
@@ -119,6 +121,7 @@ flowchart TB
 | `download_youtube(url, format_spec, output_dir, remote, ..., workspace=None)` | 视频下载（通用） | yt-dlp (可选 aria2c) |
 | `check_live_status(url, log)` | 直播状态检测 | yt-dlp (降级 HTTP) |
 | `sniff_channel(url, log)` | 频道视频列表 | yt-dlp |
+| `convert_to_gif(video, output, quality=GifQuality.HIGH, max_mb=None, fps_cap=30, ..., log, on_process_created, on_progress)` | MP4→GIF 自动参数决策转码（四档质量；返回单文件路径；`TaskType.GIF`） | numpy + Pillow + ffmpeg |
 
 > 注：`merge_image_audio` / `batch_merge_image_audio` / `m3u8_to_aac` / `download_xspace` 已随 M3U8 下载、X Space 下载、图片+音频合并三个功能移除（2026-08）。
 
@@ -393,6 +396,75 @@ yt-dlp/Deno 下载更新从 Sookit 解耦为独立 `updater.exe`：
 
 验证：py_compile/lint 零错；冒烟 `check_path_ytdlp_update()` → `('latest', '2026.08.19', '2026.08.19')`、`check_tools_ytdlp_update()` → `('skipped', '', '')`（PATH 来源下互斥正确）。
 
+### 29. MP4 → GIF 自动参数决策转码（2026-10-06）
+
+背景：为「从 X 下载动图」准备转码内核——yt-dlp 会把 X 的 GIF 下载成**无声 MP4**，需 ffmpeg 转回 GIF。
+决策逻辑移植自外部脚本 `auto_gif.py`（该脚本保持不改，作为验收基准），新模块 `core/gif_utils.py`，
+入口 `convert_to_gif(video, output, ...)`，任务类型 `TaskType.GIF`。**本次只做内核 + 队列，未接 UI。**
+
+**算法（与脚本逐条一致）**：
+- 帧率锁死：源 ≤ `fps_cap`（默认 30）保持源帧率，超过则锁 `fps_cap`；
+- 色数：候选 (24/64/128/256)，实测量化 MAE，取"≤ `quant_threshold`（默认 1.3）"的**最小**候选；
+- 分辨率：320px 试编码实测 BPP → 在体积软上界（`max_mb`，由质量档位派生）内迭代取**最大可用宽度**（≤5 轮，上限为源宽度）；
+- 宽度顶到源上限且预算占用 < 90% 时，继续升级色数（≤2 级），把富余预算花在质量上。
+
+**编码质量档位（`GifQuality`，第 3 位参数）**：
+
+| 档位 | 体积软上界 | 分辨率 | 色数 | 备注 |
+| --- | --- | --- | --- | --- |
+| 低质量 | 2MB | 自动决策 | 自动决策（MAE） | |
+| 标准 | 4MB | 自动决策 | 自动决策（MAE） | 与 `auto_gif.py` 默认行为一致 |
+| 高质量（默认） | 10MB | 自动决策 | 自动决策（MAE） | 第 3 位参数不传时的档位 |
+| 最佳质量 | 不约束 | **源分辨率** | **固定 256** | 跳过分析帧/试编码/宽度搜索，一次编码 |
+
+- `max_mb` 保留为可选覆盖（`None` = 由档位派生），便于将来接自定义预算；最佳质量档忽略它。
+- 最佳质量档不做体积约束——分辨率与色数都已定死，没有可调空间（实测 tw4 850×850 → 7.40MB）。
+- 最佳质量档不读分析帧、不做色数决策，因此**不需要 numpy/Pillow**（依赖检查也一并跳过）。
+- 源尺寸小或色数已封顶时，高质量档会自然收敛到与最佳质量档相同的输出（实测 tw4 两者逐字节一致）。
+
+**依赖**：新增 `numpy` + `Pillow`（rawvideo→ndarray 读分析帧；`quantize` + MAE 求色数）。
+两者在 `convert_to_gif` 内**延迟 import**——不拖慢应用启动，缺失时报明确错误而非让 `core` 包导入崩溃。
+
+**工程适配（与脚本的唯一差异，决策参数一律不变）**：
+- 编码子进程走 `run_ffmpeg(..., on_process_created=...)`，复用任务取消的 `taskkill /T /F` 进程树机制；
+  **读分析帧是二进制 stdout，不能走 `run_ffmpeg` 的逐行文本读取**，保留独立 `subprocess.run`（同 `extract_video_frame` 先例）；
+  ffmpeg/ffprobe 走 `get_ffmpeg_path()`/`get_ffprobe_path()`（内嵌优先，缺失回退 PATH）。
+- 临时文件建在私有 `tempfile.mkdtemp(prefix="sookit_gif_")`，`finally` 清理；不落用户目录、不留脚本的 `_rounds/` 归档。
+- 进度为**阶段式**（8 → 18 → 30 → 宽度搜索 30-85 → 色数升级 85-95 → 100），由 `on_progress` 上报并**单调不减**
+  （内部 `max` 兜底，避免宽度搜索提前 `break` 造成回退）。原因：多轮试编码无法映射为线性百分比，
+  且编码用 `-loglevel error`，没有可解析的 `time=` 行（现有 `parse_ffmpeg_output` 在此不可用）。
+- `TaskWorker` 的 GIF 分支传 `on_progress`、**不设** `_total_duration`；函数返回**单文件路径字符串**，
+  由 `TaskWorker` 捕获为 `output_files`（新增 `str` 结果分支，不影响原 list/bool 路径）。
+- **取消无需额外回调**：kill 当前 ffmpeg → `run_ffmpeg` 抛错 → 函数 `finally` 清理临时目录 →
+  `TaskWorker` 见 `_cancelled` 静默。取消响应粒度为**单轮编码**（与现有 FFMPEG 任务同款语义）。
+
+**超标兜底（与脚本唯一的行为差异）**：`auto_gif.py` 在"最小宽度仍超出上界"时直接抛错、不产出文件；
+本实现改为**达标优先、够不着也出文件**——宽度搜索同时记录"超标结果里体积最小的一次"作为 fallback，
+达标结果为空时交付它，由日志标注实际体积与超出幅度（返回值仍是输出路径，不额外返回体积）：
+
+```
+[GIF]      第1次 200×112 → 5.44MB  预算占用 135.9%  超预算
+[GIF] ！无法压到上界 4.0 MB 以内，按最小宽度交付 5.44 MB（超出上界 36%）
+[GIF] 完成: fallback_long.gif  5.44 MB · 200×112 · 24fps · 256 色
+```
+
+因此 `max_mb` 是**软上界**：能压到就压到，压不到也交付（只是日志提示超标）。实测 33s/24fps 源在 200px 下
+已是 5.44MB（超 36%），正确做法仍是把 `max_mb` 调大，而非依赖兜底。色数升级只在达标结果上进行
+（超标时升级只会更大）。X 动图通常 1~5s，正常都达标。
+
+**验证方式**（脚本化、可复跑）：
+- 一致性（**须显式传标准档**——默认档已改为高质量）：`tw1~tw4` 四个真实 X 动图（yt-dlp 下载产物）转码，
+  **产物 md5 与 `auto_gif.py` 基准逐字节一致**（含色数 128 色的 VFR 样本：1080×1468 标称 59.94fps → 正确锁 30fps）；
+- 队列：`QT_QPA_PLATFORM=offscreen` 12 项断言（完成 / output_path / 进度单调 / 取消无产出且不进已完成 /
+  取消后临时目录已清理 / 失败回显 / 极小预算兜底交付 / 带档位入队 / 无中间产物残留）全通过。
+
+**打包**：numpy/Pillow 由 PyInstaller 官方 hook 自动收集，实测 onedir 产物中 `convert_to_gif` 正常工作，
+产物与源码态**逐字节一致**；含两者的 onedir 体积约 +59MB（本机栈）。
+**本机未安装 UPX，`upx=True` 不生效**；若打包环境（如 CI）装了 UPX，建议先实测，
+必要时对 numpy 的 BLAS DLL 加 `upx_exclude`（他项目有 UPX 压坏 BLAS DLL 的先例）。
+另：`gif_utils` 的日志只用纯中文/ASCII，不引入 `✓`/`✗` 这类 GBK 外符号（见踩坑备忘录）——**本机 `PYTHONUTF8=1` 会掩盖该问题**，
+验证时须在未设该变量的环境下跑一遍。
+
 ## AI 编码约定
 
 ### 环境
@@ -568,3 +640,4 @@ mkdir -p dist/Sookit/tools && cp -r tools/aria2c tools/ffmpeg dist/Sookit/tools/
 | `--print after_move:filepath` 与 --write-thumbnail 组合无输出 | --print 隐含 simulate，after_move 阶段不触发 | 固定 `-o` 模板 + 遍历产物文件（产物名可预测） |
 | QThread.run 内操作 QPixmap 崩溃/不可靠 | QPixmap/QGui 类仅主线程可用 | 工作线程内用 QImage 判断解码，主线程再转 QPixmap |
 | B 站短时重复请求 412 / x.com SSL 间歇被重置 | 站点风控 / 直连干扰 | 间隔数秒重试即可，非代码问题 |
+| GIF 日志里的 `✓`/`✗` 在 GBK 控制台抛 UnicodeEncodeError | 两字符不在 GBK 字符集，`print`/`logging` 按 cp936 编码 | 日志统一用纯中文/ASCII，不用符号标记；注意本机 `PYTHONUTF8=1` 会掩盖此问题，须在未设该变量的环境下验证（`≤`/`→`/`×` 等在 GBK 内可用） |

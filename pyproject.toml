@@ -9,6 +9,8 @@ dependencies = [
     "PyQt6>=6.5",
     "pyqt6-fluent-widgets>=1.11.2",
     "certifi>=2024.0.0",
+    "numpy>=2.2.6",
+    "pillow>=12.3.0",
 ]
 
 [project.scripts]
