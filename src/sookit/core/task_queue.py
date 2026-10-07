@@ -448,7 +448,14 @@ class TaskQueueManager(QObject):
                 moved, final_paths = self._finalize_workspace(task)
                 if final_paths:
                     task.output_path = final_paths[0]
-            # 从 metadata 回填输出路径
+            # worker 上报的真实产物路径优先（GIF 转码 / FFMPEG 单文件任务没有 workspace，
+            # 若直接走下面的 metadata 回填，metadata['out_dir'] 会把目录当成产物路径，
+            # 导致已完成卡片「打开文件」打开目录、「删除文件」被误判为批量任务）
+            if not task.output_path and task.worker is not None:
+                files = list(getattr(task.worker, 'output_files', None) or [])
+                task.output_path = (files[0] if files
+                                    else (getattr(task.worker, '_output_path', '') or ''))
+            # 从 metadata 回填输出路径（兜底）
             if not task.output_path:
                 for key in ('out', 'output', 'out_dir'):
                     val = task.metadata.get(key)

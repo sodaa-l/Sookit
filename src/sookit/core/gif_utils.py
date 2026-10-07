@@ -36,7 +36,10 @@ ANALYSIS_W = 480
 SAMPLE_FRAMES = 8
 TRIAL_WIDTH = 320
 MAX_WIDTH_ROUNDS = 5
-MAX_COLOR_UPGRADES = 2
+# 色数升级不设固定档数上限：候选有几档就允许升几档，由预算检查自然终止。
+# （曾写死 2 档，导致 10MB 上界下线稿类内容只用到 47% 预算就停在 128 色 —— 与基准
+#   auto_gif.py 的写法一致；基准脚本正是为此把它从 2 改成 len(COLOR_CANDIDATES)）
+MAX_COLOR_UPGRADES = len(COLOR_CANDIDATES)
 MIN_WIDTH = 200
 BUDGET_STOP = 0.93          # 用到预算的 93% 即认为逼近到位，停止加宽
 ANALYSIS_SECONDS = 10.0     # 分析帧最长取源的前 N 秒

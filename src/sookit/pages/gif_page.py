@@ -1,12 +1,16 @@
 """
-动图下载 页面
+X (Twitter) 动图下载 页面
 
-输入 X 动图链接 → yt-dlp 下载 MP4 → 自动转码 GIF（不入队列嗅探，直接下载）。
+输入 X 动图链接 → yt-dlp 下载 MP4 → 自动转码 GIF（无嗅探阶段，点按钮即入队）。
 质量可选四档预设（core/gif_utils.GifQuality），或展开「自定义」卡片
 自行指定宽度 / 帧率上限 / 色数 / dither（GifCustomParams）。
+
+入队前会后台取一次元数据（yt-dlp -J 的 title/channel/duration/封面），
+让任务队列卡片与「视频下载」任务同款显示缩略图与文件名；取不到时回退 status_id。
 """
 import os
 import re
+import urllib.request
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QIntValidator, QDoubleValidator
@@ -20,6 +24,8 @@ from sookit.core.functions import (
 )
 from sookit.core.gif_utils import GifQuality, GifCustomParams, DITHER_CHOICES
 from sookit.core.task_queue import TaskType
+from sookit.core.utils import get_certifi_ssl_context
+from sookit.core.workers import GenericWorker
 from sookit.pages.base import PageBase
 from sookit.widgets.infobar import show_infobar
 
@@ -34,16 +40,60 @@ _DITHER_LABELS = {
 }
 
 
+def _strip_media_index(url: str) -> str:
+    """剥离 /video/N、/photo/N 路径后缀（口径与 Functions.download_and_convert_gif 一致）。
+
+    元数据获取同样要剥离，否则 yt-dlp 对 animated_gif 遇 /video/N 会报
+    "Media #N is not a video"（见 DEVELOPMENT.md 决策 30）。
+    """
+    return re.sub(r'/(?:video|photo)/\d+', '', url)
+
+
+def _download_cover_bytes(cover_url: str) -> bytes:
+    """同步下载封面字节（仅在后台线程调用）。"""
+    req = urllib.request.Request(cover_url, headers={'User-Agent': 'Mozilla/5.0'})
+    with urllib.request.urlopen(req, timeout=15,
+                                context=get_certifi_ssl_context()) as resp:
+        return resp.read()
+
+
+def _fetch_gif_meta(clean_url: str) -> dict:
+    """后台线程取动图元数据：title / channel / duration / cover_url / cover_data。
+
+    元数据走 Functions.fetch_media_meta（yt-dlp -J，不下载媒体文件）：X 单推文
+    多视频时 yt-dlp 返回 playlist，该函数会下钻 entries[0] 取封面与时长。
+    封面字节顺带取回写入 cover_data，取不到时只留 cover_url，由队列卡片自行
+    异步下载。元数据获取失败直接抛异常，由页面走兜底标题入队。
+    """
+    info = Functions.fetch_media_meta(clean_url)
+    cover_url = info.get('cover_url') or ''
+
+    meta = {
+        'title': info.get('title') or '',
+        'channel': info.get('channel') or '',
+        'duration': info.get('duration') or 0,
+        'cover_url': cover_url,
+    }
+    if cover_url:
+        try:
+            meta['cover_data'] = _download_cover_bytes(cover_url)
+        except Exception:
+            pass    # 封面拿不到不影响入队，卡片会再试一次 cover_url
+    return meta
+
+
 class GifPage(PageBase):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._ytdlp_warning_bar = None  # 「未找到 yt-dlp」常驻 infobar，装好后关闭
+        self._meta_worker = None        # 入队前元数据获取线程（GenericWorker）
+        self._pending = None            # 元数据获取期间暂存的入队参数
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 20, 20, 20)
         layout.setSpacing(10)
 
-        title = qfw.TitleLabel("动图下载")
+        title = qfw.TitleLabel("X (Twitter) 动图下载")
         layout.addWidget(title)
         layout.addWidget(self.create_caption_label(
             "粘贴 X 动图链接，下载后自动转为 GIF"))
@@ -70,7 +120,8 @@ class GifPage(PageBase):
 
         lbl = qfw.BodyLabel("输出目录")
         self.out_dir = qfw.LineEdit()
-        self.out_dir.setPlaceholderText(f"默认 {DEFAULT_OUTPUT_DIR}")
+        # 占位文案与嗅探页/直播监控页保持一致（默认目录即系统「下载」文件夹）
+        self.out_dir.setPlaceholderText("默认: /下载")
         browse_btn = qfw.PushButton("浏览")
         browse_btn.setFixedWidth(100)
         browse_btn.clicked.connect(lambda: self.browse_dir(self.out_dir))
@@ -97,10 +148,10 @@ class GifPage(PageBase):
         layout.addWidget(self.custom_card)
 
         layout.addSpacing(6)
-        btn = qfw.PrimaryPushButton("▶ 下载并转 GIF")
-        btn.setFixedWidth(240)
-        btn.clicked.connect(self._start_download)
-        layout.addWidget(btn, alignment=Qt.AlignmentFlag.AlignCenter)
+        self.dl_btn = qfw.PrimaryPushButton("▶ 下载并转 GIF")
+        self.dl_btn.setFixedWidth(240)
+        self.dl_btn.clicked.connect(self._start_download)
+        layout.addWidget(self.dl_btn, alignment=Qt.AlignmentFlag.AlignCenter)
 
         self._setup_log_area(layout)
 
@@ -210,24 +261,92 @@ class GifPage(PageBase):
         out_dir = self.out_dir.text().strip() or DEFAULT_OUTPUT_DIR
         os.makedirs(out_dir, exist_ok=True)
 
+        m = re.search(r'/status/(\d+)', url)
+        status_id = m.group(1) if m else url
+
+        # 入队前先取一次元数据（标题/封面），让队列卡片与视频下载任务同款显示；
+        # 取不到也不阻断，回退「动图下载 - <status_id>」入队
+        self._pending = {
+            'url': url,
+            'out_dir': out_dir,
+            'quality': quality,
+            'custom_params': custom_params,
+            'status_id': status_id,
+        }
+        self.dl_btn.setEnabled(False)
+        # 日志只用 GBK 内字符：本行先于 run_queued_task 打印，避免新增控制台编码失败点
+        self.log("正在获取动图信息（标题/封面）...")
+        show_infobar(self, "info", title="正在获取动图信息",
+                     content="正在读取标题与封面，稍后自动入队", duration=3000)
+        worker = GenericWorker(_fetch_gif_meta,
+                              args=(_strip_media_index(url),))
+        worker.done.connect(self._on_meta_ready)
+        worker.error.connect(self._on_meta_error)
+        worker.finished.connect(
+            lambda w=worker: self._on_meta_worker_finished(w))
+        self._meta_worker = worker
+        worker.start()
+
+    def _on_meta_worker_finished(self, worker):
+        """元数据线程结束（成功/失败/异常）→ 释放引用并恢复按钮"""
+        if self._meta_worker is worker:
+            self._meta_worker = None
+        self.dl_btn.setEnabled(True)
+
+    def _on_meta_ready(self, meta: dict):
+        """元数据获取成功 → 按下载任务口径（标题 + 封面）入队"""
+        pending = self._pending
+        if not pending:
+            return
+        self._pending = None
+        self._enqueue(pending, meta)
+
+    def _on_meta_error(self, msg: str):
+        """元数据获取失败 → 不阻断任务，按 status_id 兜底入队"""
+        pending = self._pending
+        if not pending:
+            return
+        self._pending = None
+        self.log(f"获取动图信息失败（{msg}），按链接 ID 入队")
+        show_infobar(self, "warning", title="获取信息失败",
+                     content="无法读取标题与封面，将直接下载", duration=4000)
+        self._enqueue(pending, {})
+
+    def _enqueue(self, pending: dict, meta: dict):
+        """把动图任务加入队列。
+
+        meta 字段与 Functions.sniff_youtube 返回口径一致（title/channel/duration/
+        cover_url/cover_data），供 Task/TaskCard 复用视频下载任务的显示逻辑。
+        """
+        url = pending['url']
+        title = meta.get('title') or f"动图下载 - {pending['status_id']}"
+
         # 下载配置（aria2c 开关与连接数）沿用设置页
         download_config = load_download_config()
 
-        m = re.search(r'/status/(\d+)', url)
-        status_id = m.group(1) if m else url
+        metadata = {
+            'url': url,
+            'out_dir': pending['out_dir'],
+            'quality': pending['quality'],
+            'filename': pending['status_id'],
+            # ---- 以下与视频下载任务 metadata 同款，供队列卡片显示 ----
+            'title': meta.get('title') or '',
+            'channel': meta.get('channel') or '',
+            'duration': meta.get('duration') or 0,
+            'cover_url': meta.get('cover_url') or '',
+        }
+        if meta.get('cover_data'):
+            metadata['cover_data'] = meta['cover_data']
+
         self.run_queued_task(
             func=Functions.download_and_convert_gif,
-            args=(url, out_dir, quality, custom_params,
+            args=(url, pending['out_dir'], pending['quality'],
+                  pending['custom_params'],
                   download_config['use_aria2c'],
                   download_config['aria2c_connections']),
             task_type=TaskType.GIF,
-            title=f"动图下载 - {status_id}",
-            metadata={
-                'url': url,
-                'out_dir': out_dir,
-                'quality': quality,
-                'filename': status_id,
-            }
+            title=title,
+            metadata=metadata,
         )
         show_infobar(self, "info", title="任务已加入队列",
                      content="下载完成后自动转码为 GIF", duration=3000)

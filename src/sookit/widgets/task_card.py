@@ -991,5 +991,9 @@ def create_task_card(task: Task) -> TaskCardBase:
         return YtDlpTaskCard(task)
     elif task.task_type == TaskType.FFMPEG:
         return FfmpegTaskCard(task)
+    elif task.task_type == TaskType.GIF:
+        # 动图任务与视频下载任务同一展示口径：封面 + yt-dlp 视频标题
+        # （metadata 由 pages/gif_page.py 入队前取回，缺失时封面区自行兜底）
+        return YtDlpTaskCard(task)
     else:
         return TaskCardBase(task)
