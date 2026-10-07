@@ -8,6 +8,7 @@ from sookit.pages.subtitle_page import SubtitlePage
 from sookit.pages.replace_audio_page import ReplaceAudioPage
 from sookit.pages.extract_audio_page import ExtractAudioPage
 from sookit.pages.monitor_page import MonitorPage
+from sookit.pages.gif_page import GifPage
 from sookit.pages.settings_page import SettingsPage
 from sookit.pages.queue_page import QueuePage
 
@@ -18,6 +19,7 @@ __all__ = [
     'ReplaceAudioPage',
     'ExtractAudioPage',
     'MonitorPage',
+    'GifPage',
     'QueuePage',
     'SettingsPage',
 ]

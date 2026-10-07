@@ -55,11 +55,52 @@ class GifQuality:
     标准     — 4MB 软上界，自动决策宽度与色数
     高质量   — 10MB 软上界，自动决策宽度与色数（默认档）
     最佳质量 — 源分辨率 + 256 色，仅锁定帧率，不做体积约束
+    自定义   — 配合 GifCustomParams：用户指定宽度/帧率上限/色数/dither，单次编码
     """
     LOW = "低质量"
     STANDARD = "标准"
     HIGH = "高质量"
     BEST = "最佳质量"
+    CUSTOM = "自定义"
+
+
+# ---- 自定义档 dither 可选值（ffmpeg paletteuse 支持的子集）----
+DITHER_CHOICES = ("none", "bayer", "floyd_steinberg", "sierra2_4a")
+
+
+class GifCustomParams:
+    """自定义编码参数（quality = GifQuality.CUSTOM 时传入 convert_to_gif）。
+
+    width   — 目标宽度 px（高度按源宽高比自动计算；超过源宽度时收敛到源宽度）
+    fps_cap — 帧率上限：源 ≤ 上限保持源帧率，超过则锁在上限（与预设档同语义）
+    colors  — 调色板色数，2 ~ 256
+    dither  — paletteuse 抖动算法，取值见 DITHER_CHOICES
+    """
+
+    def __init__(self, width: int, fps_cap: float, colors: int,
+                 dither: str = "none"):
+        self.width = int(width)
+        self.fps_cap = float(fps_cap)
+        self.colors = int(colors)
+        self.dither = dither
+
+    def validate(self):
+        """入参校验，非法时抛 RuntimeError（带可读原因）。"""
+        if self.width <= 0:
+            raise RuntimeError(f"自定义宽度必须为正整数，当前: {self.width}")
+        if self.fps_cap <= 0:
+            raise RuntimeError(f"自定义帧率上限必须为正数，当前: {self.fps_cap}")
+        if not (2 <= self.colors <= 256):
+            raise RuntimeError(
+                f"自定义色数必须在 2~256 之间，当前: {self.colors}")
+        if self.dither not in DITHER_CHOICES:
+            raise RuntimeError(
+                f"未知 dither 算法: {self.dither!r}（应为 "
+                + " / ".join(DITHER_CHOICES) + "）")
+
+    def __repr__(self):
+        return (f"GifCustomParams(width={self.width}, fps_cap={self.fps_cap}, "
+                f"colors={self.colors}, dither={self.dither!r})")
 
 
 # 档位 → 体积软上界（MB）。最佳质量档不做体积约束，故不在此表内。
@@ -250,7 +291,7 @@ def _decide_colors(frames, hi, min_colors):
 # ---------------------------------------------------------------- 编码
 
 def _encode_gif(src, out, width, height, fps, colors, pal_path,
-                log=None, on_process_created=None):
+                log=None, on_process_created=None, dither="none"):
     """palettegen + paletteuse 两段式编码，返回产物字节数。"""
     fstr = _fmt_fps(fps)
     base = f"fps={fstr},scale={width}:{height}:flags=lanczos"
@@ -263,7 +304,7 @@ def _encode_gif(src, out, width, height, fps, colors, pal_path,
     run_ffmpeg(
         [_ffmpeg(), "-hide_banner", "-loglevel", "error", "-y", "-i", src,
          "-i", pal_path,
-         "-lavfi", f"{base}[x];[x][1:v]paletteuse=dither=none:diff_mode=rectangle",
+         "-lavfi", f"{base}[x];[x][1:v]paletteuse=dither={dither}:diff_mode=rectangle",
          "-loop", "0", out],
         log, None, on_process_created)
 
@@ -307,6 +348,7 @@ def _finalize(chosen, output, fps_out, colors_final, log, prog):
 # ---------------------------------------------------------------- 主入口
 
 def convert_to_gif(video, output, quality=GifQuality.HIGH, *,
+                   custom_params=None,
                    max_mb=None, fps_cap=DEFAULT_FPS_CAP,
                    quant_threshold=DEFAULT_QUANT_THRESHOLD,
                    min_colors=DEFAULT_MIN_COLORS,
@@ -316,16 +358,21 @@ def convert_to_gif(video, output, quality=GifQuality.HIGH, *,
     Args:
         video: 输入 MP4 路径
         output: 输出 GIF 完整路径
-        quality: 编码质量档位（GifQuality.LOW / STANDARD / HIGH / BEST，默认 HIGH）
+        quality: 编码质量档位（GifQuality.LOW / STANDARD / HIGH / BEST，默认 HIGH；
+            传入 custom_params 时忽略此参数）
             · 低质量：2MB 软上界，自动决策宽度与色数
             · 标准：4MB 软上界，自动决策宽度与色数
             · 高质量：10MB 软上界，自动决策宽度与色数（默认）
             · 最佳质量：源分辨率 + 256 色，仅锁定帧率，不做体积约束
+        custom_params: GifCustomParams（自定义模式）。非 None 时走自定义路径：
+            按用户指定的宽度/帧率上限/色数/dither 单次编码，不做预算搜索与
+            MAE 色数决策，也不约束体积；quality 此时被忽略
         max_mb: 体积软上界（MB）。None（默认）= 由 quality 派生（低质量 2.0 / 标准 4.0 /
-                高质量 10.0）；最佳质量档忽略此参数；显式传入可覆盖档位默认值
-        fps_cap: 帧率上限（源 ≤ 上限保持源帧率，超过则锁在上限；三档共用）
-        quant_threshold: 色数决策的量化 MAE 阈值（最佳质量档不使用）
-        min_colors: 色数下限（最佳质量档不使用）
+                高质量 10.0）；最佳质量档与自定义模式忽略此参数；显式传入可覆盖档位默认值
+        fps_cap: 帧率上限（源 ≤ 上限保持源帧率，超过则锁在上限；预设档共用，
+                自定义模式使用 custom_params.fps_cap）
+        quant_threshold: 色数决策的量化 MAE 阈值（最佳质量档与自定义模式不使用）
+        min_colors: 色数下限（最佳质量档与自定义模式不使用）
         log: 日志回调（Sookit 约定）
         on_process_created: 子进程创建回调（取消时由其 taskkill 进程树）
         on_progress: 进度回调，接收 0~100 的 float
@@ -341,28 +388,36 @@ def convert_to_gif(video, output, quality=GifQuality.HIGH, *,
         raise RuntimeError(f"输入文件不存在: {video}")
     if not output:
         raise RuntimeError("未指定输出路径")
-    if quality not in _QUALITY_BUDGET_MB and quality != GifQuality.BEST:
+
+    is_best = (quality == GifQuality.BEST)
+    is_custom = custom_params is not None
+    if is_custom:
+        custom_params.validate()
+        # 自定义模式忽略 quality 档位（UI 侧已保证互斥，这里再兜一层）
+        quality = GifQuality.CUSTOM
+        fps_cap = custom_params.fps_cap
+    elif quality not in _QUALITY_BUDGET_MB and quality != GifQuality.BEST:
         raise RuntimeError(
             f"未知的编码质量档位: {quality!r}（应为 {GifQuality.LOW} / "
             f"{GifQuality.STANDARD} / {GifQuality.HIGH} / {GifQuality.BEST}）")
 
-    is_best = (quality == GifQuality.BEST)
-    if not is_best:
+    if not is_best and not is_custom:
         if max_mb is None:
             max_mb = _QUALITY_BUDGET_MB[quality]
         if float(max_mb) <= 0:
             raise RuntimeError("体积上界必须大于 0")
 
     # 延迟 import：避免 numpy/Pillow 拖慢应用启动，缺失时给出明确报错。
-    # 最佳质量档不读分析帧、不做色数决策，故不需要这两个库。
-    if not is_best:
+    # 最佳质量档与自定义模式不读分析帧、不做色数决策，故不需要这两个库。
+    if not is_best and not is_custom:
         try:
             import numpy  # noqa: F401
             from PIL import Image  # noqa: F401
         except ImportError as e:
             raise RuntimeError(f"缺少依赖 numpy / Pillow，无法转 GIF: {e}")
 
-    budget = None if is_best else int(float(max_mb) * 1024 * 1024)
+    budget = (None if (is_best or is_custom)
+              else int(float(max_mb) * 1024 * 1024))
     out_dir = os.path.dirname(os.path.abspath(output))
     try:
         os.makedirs(out_dir, exist_ok=True)
@@ -378,7 +433,7 @@ def convert_to_gif(video, output, quality=GifQuality.HIGH, *,
              f"{info['size'] / 1048576:.2f} MB")
         prog.set(_ST_PROBE[1])
 
-        # ---- ① 帧率锁死（四档共用）----
+        # ---- ① 帧率锁定（各档共用；自定义档取 custom_params.fps_cap）----
         fps_out = _lock_fps(info["fps"], fps_cap)
         rule = ("≤上限，保持源帧率" if info["fps"] <= fps_cap
                 else f"超过上限，锁在 {fps_cap}fps")
@@ -401,6 +456,28 @@ def convert_to_gif(video, output, quality=GifQuality.HIGH, *,
             prog.set(_ST_COLORUP[1])
             return _finalize({"w": bw, "h": bh, "sz": best_sz, "path": best_out},
                              output, fps_out, colors_final, _log, prog)
+
+        if is_custom:
+            # ---- 自定义：按用户参数单次编码，不做预算搜索与色数决策 ----
+            cw = min(custom_params.width, info["w"])
+            if cw < custom_params.width:
+                _log(f"[GIF] 自定义宽度 {custom_params.width} 超过源宽度，"
+                     f"收敛到源宽度 {cw}")
+            ch = _even(cw * info["h"] / info["w"])
+            _log(f"[GIF] 自定义: {cw}×{ch} · {custom_params.colors} 色 · "
+                 f"dither={custom_params.dither} · 不限制体积")
+            prog.set(_ST_TRIAL[1])            # 跳过分析与试编码，直接进入编码
+            cust_out = os.path.join(tmpdir, f"custom_{cw}x{ch}.gif")
+            cust_pal = os.path.join(tmpdir, "pal_custom.png")
+            cust_sz = _encode_gif(video, cust_out, cw, ch, fps_out,
+                                  custom_params.colors, cust_pal,
+                                  log, on_process_created,
+                                  dither=custom_params.dither)
+            _log(f"[GIF] 编码完成: {cw}×{ch} · {custom_params.colors} 色 · "
+                 f"{cust_sz / 1048576:.2f} MB")
+            prog.set(_ST_COLORUP[1])
+            return _finalize({"w": cw, "h": ch, "sz": cust_sz, "path": cust_out},
+                             output, fps_out, custom_params.colors, _log, prog)
 
         # ---- 分析帧（低/标准/高质量档：供色数决策使用）----
         analysis_fps = min(info["fps"], 60.0)

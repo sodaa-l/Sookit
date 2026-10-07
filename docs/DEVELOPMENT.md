@@ -465,6 +465,40 @@ yt-dlp/Deno 下载更新从 Sookit 解耦为独立 `updater.exe`：
 另：`gif_utils` 的日志只用纯中文/ASCII，不引入 `✓`/`✗` 这类 GBK 外符号（见踩坑备忘录）——**本机 `PYTHONUTF8=1` 会掩盖该问题**，
 验证时须在未设该变量的环境下跑一遍。
 
+### 30. 「动图下载」页接 UI + 自定义编码质量（2026-10-07）
+
+背景：决策 29 只做了内核 + 队列；本次接 UI。产品决策：**不做嗅探阶段**，用户输入 X 链接直接进入
+下载流程，下载仍交 yt-dlp（此前调研结论：syndication/fxtwitter 双源嗅探 + 直链下载方案已验证可行，
+见会话记录，暂不启用）。
+
+**页面**（`pages/gif_page.py`，导航位于直播监控之后，`FIF.DOWNLOAD`）：
+- URL 输入框 + 输出目录（空 = `DEFAULT_OUTPUT_DIR`）+ 质量下拉（四档预设 + 自定义…）；
+- 选「自定义…」页内展开 `CardWidget` 参数卡：宽度（`QIntValidator`，高度按源宽高比自动）、
+  帧率上限（`QDoubleValidator`，**上限语义**：源 ≤ 值保持源帧率，超过锁值，与预设档一致）、
+  色数下拉（256/128/64/32/24/16）、dither 下拉（none/bayer/floyd_steinberg/sierra2_4a）；
+- 入队前校验：URL 须含 `x.com|twitter.com` + `/status/\d+`；自定义参数非法 InfoBar 提示不入队。
+
+**内核扩展**（`convert_to_gif` 新增关键字参数 `custom_params`）：
+- 新增 `GifCustomParams(width, fps_cap, colors, dither)` 与 `DITHER_CHOICES`，`validate()` 校验；
+- 自定义模式：跳过预算搜索/MAE 色数决策，仿最佳质量档单次编码，不约束体积；
+  宽度超过源宽度时收敛到源宽度；quality 忽略并强制 `GifQuality.CUSTOM`；
+- `_encode_gif` 的 dither 参数化（默认 `'none'`），**预设档产物与 `auto_gif.py` 基准 md5 逐字节一致**（实测）。
+
+**组合函数**（`Functions.download_and_convert_gif(url, output_dir, quality, custom_params, use_aria2c, connections, log, on_process_created, on_progress)`）：
+- 先剥 `/video/N`、`/photo/N` 路径后缀——yt-dlp 对 animated_gif 遇 `/video/N` 报 `Media #N is not a video`；
+- `-f "b[ext=mp4]/b"` 下载到 `tempfile.mkdtemp(prefix="sookit_gif_dl_")`；**成功**转码后随目录清理
+  （输出目录只留 .gif）；**失败**把已下载 MP4 移入输出目录保留便于排查；
+- 一条推文含多个视频时逐个转码，返回单文件 str / 多文件 list（TaskWorker 两分支均已支持）；
+- 进度：下载阶段保持 0（GIF 任务不走 YTDLP 进度解析），转码把 0~100 映射到 30~100（多视频均分区间）；
+- GIF 任务不启用 TaskQueue workspace（仅 YTDLP 启用），中间 MP4 由函数自管临时目录，与 convert_to_gif 的 tmpdir 同款语义。
+
+**UI 先测后接**：`scripts/preview_gif_page.py` 在最小 FluentWindow 中只挂 GifPage
+（`--queue` 附带任务队列页），`uv run python scripts/preview_gif_page.py` 直接运行，页面代码与正式接入同一份。
+
+**验证**：标准档 md5 回归通过（真实 X 动图样本）；自定义模式 ffprobe 复核
+（240×240、帧率上限语义正确、dither 改变产物）；端到端 `/video/1` 链接剥离 + MP4 清理 + 进度映射通过；
+offscreen 页面构造/卡片显隐/参数校验/主窗口导入通过；GBK 环境（未设 PYTHONUTF8）日志无编码异常。
+
 ## AI 编码约定
 
 ### 环境

@@ -44,7 +44,7 @@ from sookit.core.workers import Worker, MonitorWorker
 from sookit.pages import (
     PageBase, YouTubePage,
     SubtitlePage, ReplaceAudioPage, ExtractAudioPage,
-    MonitorPage, QueuePage, SettingsPage
+    MonitorPage, GifPage, QueuePage, SettingsPage
 )
 
 
@@ -79,6 +79,8 @@ class MainWindow(qfw.FluentWindow):
         self.subtitle_page.setObjectName("subtitlePage")
         self.monitor_page = MonitorPage(self)
         self.monitor_page.setObjectName("monitorPage")
+        self.gif_page = GifPage(self)
+        self.gif_page.setObjectName("gifPage")
         self.replace_page = ReplaceAudioPage(self)
         self.replace_page.setObjectName("replacePage")
         self.extract_page = ExtractAudioPage(self)
@@ -93,6 +95,7 @@ class MainWindow(qfw.FluentWindow):
         self.navigationInterface.panel.setExpandWidth(250)
         self.addSubInterface(self.youtube_page, FIF.PLAY, "视频嗅探")
         self.addSubInterface(self.monitor_page, FIF.SYNC, "直播监控")
+        self.addSubInterface(self.gif_page, FIF.DOWNLOAD, "动图下载")
         self.addSubInterface(self.subtitle_page, FIF.FONT, "字幕烧录")
         self.addSubInterface(self.replace_page, FIF.MUSIC, "音频覆盖")
         self.addSubInterface(self.extract_page, FIF.HEADPHONE, "音频提取")
@@ -257,7 +260,7 @@ class MainWindow(qfw.FluentWindow):
 
     def refresh_ytdlp_status(self):
         """yt-dlp 装好后统一刷新各页「未找到 yt-dlp」提示（关闭已显示/已初始化的 warning infobar）"""
-        for page in (self.youtube_page, self.monitor_page):
+        for page in (self.youtube_page, self.monitor_page, self.gif_page):
             if page is not None and hasattr(page, "refresh_ytdlp_status"):
                 try:
                     page.refresh_ytdlp_status()

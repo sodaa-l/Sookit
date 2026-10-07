@@ -233,6 +233,106 @@ class Functions:
         from sookit.core.gif_utils import convert_to_gif as _impl
         return _impl(video, output, *args, **kwargs)
 
+    @staticmethod
+    def download_and_convert_gif(url, output_dir, quality,
+                                 custom_params=None,
+                                 use_aria2c=True, aria2c_connections=16,
+                                 log=None, on_process_created=None,
+                                 on_progress=None):
+        """下载 X 动图并转成 GIF（组合任务：yt-dlp 下载 MP4 → ffmpeg 转码 GIF）。
+
+        Args:
+            url: X 状态链接。/video/N、/photo/N 路径后缀会被自动剥离
+                （yt-dlp 对 animated_gif 条目遇 /video/N 会报
+                "Media #N is not a video"，见 DEVELOPMENT.md 决策 30）
+            output_dir: GIF 输出目录
+            quality: GifQuality 四档之一（custom_params 非空时被忽略）
+            custom_params: GifCustomParams（自定义档参数），None 表示预设档
+            use_aria2c / aria2c_connections: 传给 yt-dlp 的下载器选项
+            log / on_process_created / on_progress: Sookit 任务约定回调
+                （TaskWorker GIF 分支固定传入这三个 kwargs）
+        返回最终 GIF 路径：单文件 str，一条推文含多个视频时为 list。
+
+        进度约定：下载阶段无法解析为百分比（GIF 任务不走 YTDLP 进度解析），
+        保持 0；转码阶段把 convert_to_gif 的 0~100 映射到 30~100
+        （多视频时按文件数均分区间）。
+        """
+        import re as _re
+        import shutil as _shutil
+
+        Functions._check_ytdlp()
+        url = (url or "").strip()
+        if not url:
+            raise RuntimeError("链接为空")
+        if not output_dir:
+            raise RuntimeError("未指定输出目录")
+
+        clean_url = _re.sub(r'/(?:video|photo)/\d+', '', url)
+        if clean_url != url and log:
+            log(f"链接含媒体序号后缀，已剥离: {clean_url}")
+
+        # 中间 MP4 下载到独立临时目录：成功随目录清理（输出目录只留 .gif），
+        # 失败时移入输出目录保留便于排查
+        tmpdir = tempfile.mkdtemp(prefix="sookit_gif_dl_")
+        mp4s = []
+        try:
+            if log:
+                log("[GIF] ① 开始下载源视频（yt-dlp）...")
+            downloaded = Functions.download_youtube(
+                clean_url, "b[ext=mp4]/b", tmpdir, remote_components=False,
+                use_aria2c=use_aria2c, aria2c_connections=aria2c_connections,
+                log=log, on_process_created=on_process_created)
+            mp4s = [p for p in (downloaded or []) if p and os.path.isfile(p)]
+            if not mp4s:
+                raise RuntimeError("下载完成但未找到视频文件")
+            if log:
+                log(f"[GIF] ② 下载完成，共 {len(mp4s)} 个视频，开始转码")
+
+            def _gif_path(mp4):
+                stem = os.path.splitext(os.path.basename(mp4))[0]
+                stem = "".join(c for c in stem if c not in '\\/:*?"<>|').strip() or "gif"
+                cand = os.path.join(output_dir, stem + ".gif")
+                n = 1
+                while os.path.exists(cand):
+                    n += 1
+                    cand = os.path.join(output_dir, f"{stem}_{n}.gif")
+                return cand
+
+            n_files = len(mp4s)
+            gifs = []
+            for i, mp4 in enumerate(mp4s):
+                lo = 30.0 + 70.0 * i / n_files
+                hi = 30.0 + 70.0 * (i + 1) / n_files
+
+                def _map_progress(p, lo=lo, hi=hi):
+                    if on_progress:
+                        p = max(0.0, min(100.0, float(p)))
+                        on_progress(lo + (hi - lo) * p / 100.0)
+
+                if log and n_files > 1:
+                    log(f"[GIF] 转码第 {i + 1}/{n_files} 个: {os.path.basename(mp4)}")
+                gifs.append(convert_to_gif(
+                    mp4, _gif_path(mp4), quality, custom_params=custom_params,
+                    log=log, on_process_created=on_process_created,
+                    on_progress=_map_progress))
+            return gifs[0] if len(gifs) == 1 else gifs
+        except Exception:
+            kept = []
+            for p in mp4s:
+                if p and os.path.isfile(p):
+                    try:
+                        dst = os.path.join(output_dir, os.path.basename(p))
+                        _shutil.move(p, dst)
+                        kept.append(dst)
+                    except OSError:
+                        pass
+            if kept and log:
+                log("[GIF] 任务失败，源 MP4 已保留在输出目录: "
+                    + ", ".join(os.path.basename(k) for k in kept))
+            raise
+        finally:
+            _shutil.rmtree(tmpdir, ignore_errors=True)
+
     # ---------- YouTube 嗅探与下载 ----------
     @staticmethod
     def _check_ytdlp():
