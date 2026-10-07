@@ -33,7 +33,10 @@ jobs:
           if ($ver -ne $appver) { Write-Error "APP_VERSION ($appver) 与 tag ($tag) 不一致"; exit 1 }
           Add-Content $env:GITHUB_ENV "VERSION=$ver"
 
-      - uses: astral-sh/setup-uv@v10
+      # 必须是真实存在的 major tag：引用不存在的版本会让 job 在 GitHub 自己的
+      # 「Set up job」阶段就失败，且报错看不出是这个原因（实测踩过：写成 @v10，
+      # 而 setup-uv 实际只到 v7）。v7 的 action.yml 为 using: node24。
+      - uses: astral-sh/setup-uv@v7
 
       - name: 安装依赖
         run: uv sync
