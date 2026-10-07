@@ -9,11 +9,17 @@ ASCII 的两倍，长中文文案实际不会被换行，导致单行撑爆（�
 （QLabel 原生 wordWrap 按像素宽换行 + 限宽 + heightForWidth 补高度）；
 未超阈值时与原生 InfoBar 行为完全一致。
 
+**title 与 content 一起判定**（2026-10-07）：此前只判 content，长标题（如任务
+标题 = 整条推文文本）会走原生单行版，实测条宽 1539px 超过页面 1082px，横跨
+页面顶部遮住 segment；现在任一超阈值都走竖排版，两个 label 各自折行，且因竖排
+layout 天然上下排列，title 与 content 不会再挤在同一行。
+
 项目约定：新增 InfoBar 提示一律使用 show_infobar，不要直接调 qfw.InfoBar.*。
 """
 import re
 
 from PyQt6.QtCore import Qt, QTimer, QPropertyAnimation
+from PyQt6.QtWidgets import QLabel
 import qfluentwidgets as qfw
 
 #: 内容渲染宽度超过该值（px）时自动换行；换行后内容区也限宽到该值
@@ -34,9 +40,7 @@ def show_infobar(parent, severity: str, title: str, content: str,
     bar = factory(parent=parent, title=title, content=content,
                   orient=Qt.Orientation.Horizontal, isClosable=closable,
                   duration=duration)
-    # 含 \n 的多行内容强制走换行分支：Horizontal 下多行长行 + addWidget 按钮
-    # 会横向撑宽溢出窗口；竖排下按钮排在内容下方，长行按宽度折行。
-    if "\n" not in content and bar.contentLabel.sizeHint().width() <= wrap_max_width:
+    if not _needs_wrap(bar, title, content, wrap_max_width):
         return bar  # 短文案：原生行为即可
 
     # 长文案：同调用栈内 close + 重建（无中间绘制，不会闪烁）
@@ -47,6 +51,27 @@ def show_infobar(parent, severity: str, title: str, content: str,
                   duration=duration)
     _apply_wrap(bar, wrap_max_width)
     return bar
+
+
+def _needs_wrap(bar: qfw.InfoBar, title: str, content: str,
+                wrap_max_width: int) -> bool:
+    """title 或 content 任一超出阈值（或含显式换行）→ 需要竖排换行版。
+
+    三个必须在竖排下才能解决的问题：
+    1. 库的 `_adjustText` 按「父宽/9（上限 120）」的**字符数**硬换行，中文字符
+       显示宽度约 ASCII 的两倍，长中文实际不会被折行；
+    2. **title 与 content 都受影响**——此前只判 content，导致长标题（如任务标题
+       = 整条推文文本）被当成短文案走原生单行版，实测条宽 1539px 超过页面
+       1082px，横跨页面顶部遮住 segment；
+    3. Horizontal 下 title/content 挤在同一行，标题一长就把内容顶到屏幕外。
+    竖排（Vertical）下两者上下排列，各自按像素宽折行。
+    """
+    title = title or ""
+    content = content or ""
+    if "\n" in title or "\n" in content:
+        return True
+    return (bar.titleLabel.fontMetrics().horizontalAdvance(title) > wrap_max_width
+            or bar.contentLabel.fontMetrics().horizontalAdvance(content) > wrap_max_width)
 
 
 _PUNCT_RE = re.compile(r"(?<=[，。；：！？、])")
@@ -82,34 +107,39 @@ def _wrap_by_punctuation(text: str, max_width: int, fm) -> str:
 
 
 def _apply_wrap(bar: qfw.InfoBar, wrap_max_width: int):
-    """对已创建的 InfoBar 应用标点优先换行。
+    """对竖排 InfoBar 的 title / content 都应用标点优先换行 + 限宽。
 
     - 关闭 wordWrap（文本已含 \\n，避免 Qt 按任意字符二次断行拆词）；
-    - 同步覆盖 bar.content：窗口 resize 时库的 _adjustText 会用 TextWrap 重排
-      self.content，TextWrap 对含 \\n 文本逐行处理且不破坏已有换行（行宽均
-      < 120 显示宽），因此重排后标点断行保持稳定；
-    - label 高度用字体度量按换行后文本精确计算。
+    - 同步覆盖 bar.title / bar.content：窗口 resize 时库的 _adjustText 会用
+      TextWrap 重排这两个字段（按字符数，中文失效），覆盖后重排基于换行文本；
+    - label 宽度钉死为「实际换行后最长行」的精确宽度（而非换行上限），
+      避免条右侧出现大段留白；高度按行数精确计算。
     """
-    label = bar.contentLabel
-    fm = label.fontMetrics()
-    wrapped = _wrap_by_punctuation(label.text().replace("\n", ""), wrap_max_width, fm)
-    bar.content = wrapped  # 让 resize 时的 _adjustText 重排基于换行后文本
-    label.setWordWrap(False)
-    label.setText(wrapped)
-    # label 宽度钉死为「实际换行后最长行」的精确宽度（而非换行上限），
-    # 避免条右侧出现大段留白；高度按行数精确计算。
-    lines = wrapped.split("\n")
-    w_max = max(fm.horizontalAdvance(line) for line in lines) + 4  # 余量防末字符被裁
-    label.setFixedWidth(w_max)
-    rect = fm.boundingRect(
-        0, 0, w_max + 10, 10000, Qt.TextFlag.TextWordWrap, wrapped)
-    label.setMinimumHeight(rect.height())
+    if bar.title:
+        bar.title = _wrap_label(bar.titleLabel, bar.title, wrap_max_width)
+    if bar.content:
+        bar.content = _wrap_label(bar.contentLabel, bar.content, wrap_max_width)
     bar.adjustSize()
     # 库布局的 sizeHint 在 QSS 字体 polish/首帧布局完成前会偏大（实测 679 → 557），
     # _apply_wrap 内的 adjustSize 用的是过早的值——事件循环后（sizeHint 收缩）再
     # 收缩一次，消除条右侧的额外留白。
     QTimer.singleShot(0, lambda: _settle(bar))
     QTimer.singleShot(100, lambda: _settle(bar))
+
+
+def _wrap_label(label: QLabel, text: str, wrap_max_width: int) -> str:
+    """把 text 按标点优先换行写入 label（限宽 + 补高），返回换行后的文本。"""
+    fm = label.fontMetrics()
+    wrapped = _wrap_by_punctuation(text.replace("\n", ""), wrap_max_width, fm)
+    label.setWordWrap(False)
+    label.setText(wrapped)
+    lines = wrapped.split("\n")
+    w_max = max(fm.horizontalAdvance(line) for line in lines) + 4  # 余量防末字符被裁
+    label.setFixedWidth(w_max)
+    rect = fm.boundingRect(
+        0, 0, w_max + 10, 10000, Qt.TextFlag.TextWordWrap, wrapped)
+    label.setMinimumHeight(rect.height())
+    return wrapped
 
 
 def _settle(bar: qfw.InfoBar):

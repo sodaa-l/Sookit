@@ -253,7 +253,13 @@ class YouTubePage(PageBase):
             self._ytdlp_warning_bar = None
 
     def _on_queue_task_failed(self, task):
-        """队列下载失败 → 弹常显错误提示（不自动消失，需手动关闭）"""
+        """队列下载失败 → 弹常显错误提示（不自动消失，需手动关闭）。
+
+        只处理**本页发起**的任务：task_failed 是全局信号，此前无过滤导致
+        别的页面（如动图下载）的任务失败也在这里弹条。
+        """
+        if task.task_id not in self._owned_task_ids:
+            return
         title = task.title or "下载任务失败"
         content = task.error or "任务执行失败，请查看日志"
         if len(content) > 200:

@@ -23,7 +23,7 @@ from sookit.core.functions import (
     DEFAULT_OUTPUT_DIR,
 )
 from sookit.core.gif_utils import GifQuality, GifCustomParams, DITHER_CHOICES
-from sookit.core.task_queue import TaskType
+from sookit.core.task_queue import TaskQueueManager, TaskType
 from sookit.core.utils import get_certifi_ssl_context
 from sookit.core.workers import GenericWorker
 from sookit.pages.base import PageBase
@@ -154,6 +154,22 @@ class GifPage(PageBase):
         layout.addWidget(self.dl_btn, alignment=Qt.AlignmentFlag.AlignCenter)
 
         self._setup_log_area(layout)
+
+        # 本页发起的任务失败 → 在本页弹常显错误提示（需手动关闭）
+        TaskQueueManager.instance().task_failed.connect(self._on_task_failed)
+
+    def _on_task_failed(self, task):
+        """本页发起的动图任务失败 → 弹常显错误提示（不自动消失）。
+
+        task_failed 是全局信号，按 _owned_task_ids 过滤，只提示本页任务。
+        """
+        if task.task_id not in self._owned_task_ids:
+            return
+        title = task.title or "动图下载失败"
+        content = task.error or "任务执行失败，请查看日志"
+        if len(content) > 200:
+            content = content[:200] + "…"
+        show_infobar(self, "error", title=title, content=content)
 
     # -------- 自定义参数卡片 --------
 
