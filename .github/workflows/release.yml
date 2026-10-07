@@ -45,19 +45,58 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          # ffmpeg 8.1.2 essentials（固定版本，共享构建，bin/ 含 exe + DLL），只取 ffmpeg/ffprobe/DLL，排除 ffplay
-          Invoke-WebRequest -Uri "https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-8.1.2-essentials_build.zip" -OutFile ffmpeg.zip
+          # ffmpeg 8.1.1 essentials（固定版本，静态构建，bin/ 仅 ffmpeg/ffprobe/ffplay，无 DLL），只取 ffmpeg/ffprobe，排除 ffplay
+          # 源用 GyanD/codexffmpeg（gyan.dev 官方归档镜像，同一产物）：
+          # gyan.dev/builds/packages/ 只保留最新 + 上一个 release，8.1.1 已下架（实测 404），
+          # GitHub release 资产是永久归档，固定版本必须走这里
+          Invoke-WebRequest -Uri "https://github.com/GyanD/codexffmpeg/releases/download/8.1.1/ffmpeg-8.1.1-essentials_build.zip" -OutFile ffmpeg.zip
+          # 固定版本必须校验哈希（值取自 GitHub release asset 的 digest 字段，格式 sha256:<hex>）
+          # 校验失败即终止发版，避免下载源被篡改或下载不完整却静默打进安装包
+          $ffHash = (Get-FileHash ffmpeg.zip -Algorithm SHA256).Hash.ToLower()
+          if ($ffHash -ne "6f58ce889f59c311410f7d2b18895b33c03456463486f3b1ebc93d97a0f54541") {
+            Write-Error "ffmpeg.zip sha256 校验失败: 实际 $ffHash"; exit 1
+          }
           Expand-Archive ffmpeg.zip -DestinationPath ffmpeg_tmp
           New-Item -ItemType Directory -Force dist/Sookit/tools/ffmpeg | Out-Null
           Copy-Item ffmpeg_tmp/*/bin/ffmpeg.exe   dist/Sookit/tools/ffmpeg/
           Copy-Item ffmpeg_tmp/*/bin/ffprobe.exe  dist/Sookit/tools/ffmpeg/
-          Copy-Item ffmpeg_tmp/*/bin/*.dll        dist/Sookit/tools/ffmpeg/
           # aria2
           Invoke-WebRequest -Uri "https://github.com/aria2/aria2/releases/download/release-1.37.0/aria2-1.37.0-win-64bit-build1.zip" -OutFile aria2.zip
+          # 固定版本必须校验哈希。注意 aria2 1.37.0 的 asset 没有 GitHub digest（2023 年上传，
+          # 早于 GitHub 计算摘要的功能），官方也未发布 .sha256 文件；此值取自两个独立来源
+          # 互相印证（完全一致）：ScoopInstaller/Main bucket 的 aria2.json 与 microsoft/winget-pkgs
+          # 的 installer 清单。32bit 包的哈希在两处也一致，可佐证两方都是从真实产物计算的。
+          $a2Hash = (Get-FileHash aria2.zip -Algorithm SHA256).Hash.ToLower()
+          if ($a2Hash -ne "67d015301eef0b612191212d564c5bb0a14b5b9c4796b76454276a4d28d9b288") {
+            Write-Error "aria2.zip sha256 校验失败: 实际 $a2Hash"; exit 1
+          }
           Expand-Archive aria2.zip -DestinationPath aria2_tmp
           New-Item -ItemType Directory -Force dist/Sookit/tools/aria2c | Out-Null
           Copy-Item aria2_tmp/*/aria2c.exe dist/Sookit/tools/aria2c/
           Remove-Item -Recurse -Force ffmpeg_tmp, aria2_tmp, ffmpeg.zip, aria2.zip
+
+      # yt-dlp / Deno 随安装包内置（装后开箱即用，无需首次到设置页手动下载）
+      - name: 下载 yt-dlp / Deno
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          # 取滚动最新版，URL 与 app 内运行时更新同源（releases/latest）。
+          # 代价：每次构建内容可能不同、无法固定 sha256；出厂版本仅作基线，后续由 app 内「下载/更新」前移。
+          New-Item -ItemType Directory -Force dist/Sookit/tools/yt-dlp | Out-Null
+          Invoke-WebRequest -Uri "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe" -OutFile dist/Sookit/tools/yt-dlp/yt-dlp.exe
+          Invoke-WebRequest -Uri "https://github.com/denoland/deno/releases/latest/download/deno-x86_64-pc-windows-msvc.zip" -OutFile deno.zip
+          # deno zip 内只有 deno.exe（与 core/ytdlp_utils._extract_deno 同口径），解出后丢弃压缩包
+          Expand-Archive deno.zip -DestinationPath deno_tmp
+          Copy-Item deno_tmp/deno.exe dist/Sookit/tools/yt-dlp/deno.exe
+          Remove-Item -Recurse -Force deno_tmp, deno.zip
+
+      # 滚动 latest 下构建不可复现，把实际内置的版本写进构建日志便于回溯（仅记录，不参与任何判定）
+      - name: 记录内置组件版本
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          & dist/Sookit/tools/yt-dlp/yt-dlp.exe --version
+          & dist/Sookit/tools/yt-dlp/deno.exe --version
 
       - name: 替换 installer.iss 版本号
         shell: pwsh

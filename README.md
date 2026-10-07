@@ -23,7 +23,7 @@
 
 ### 方式一：安装版（推荐给普通用户）
 
-下载 GitHub Release 中的 `Sookit-Setup-*.exe`，双击安装
+下载 GitHub Release 中的 `Sookit-Setup-*.exe`，双击安装。安装时可选择「完整安装」（含 FFmpeg 与 yt-dlp/Deno）、「精简安装」（两者都不装）或「自定义安装」（自行勾选组件）。
 
 ### 方式二：源码运行
 
@@ -34,7 +34,7 @@ uv sync          # 安装依赖
 uv run sookit    # 启动
 ```
 
-首次启动后到「设置」页一键下载 yt-dlp / deno（系统 PATH 里已装 yt-dlp 则优先使用）。
+源码运行需首次到「设置」页一键下载 yt-dlp / deno（安装版的「完整安装」已内置；系统 PATH 里已装 yt-dlp 则优先使用）。
 
 ffmpeg / aria2c 不随仓库分发，建议自行下载放到对应目录（**ffmpeg 缺失时会尝试使用系统 PATH 的版本**；aria2c 缺失仅降级为默认下载器，不影响功能）：
 
@@ -52,8 +52,8 @@ ffmpeg / aria2c 不随仓库分发，建议自行下载放到对应目录（**ff
 | 用户配置 / 任务记录     | `%APPDATA%\Sookit`（config.json、completed_tasks.json） |
 | 视频封面缓存          | `%LOCALAPPDATA%\Sookit\covers`                       |
 | 运行日志            | `%LOCALAPPDATA%\Sookit\log\sookit.log`               |
-| yt-dlp / deno   | 程序目录 `tools\yt-dlp`（若系统 PATH 有安装则优先读取）               |
-| ffmpeg / aria2c | 程序目录 `tools\`（安装版内置）                                 |
+| yt-dlp / deno   | 程序目录 `tools\yt-dlp`（安装版可选组件，「完整安装」默认包含；若系统 PATH 有安装则优先读取）               |
+| ffmpeg / aria2c | 程序目录 `tools\`（aria2c 随安装包必装；ffmpeg 为可选组件，「完整安装」默认包含）                                 |
 
 ## 📄 许可
 
