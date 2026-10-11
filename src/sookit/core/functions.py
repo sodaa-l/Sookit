@@ -267,7 +267,7 @@ class Functions:
 
     @staticmethod
     def download_and_convert_gif(url, output_dir, quality,
-                                 custom_params=None,
+                                 custom_params=None, items=None,
                                  use_aria2c=True, aria2c_connections=16,
                                  log=None, on_process_created=None,
                                  on_progress=None):
@@ -280,6 +280,10 @@ class Functions:
             output_dir: GIF 输出目录
             quality: GifQuality 四档之一（custom_params 非空时被忽略）
             custom_params: GifCustomParams（自定义档参数），None 表示预设档
+            items: 只转换这些条目序号（1-based，对应**原始条目列表**的次序，
+                None = 该链接下的全部动图）。序号来自 `fetch_gif_items`，
+                此处再与动图判定求交集——序号可能来自过期的解析结果，
+                不过滤会把同一条推文里的普通视频也转成 GIF。
             use_aria2c / aria2c_connections: 传给 yt-dlp 的下载器选项
             log / on_process_created / on_progress: Sookit 任务约定回调
                 （TaskWorker GIF 分支固定传入这三个 kwargs）
@@ -319,6 +323,16 @@ class Functions:
                     if _looks_like_animated(e)]
         if not animated:
             raise RuntimeError("该链接没有动图（推文只含普通视频或图片），已跳过")
+        # items 为页面选中的原始条目序号：与动图判定求交集，避免过期序号
+        # 把普通视频也纳入下载范围
+        if items:
+            wanted = [i for i in animated if i in set(items)]
+            if not wanted:
+                raise RuntimeError("选中的条目不是动图，可能链接已更换，请重新嗅探")
+            skipped = len(animated) - len(wanted)
+            if log and skipped:
+                log(f"[GIF] 已按选择过滤：跳过 {skipped} 个未选中的动图")
+            animated = wanted
         extra_args = None
         if len(animated) < len(entries):
             extra_args = ['--playlist-items',
@@ -475,46 +489,51 @@ class Functions:
         }
 
     @staticmethod
-    def fetch_media_meta(url, log=None):
-        """取一条媒体的卡片元数据：title / channel / duration / cover_url。
+    def fetch_gif_items(url, log=None):
+        """列出链接里的动图条目（动图页选择用，不下载媒体）。
 
-        与 sniff_youtube 的差异（用于任务队列卡片显示，见 DEVELOPMENT.md 决策 30）：
-        - **不加 `--no-playlist`**：X 单推文多视频时 yt-dlp 返回 playlist
-          （twitter extractor 对多条目推文恒返回 playlist，`--no-playlist` 无效），
-          顶层只有 title/channel，duration 与 thumbnails 都在 entries 里；
-        - 不构建 formats 列表（卡片只需要标题/频道/时长/封面）。
+        返回::
 
-        playlist 形态：title/channel 取顶层（推文文本 / 作者），duration 与缩略图取
-        entries[0]（多条目推文的卡片以首条为代表）；非 playlist 形态全取顶层。
-        缩略图分流口径与 sniff_youtube 一致（共用 `_thumbnails_for`）。
+            {
+              'title': 推文文本（顶层优先，回退首条条目）,
+              'channel': 作者,
+              'items': [
+                  {'index': 原始条目序号(1-based), 'url': 条目链接,
+                   'title': 条目标题, 'duration': 时长, 'cover_url': 封面},
+                  ...
+              ],
+            }
+
+        只列动图：按 `_looks_like_animated` 与 `download_and_convert_gif` 同一口径
+        过滤，**index 保留原始条目列表的次序**——下载时它以 `--playlist-items`
+        回传，序号必须与 yt-dlp 看到的条目列表一致，不能是筛选后的下标。
+        链接无动图时返回空 items（由页面提示，不抛错——与「解析失败」是两码事）。
         """
         Functions._check_ytdlp()
         info = _run_ytdlp_json(url)
 
         entries = [e for e in (info.get('entries') or []) if e]
-        if entries:
-            first = entries[0]
-            title = info.get('title', '') or first.get('title', '')
-            channel = ((info.get('channel', '') or info.get('uploader', ''))
-                       or first.get('channel', '') or first.get('uploader', ''))
-            duration = first.get('duration') or 0
-            valid_thumbs = _thumbnails_for(first)
-        else:
-            title = info.get('title', '')
-            channel = info.get('channel', '') or info.get('uploader', '')
-            duration = info.get('duration') or 0
-            valid_thumbs = _thumbnails_for(info)
+        top = entries[0] if entries else info
+        title = info.get('title', '') or top.get('title', '')
+        channel = ((info.get('channel', '') or info.get('uploader', ''))
+                   or top.get('channel', '') or top.get('uploader', ''))
 
-        cover_url = ((valid_thumbs[0]['url'] if valid_thumbs else '')
-                     or info.get('thumbnail', ''))
+        items = []
+        for i, entry in enumerate(entries or [info]):
+            if not _looks_like_animated(entry):
+                continue
+            thumbs = _thumbnails_for(entry)
+            items.append({
+                'index': i + 1,
+                'url': entry.get('url') or entry.get('webpage_url') or '',
+                'title': entry.get('title') or '',
+                'duration': entry.get('duration') or 0,
+                'cover_url': ((thumbs[0]['url'] if thumbs else '')
+                              or entry.get('thumbnail', '')),
+            })
         if log:
-            log(f"元数据获取完成: {title}, {len(valid_thumbs)} 个封面")
-        return {
-            'title': title,
-            'channel': channel,
-            'duration': duration,
-            'cover_url': cover_url,
-        }
+            log(f"动图条目解析完成: {title}, 共 {len(items)} 个动图")
+        return {'title': title, 'channel': channel, 'items': items}
 
     @staticmethod
     def download_youtube(url, format_spec, output_dir, remote_components,
