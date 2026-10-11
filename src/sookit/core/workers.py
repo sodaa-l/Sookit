@@ -195,18 +195,28 @@ class MonitorWorker(QThread):
 
 
 # ---------- 任务队列工作线程 ----------
+
+# TaskWorker 注入给任务函数的关键字实参名（log / 进度回调 / workspace）。
+# 任务的 kwargs 通道不得占用这些名字，否则 func(*args, **kwargs, log=...) 会
+# TypeError；run() 里提前拦下并给出明确报错（见 DEVELOPMENT.md 决策 31）。
+RESERVED_TASK_KWARGS = frozenset(
+    {'log', 'on_process_created', 'on_progress', 'workspace'})
+
+
 class TaskWorker(QThread):
     """支持暂停/继续/取消的任务工作线程"""
     log_signal = pyqtSignal(str)
     progress_signal = pyqtSignal(dict)   # {"progress", "speed", "eta"}
     finished_signal = pyqtSignal(bool)
 
-    def __init__(self, task_id, task_type, func, args, workspace="", metadata=None):
+    def __init__(self, task_id, task_type, func, args, workspace="", metadata=None,
+                 kwargs=None):
         super().__init__()
         self.task_id = task_id
         self.task_type = task_type
         self.func = func
         self.args = args
+        self.kwargs = kwargs or {}   # 任务函数的额外关键字参数（见决策 31）
         self.metadata = metadata or {}   # 任务元数据（FFMPEG 进度时长主来源 metadata['duration']）
         self._paused = False
         self._cancelled = False
@@ -305,6 +315,13 @@ class TaskWorker(QThread):
             except (TypeError, ValueError):
                 pass
         try:
+            # kwargs 通道保留名校验：占用注入名时给明确报错，而不是底层 TypeError
+            reserved = RESERVED_TASK_KWARGS & set(self.kwargs)
+            if reserved:
+                raise RuntimeError(
+                    "任务参数 kwargs 占用了 TaskWorker 注入的保留名: "
+                    + ", ".join(sorted(reserved)))
+
             # 包装 log 回调以支持进度解析
             def log_with_progress(msg):
                 if self._cancelled:
@@ -338,23 +355,26 @@ class TaskWorker(QThread):
             self._output_path = None
             if self.task_type == TaskType.YTDLP:
                 # yt-dlp 任务：传 workspace（临时目录），run_ytdlp 返回最终输出路径列表
-                result = self.func(*self.args, log=log_with_progress,
+                result = self.func(*self.args, **self.kwargs,
+                                   log=log_with_progress,
                                    on_process_created=self._on_process_created,
                                    workspace=self.workspace)
             elif self.task_type == TaskType.FFMPEG:
                 # ffmpeg 任务也需要保存进程句柄，取消时才能 taskkill 终止
-                result = self.func(*self.args, log=log_with_progress,
+                result = self.func(*self.args, **self.kwargs,
+                                   log=log_with_progress,
                                    on_process_created=self._on_process_created)
             elif self.task_type == TaskType.GIF:
                 # GIF 转码：多轮试编码，无法用 ffmpeg time= 行算进度，
                 # 由函数内部按阶段回调上报（详见 core/gif_utils.py）
                 result = self.func(
-                    *self.args, log=log_with_progress,
+                    *self.args, **self.kwargs, log=log_with_progress,
                     on_process_created=self._on_process_created,
                     on_progress=lambda p: self.progress_signal.emit(
                         {"progress": p}))
             else:
-                result = self.func(*self.args, log=log_with_progress)
+                result = self.func(*self.args, **self.kwargs,
+                                   log=log_with_progress)
             # 捕获返回的最终输出路径列表（yt-dlp 多格式可能返回多个）
             if isinstance(result, str) and result:
                 # 单文件产物（如 GIF 转码返回的路径）

@@ -8,7 +8,9 @@ X (Twitter) 动图下载 页面
 自行指定宽度 / 帧率上限 / 色数 / dither（GifCustomParams）。
 
 解析只读元数据（yt-dlp -J），不下载媒体；条目序号（1-based，原始条目列表次序）
-在下载时经 `--playlist-items` 回传，故选中的必须与 yt-dlp 看到的次序一致。
+在下载时由 `download_and_convert_gif(..., selected_indexes=[...])`（关键字专用形参，
+经任务队列 kwargs 通道传递）拼成 `--playlist-items` 回传，故选中的必须与 yt-dlp
+看到的次序一致。
 """
 import os
 import re
@@ -16,7 +18,7 @@ import urllib.request
 
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import (
-    QIntValidator, QDoubleValidator, QColor, QPainter, QPixmap,
+    QIntValidator, QDoubleValidator, QPainter, QPixmap,
 )
 from PyQt6.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QGridLayout, QWidget, QFrame,
@@ -101,7 +103,12 @@ class _CoverLoader(QThread):
 
 
 class GifItemCard(qfw.CardWidget):
-    """单个动图条目卡片：封面 + 序号勾选 + 时长，点击卡片切换勾选。"""
+    """单个动图条目卡片：封面 + 序号勾选，点击卡片切换勾选。
+
+    不显示时长：条目能进列表的前提就是 `_looks_like_animated` 判定
+    `duration in (None, 0)`（yt-dlp 不解码 animated_gif 的时长），
+    所以「有时长才显示」的标签永远不可达，2026-10-11 复核后移除。
+    """
 
     CARD_W = 200
     COVER_H = 112          # 200 * 9/16
@@ -130,12 +137,6 @@ class GifItemCard(qfw.CardWidget):
         self.check.stateChanged.connect(lambda _: self.update())
         row.addWidget(self.check)
         row.addStretch()
-
-        duration = item.get('duration') or 0
-        if duration:
-            label = qfw.CaptionLabel(f"{duration:.1f}s")
-            label.setTextColor(QColor("#888"), QColor("#999"))
-            row.addWidget(label)
 
         layout.addLayout(row)
 
@@ -564,8 +565,8 @@ class GifPage(PageBase):
                          content="链接已更改，请重新解析后再下载", duration=4000)
             return
 
-        indexes = self._selected_indexes()
-        if not indexes:
+        selected_indexes = self._selected_indexes()
+        if not selected_indexes:
             show_infobar(self, "warning", title="提示",
                          content="请至少勾选一个动图", duration=3000)
             return
@@ -583,18 +584,24 @@ class GifPage(PageBase):
         m = re.search(r'/status/(\d+)', url)
         status_id = m.group(1) if m else url
 
-        self._enqueue(url, status_id, out_dir, quality, custom_params, indexes)
+        self._enqueue(url, status_id, out_dir, quality, custom_params,
+                      selected_indexes)
 
-    def _enqueue(self, url, status_id, out_dir, quality, custom_params, indexes):
+    def _enqueue(self, url, status_id, out_dir, quality, custom_params,
+                 selected_indexes):
         """把动图任务加入队列。
 
         metadata 字段按视频下载任务口径（title/channel/duration/cover_url/
         cover_data），供 Task/TaskCard 复用下载任务的显示逻辑——解析阶段已经
         取到这些信息，无需再跑一次 yt-dlp。
+
+        `selected_indexes` 是关键字专用形参，只能经 run_queued_task 的 kwargs
+        通道传给任务函数（args 是纯位置通道，见 DEVELOPMENT.md 决策 31）。
         """
         title = self._last_title or f"动图下载 - {status_id}"
         # 任务卡片封面：优先勾选的首个条目（与「以首条为代表」的既有口径一致）
-        first = next((i for i in self._items if i['index'] in set(indexes)), None)
+        first = next((i for i in self._items
+                      if i['index'] in set(selected_indexes)), None)
 
         download_config = load_download_config()
         metadata = {
@@ -613,15 +620,18 @@ class GifPage(PageBase):
 
         self.run_queued_task(
             func=Functions.download_and_convert_gif,
-            args=(url, out_dir, quality, custom_params, indexes,
+            args=(url, out_dir, quality, custom_params,
                   download_config['use_aria2c'],
                   download_config['aria2c_connections']),
+            # 选中序号是关键字专用形参，走 kwargs 通道（args 只放位置参数）
+            kwargs={'selected_indexes': selected_indexes},
             task_type=TaskType.GIF,
             title=title,
             metadata=metadata,
         )
         show_infobar(self, "info", title="任务已加入队列",
-                     content=f"共 {len(indexes)} 个动图，下载完成后自动转码为 GIF",
+                     content=f"共 {len(selected_indexes)} 个动图，"
+                             f"下载完成后自动转码为 GIF",
                      duration=3000)
 
     def refresh_ytdlp_status(self):

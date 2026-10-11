@@ -162,8 +162,15 @@ class PageBase(QWidget):
         self.worker.start()
         self.log("▶ 任务开始...")
 
-    def run_queued_task(self, func, args, task_type: TaskType, title: str, metadata: dict = None):
-        """将任务添加到任务队列管理器"""
+    def run_queued_task(self, func, args, task_type: TaskType, title: str,
+                        metadata: dict = None, kwargs: dict = None):
+        """将任务添加到任务队列管理器
+
+        kwargs: 传给任务函数的额外关键字参数。任务函数里的关键字专用形参
+            （如 download_and_convert_gif 的 selected_indexes）只能走这里，
+            因为 args 是纯位置通道；不得占用 TaskWorker 注入的保留名
+            log/on_process_created/on_progress/workspace（见 DEVELOPMENT.md 决策 31）。
+        """
         mgr = TaskQueueManager.instance()
         if task_type == TaskType.FFMPEG and args:
             # FFMPEG 任务统一探测输入时长写入 metadata['duration']（进度百分比主来源）。
@@ -180,7 +187,8 @@ class PageBase(QWidget):
             title=title,
             func=func,
             args=args,
-            metadata=metadata or {}
+            metadata=metadata or {},
+            kwargs=kwargs
         )
         self._owned_task_ids.add(task.task_id)
         # 首次连接日志转发

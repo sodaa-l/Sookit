@@ -266,11 +266,10 @@ class Functions:
         return _impl(video, output, *args, **kwargs)
 
     @staticmethod
-    def download_and_convert_gif(url, output_dir, quality,
-                                 custom_params=None, items=None,
+    def download_and_convert_gif(url, output_dir, quality, custom_params=None,
                                  use_aria2c=True, aria2c_connections=16,
                                  log=None, on_process_created=None,
-                                 on_progress=None):
+                                 on_progress=None, *, selected_indexes=None):
         """下载 X 动图并转成 GIF（组合任务：yt-dlp 下载 MP4 → ffmpeg 转码 GIF）。
 
         Args:
@@ -280,16 +279,19 @@ class Functions:
             output_dir: GIF 输出目录
             quality: GifQuality 四档之一（custom_params 非空时被忽略）
             custom_params: GifCustomParams（自定义档参数），None 表示预设档
-            items: 只转换这些条目序号（1-based，对应**原始条目列表**的次序，
-                None = 该链接下的全部动图）。序号来自 `fetch_gif_items`，
-                此处再与动图判定求交集——序号可能来自过期的解析结果，
-                不过滤会把同一条推文里的普通视频也转成 GIF。
             use_aria2c / aria2c_connections: 传给 yt-dlp 的下载器选项
             log / on_process_created / on_progress: Sookit 任务约定回调
                 （TaskWorker GIF 分支固定传入这三个 kwargs）
+            selected_indexes: **关键字专用**（任务队列经 kwargs 通道传入，见
+                DEVELOPMENT.md 决策 31）。只转换这些条目序号（1-based，对应
+                **原始条目列表**的次序，None = 该链接下的全部动图）。序号来自
+                `fetch_gif_items` 返回的 items（页面只收集被勾选那些的 index），
+                此处再与动图判定求交集——序号可能来自过期的解析结果，不过滤
+                会把同一条推文里的普通视频也转成 GIF。
         只处理动图：先按 `_looks_like_animated` 判定 playlist 各条目，用
         `--playlist-items` 只下载动图条目（同一条推文里的普通视频既不下载也不
-        转码）；整条链接不含动图时直接抛错（任务失败并提示）。
+        转码）；`selected_indexes` 非空时再按页面勾选收窄；整条链接不含动图时
+        直接抛错（任务失败并提示）。
         返回最终 GIF 路径：单文件 str，含多个动图时为 list。
 
         进度约定：下载阶段无法解析为百分比（GIF 任务不走 YTDLP 进度解析），
@@ -323,10 +325,10 @@ class Functions:
                     if _looks_like_animated(e)]
         if not animated:
             raise RuntimeError("该链接没有动图（推文只含普通视频或图片），已跳过")
-        # items 为页面选中的原始条目序号：与动图判定求交集，避免过期序号
-        # 把普通视频也纳入下载范围
-        if items:
-            wanted = [i for i in animated if i in set(items)]
+        # selected_indexes 为页面选中的原始条目序号：与动图判定求交集，避免过期
+        # 序号把普通视频也纳入下载范围
+        if selected_indexes:
+            wanted = [i for i in animated if i in set(selected_indexes)]
             if not wanted:
                 raise RuntimeError("选中的条目不是动图，可能链接已更换，请重新嗅探")
             skipped = len(animated) - len(wanted)

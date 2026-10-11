@@ -65,12 +65,14 @@ class TaskType(Enum):
 class Task:
     """任务数据模型"""
     def __init__(self, task_id: str, task_type: TaskType,
-                 title: str, func, args, metadata: dict = None):
+                 title: str, func, args, metadata: dict = None,
+                 kwargs: dict = None):
         self.task_id = task_id
         self.task_type = task_type
         self.title = title           # 显示名称（视频标题/文件名）
         self.func = func             # 执行函数
-        self.args = args             # 函数参数
+        self.args = args             # 函数位置参数
+        self.kwargs = kwargs or {}   # 函数关键字参数（关键字专用形参走这里，见决策 31）
         self.metadata = metadata or {}  # 额外元数据
         self.status = TaskStatus.WAITING
         self.progress = 0.0          # 0-100
@@ -253,10 +255,15 @@ class TaskQueueManager(QObject):
         _save_active_workspaces([])
 
     def add_task(self, task_type: TaskType, title: str, func, args,
-                 metadata: dict = None, output_path: str = "") -> Task:
-        """添加新任务到队列"""
+                 metadata: dict = None, output_path: str = "",
+                 kwargs: dict = None) -> Task:
+        """添加新任务到队列
+
+        kwargs: 传给 func 的额外关键字参数（关键字专用形参只能走这里传递，
+            因为 TaskWorker 只按位置注入 args）；不得占用 workers.RESERVED_TASK_KWARGS。
+        """
         task_id = str(uuid.uuid4())[:8]
-        task = Task(task_id, task_type, title, func, args, metadata)
+        task = Task(task_id, task_type, title, func, args, metadata, kwargs)
         task.output_path = output_path
         
         self.active_tasks[task_id] = task
@@ -289,7 +296,8 @@ class TaskQueueManager(QObject):
         # 创建并启动 worker
         from sookit.core.workers import TaskWorker
         worker = TaskWorker(task_id, task.task_type, task.func, task.args,
-                            workspace=task.workspace, metadata=task.metadata)
+                            workspace=task.workspace, metadata=task.metadata,
+                            kwargs=task.kwargs)
         task.worker = worker
         
         # 连接信号
