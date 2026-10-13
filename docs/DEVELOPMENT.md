@@ -177,7 +177,8 @@ flowchart TB
 | 27 | updater 点 X 关窗后进程残留：closeEvent ignore 毒化 QDialog 关闭状态（2026-09-05） | `closeEvent` ignore 会毒化 `is_closing` → 收尾必须显式 `QApplication.quit()` | [27-updater-close-event-residue.md](decisions/27-updater-close-event-residue.md) |
 | 28 | yt-dlp 按生效来源挂进主窗口更新周期检查（2026-09-06） | yt-dlp（PATH/tools）挂进主窗口周期检查：PATH 只提示、tools 亮 badge | [28-ytdlp-source-periodic-check.md](decisions/28-ytdlp-source-periodic-check.md) |
 | 29 | MP4 → GIF 自动参数决策转码（2026-10-06） | MP4→GIF 内核 `core/gif_utils.py` 自动决策参数，四档质量 | [29-mp4-gif-auto-params.md](decisions/29-mp4-gif-auto-params.md) |
-| 30 | 「动图下载」页接 UI + 自定义编码质量（2026-10-07） | 「动图下载」页接 UI + 自定义编码质量（默认不做嗅探，直接入队） | [30-gif-page-ui.md](decisions/30-gif-page-ui.md) |
+| 30 | 「动图下载」页接 UI + 自定义编码质量（2026-10-07） | 动图页 UI + 自定义编码质量；**2026-10-11 起流程改为「解析 → 卡片勾选 → 只下载选中项」**（见本条追加段） | [30-gif-page-ui.md](decisions/30-gif-page-ui.md) |
+| 31 | 任务队列通用 kwargs 通道（2026-10-11） | `Task`/`TaskWorker`/`add_task`/`run_queued_task` 通用 kwargs 通道 + `RESERVED_TASK_KWARGS` 保留名校验 | [31-queue-kwargs-channel.md](decisions/31-queue-kwargs-channel.md) |
 | 32 | 路径输入清洗 + InfoBar 定位守卫（2026-10-11） | 路径输入框统一 `read_path()` 洗引号；InfoBar `_settle` 守卫须吞 KeyError | [32-path-sanitize-infobar.md](decisions/32-path-sanitize-infobar.md) |
 | 33 | HLS（m3u8）流改用 ffmpeg 下载（2026-10-11） | **HLS(m3u8) 必须走 `--hls-prefer-ffmpeg`**（hlsnative 直拼的 TS 带无时间戳包，mkv 合并必失败） | [33-hls-prefer-ffmpeg.md](decisions/33-hls-prefer-ffmpeg.md) |
 | 34 | 下载失败时的诊断回放（2026-10-11） | `run_ytdlp(diagnostics=True)`：失败时回放 `-v` 尾部（含 ffmpeg stderr） | [34-ytdlp-diagnostics.md](decisions/34-ytdlp-diagnostics.md) |

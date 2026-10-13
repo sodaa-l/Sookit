@@ -22,7 +22,7 @@
   宽度超过源宽度时收敛到源宽度；quality 忽略并强制 `GifQuality.CUSTOM`；
 - `_encode_gif` 的 dither 参数化（默认 `'none'`），**预设档产物与 `auto_gif.py` 基准 md5 逐字节一致**（实测）。
 
-**组合函数**（`Functions.download_and_convert_gif(url, output_dir, quality, custom_params, use_aria2c, connections, log, on_process_created, on_progress)`）：
+**组合函数**（`Functions.download_and_convert_gif(url, output_dir, quality, custom_params, use_aria2c, connections, log, on_process_created, on_progress, *, selected_indexes=None)`；`selected_indexes` 为 2026-10-11 追加的末位关键字专用参数，见下文与决策 31）：
 - 先剥 `/video/N`、`/photo/N` 路径后缀——yt-dlp 对 animated_gif 遇 `/video/N` 报 `Media #N is not a video`；
 - `-f "b[ext=mp4]/b"` 下载到 `tempfile.mkdtemp(prefix="sookit_gif_dl_")`；**成功**转码后随目录清理
   （输出目录只留 .gif）；**失败**把已下载 MP4 移入输出目录保留便于排查；
@@ -91,3 +91,67 @@ YTDLP workspace 优先且删除调用不变）。测试用 `VIDEOTOOLBOX_DATA_DI
 **整条链接无动图时直接抛错**（任务失败并提示"该链接没有动图"），不再静默转换视频。
 日志阶段号相应为 ①识别条目 ②下载动图 ③转码。实测同一链接：
 `共 3 个条目，其中动图 2 个，已跳过 1 个普通视频` → 只产出 2 个 GIF。
+
+**动图页两阶段选择（2026-10-11 追加，改写上面的「点按钮即入队」流程）**：
+
+产品口径调整为：**先解析列出推文里的动图 → 在卡片网格里勾选 → 只下载并转码选中项**。
+（上面「不做嗅探阶段」指的是**不预先嗅探格式**、下载仍交 yt-dlp；本次的「解析」只读条目元数据列表，
+同样不下载媒体文件，两条口径不冲突。）
+
+- **`Functions.fetch_gif_items(url)`**（新增，**取代已删除的 `Functions.fetch_media_meta`**）：
+  一次完整 `yt-dlp -J`（不加 `--no-playlist`，twitter 多条目推文恒返回 playlist）→
+  `entries or [info]` → 逐条目按 `_looks_like_animated` 过滤，**只列动图**；返回
+  `{title, channel, items:[{index, url, title, duration, cover_url}]}`。
+  **`index` 保留原始条目列表的 1-based 次序**（不是筛选后的下标）——下载时它以
+  `--playlist-items` 回传，必须与 yt-dlp 看到的条目列表一致。链接无动图返回空 items
+  由页面提示，**不抛错**（与「解析失败」是两码事）。
+- **`download_and_convert_gif(..., *, selected_indexes=None)`**（2026-10-11 二次调整：原形参名
+  `items`，位置在 `custom_params` 之后——位置参数中段插入，按旧签名写的调用点会静默错位）：
+  `selected_indexes` = 页面选中的原始条目序号（1-based；None = 该链接全部动图）。实现上先与
+  `_looks_like_animated` 求交集（序号可能来自过期解析，交集可防把普通视频也转成 GIF；
+  交集为空抛「选中的条目不是动图」），再拼 `--playlist-items` 只下选中项。
+  **已改为末位关键字专用参数**：任务队列为此新增通用 kwargs 通道（见决策 31），
+  动图页经 `kwargs={'selected_indexes': [...]}` 传入，从根上杜绝按位置传参的静默错位。
+- **页面**（`pages/gif_page.py`）：URL 行（输入 + 解析 + 全选/全不选）→ 表单（输出目录/质量/自定义卡片）
+  → 选择区 → 下载按钮 → 日志区。
+  - `GifItemCard`（`qfw.CardWidget`，200px 固定宽）：封面 `RoundedCoverWidget`
+    （设 `WA_TransparentForMouseEvents` 让点击穿透到卡片）+ `CheckBox` + 选中态主题色圆角描边；
+    点卡片空白处切换勾选（勾选框自身吞掉点击事件，不会重复切换）。卡片 `setFixedSize` 以配合
+    `AdaptiveFlowLayout` 只用 `sizeHint().height()` 定高的约束（同 ElidedLabel 那条）。
+  - 封面由 `_CoverLoader(QThread)` **串行**下载（单条 15s 超时），`loaded/failed` 回主线程填图；
+    已下载字节存 `_cover_bytes`，入队时复用进 `metadata['cover_data']`（取头一个勾选条目），
+    队列卡片不再发第二次网络请求。
+  - `_parse_seq` 解析代际丢弃过期回调；`_parsed_url` 与输入框现链接比对，**改链接后必须重新解析**
+    （序号归属上一次解析结果）；`_retired` set 持有被停线程引用直到 `finished`（防运行中被 GC，同决策 2）。
+  - 空的 `_selected_indexes()` 时下载按钮禁用；解析出 0 个动图时只提示不入队。
+- **已知取舍与遗留（2026-10-11 复核）**：
+  1. 解析与下载各跑一次 `yt-dlp -J`（同链接两次元数据请求），换来「序号永不过期」；
+  2. 动图条目 `duration` 恒为 None/0——这正是 `_looks_like_animated` 的判定前提，故卡片「时长」标签
+     不可达，**已移除**（原实现留的 `if duration:` 分支实测永不进入）；
+  3. `_cover_bytes` 仍保留全部条目的封面字节（实际只用首个勾选条目）；
+  4. 退出路径未清理本页线程（`quit_app()` 只停 monitor worker + 取消队列任务）。复核时的离屏实验：
+     构造页面后不经事件循环直接 `sys.exit`，既有 `YoutubePage` 3/3 崩、`GifPage` 0/5 崩；
+     `GifPage` 解析过（有线程在跑）时 3~4/8 崩；带 150ms 事件循环再 `quit` 的近似真实路径 1/5 崩，
+     显式 `request_stop()` + `wait()` 后仍 1/5 崩。**结论：不是本次改动引入**（既有 YouTube 页更严重），
+     根因未定位，另案排查，本次不改。
+  5. 解析报 `Unable to download JSON metadata: EOF occurred in violation of protocol (_ssl.c:1007)`
+     = **网络层**，不是提取器/代码问题：yt-dlp 到 X 的 TLS 连接被中途重置。2026-10-11 用户实测，
+     同一 yt-dlp（PATH 上 `scoop` 的 2026.08.19）前一条 X 链接完整走完
+     `guest token → GraphQL JSON → m3u8`，后一条直接 TLS EOF，重试即恢复。应用无代理支持
+     （全仓库无 `proxy`），需要时靠 `ALL_PROXY`/`HTTPS_PROXY` 环境变量或全局/TUN 代理覆盖子进程。
+
+**验证（2026-10-11 离线冒烟，`QT_QPA_PLATFORM=offscreen`，全程 monkeypatch 不触网）**：
+52 项断言分五节全通过 ——
+A 页面状态机（解析回调建卡 3 张 / 默认全选 / 按钮可用性随勾选数 / 全选↔全不选 / 计数文案）；
+B 封面字节注入后上屏 + 勾选子集入队的 `args` 与 `kwargs`（args 固定 6 个位置参数、不再含选中序号；
+`kwargs['selected_indexes'] == [2]`；`metadata['cover_data']` 复用解析期字节；metadata 保留
+`filename/out_dir/duration/cover_url`）+ 改链接后拒绝入队；
+C 重新解析清理旧卡片（`_cards` 清空 / 布局 `count()==0` / `_cover_bytes` 清空 / 网格隐藏 / 新卡片对象）；
+D 内核 `selected_indexes` 过滤（`[3]` → `--playlist-items 3` 且单文件返回 str；`[3,2]` → `'2,3'`
+（恒按条目序，与勾选顺序无关）；`None` → 全部动图；`[1]` 普通视频 → 抛「选中的条目不是动图」；
+无动图链接 → 抛「该链接没有动图」；**按位置传第 10 个参数、或用旧名 `items=` 均直接 TypeError**）；
+E 队列 kwargs 通道（GIF 任务经 `add_task(..., kwargs={'selected_indexes': [3]})` 端到端送达任务函数，
+且 `log/on_process_created/on_progress` 仍被注入；占用保留名 `log` → 任务失败且报错含「保留名」；
+FFMPEG 任务 `Task.kwargs == {}`、行为不变；YTDLP 分支同步 `TaskWorker.run()` 空 kwargs 不报错）。
+UTF-8 环境 3 次、GBK（cp936，未设 `PYTHONUTF8`）3 次，退出码均为 0、断言零失败。
+**真实链接端到端尚未复测**（2026-10-07 的 14 项断言针对已删除的 `fetch_media_meta` 流程）。
