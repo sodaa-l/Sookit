@@ -1,4 +1,4 @@
-Before making changes, read `docs/DEVELOPMENT.md` for the project's architecture, development conventions, and documented design decisions.
+Before making changes, read `docs/DEVELOPMENT.md` (architecture, module map, conventions, known pitfalls) and its "决策索引" table. Design decisions are documented per-number in `docs/decisions/NN-slug.md` — open the ones covering what you are about to touch.
 
 
 
