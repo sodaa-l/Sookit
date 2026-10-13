@@ -284,6 +284,13 @@ class YouTubePage(PageBase):
         # 清空封面
         self.cover_label.clearPixmap("嗅探中...")
         self.cover_title.setText("")
+        # 同步作废上一部视频的元数据：本方法上面已把封面下拉框/预览切到新链接（同步取
+        # ID），但标题要等嗅探完成才有——若用户在这期间点「下载封面」，文件名会错用上一
+        # 部视频的标题（实测：封面是新的、文件名是旧的）。与 _on_sniff_error 的清空口径
+        # 一致：嗅探没成功就没有可信标题，宁可回退到当前链接的 ID。
+        self._sniff_title = ''
+        self._sniff_channel = ''
+        self._sniff_duration = 0
 
         # 立即从 URL 提取 video_id，同步加载封面
         video_id = extract_youtube_id(url)
