@@ -4,8 +4,13 @@ X (Twitter) 动图下载 页面
 输入 X 动图链接 → 点「解析」列出推文里的动图（卡片网格，可勾选）→
 下载选中项并转成 GIF。
 
-质量可选四档预设（core/gif_utils.GifQuality），或展开「自定义」卡片
-自行指定宽度 / 帧率上限 / 色数 / dither（GifCustomParams）。
+版式（2026-10-13 重构）：标题/说明 → 参数卡（链接·输出目录·编码质量）→
+选择区操作行（计数·全选·下载）→ 展示区。展示区是「空态占位 / 卡片网格」
+二选一的堆叠槽位，也是页面唯一的伸缩项，故解析前后整页零位移。
+
+质量可选四档预设（core/gif_utils.GifQuality），或「自定义…」——参数填在
+浮层（_CustomParamsView）里，不插进页面布局，否则展开时会把卡片展示区挤没；
+确认后质量行显示参数摘要与「调整参数」文字按钮（仅该档出现），点它可重开浮层。
 
 解析只读元数据（yt-dlp -J），不下载媒体；条目序号（1-based，原始条目列表次序）
 在下载时由 `download_and_convert_gif(..., selected_indexes=[...])`（关键字专用形参，
@@ -16,15 +21,18 @@ import os
 import re
 import urllib.request
 
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from PyQt6.QtCore import Qt, QThread, QPointF, QRectF, pyqtSignal
 from PyQt6.QtGui import (
-    QIntValidator, QDoubleValidator, QPainter, QPixmap,
+    QIntValidator, QDoubleValidator, QColor, QFont, QFontMetrics,
+    QPainter, QPainterPath, QPen, QPixmap,
 )
 from PyQt6.QtWidgets import (
-    QVBoxLayout, QHBoxLayout, QGridLayout, QWidget, QFrame,
+    QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QStackedWidget,
+    QWidget, QFrame,
 )
 
 import qfluentwidgets as qfw
+from qfluentwidgets import qconfig
 
 from sookit.core.functions import (
     Functions, is_ytdlp_available, load_download_config,
@@ -32,7 +40,7 @@ from sookit.core.functions import (
 )
 from sookit.core.gif_utils import GifQuality, GifCustomParams, DITHER_CHOICES
 from sookit.core.task_queue import TaskQueueManager, TaskType
-from sookit.core.utils import get_certifi_ssl_context
+from sookit.core.utils import get_certifi_ssl_context, set_smooth_scroll_params
 from sookit.core.workers import GenericWorker
 from sookit.pages.base import PageBase
 from sookit.widgets.infobar import show_infobar
@@ -47,6 +55,9 @@ _DITHER_LABELS = {
     "floyd_steinberg（误差扩散）": "floyd_steinberg",
     "sierra2_4a（误差扩散）": "sierra2_4a",
 }
+# 质量下拉里的「自定义…」项（注意与内核取值 GifQuality.CUSTOM == "自定义" 不同：
+# 下拉项带省略号表示“点了会弹浮层”，入队时另按 GifQuality.CUSTOM 传）
+_CUSTOM_ITEM = "自定义…"
 
 
 def _strip_media_index(url: str) -> str:
@@ -102,71 +113,271 @@ class _CoverLoader(QThread):
                 self.failed.emit(item['index'])
 
 
-class GifItemCard(qfw.CardWidget):
-    """单个动图条目卡片：封面 + 序号勾选，点击卡片切换勾选。
+class _GifCover(RoundedCoverWidget):
+    """动图卡封面：在封面自身这一层叠选中/悬停反馈。
+
+    必须画在封面控件里而不是卡片上：子控件在父控件之后绘制，画在卡片
+    `paintEvent` 里的蒙版会被封面整块盖掉（实测看不到任何选中反馈，决策 35）。
+
+    选中态只有「右上角对勾 + 标题转主题色」——**不再叠主题色遮罩**（2026-10-13
+    用户要求：遮罩会影响看动图本身）；悬停仍是轻微变暗（与已完成页同款反馈）。
+    """
+
+    RADIUS = 8                      # 与已完成页封面同款圆角
+
+    def __init__(self, w, h, parent=None):
+        super().__init__(w, h, parent)
+        self._checked = False
+        self._hovered = False
+
+    def set_feedback(self, checked: bool, hovered: bool):
+        if (checked, hovered) == (self._checked, self._hovered):
+            return
+        self._checked, self._hovered = checked, hovered
+        self.update()
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        if not (self._checked or self._hovered):
+            return
+
+        rect = self.rect()
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        if self._hovered:
+            clip = QPainterPath()
+            clip.addRoundedRect(QRectF(rect), self.RADIUS, self.RADIUS)
+            painter.setClipPath(clip)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor(0, 0, 0, 40))
+            painter.drawRect(rect)
+
+        if self._checked:
+            self._draw_check_badge(painter, rect)
+
+    def _draw_check_badge(self, painter, rect):
+        """右上角白底圆形对勾（自绘，不依赖图标资源）。"""
+        radius = 11
+        cx = rect.right() - 10 - radius
+        cy = rect.top() + 10 + radius
+
+        painter.setClipping(False)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(255, 255, 255))
+        painter.drawEllipse(QPointF(cx, cy), radius, radius)
+
+        pen = QPen(qfw.themeColor())
+        pen.setWidth(2)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        painter.setPen(pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+
+        mark = QPainterPath()
+        mark.moveTo(cx - 5, cy)
+        mark.lineTo(cx - 1.5, cy + 3.5)
+        mark.lineTo(cx + 5, cy - 4)
+        painter.drawPath(mark)
+
+
+class GifItemCard(QWidget):
+    """单个动图条目卡片：圆角封面 + 序号，点击整卡切换勾选。
+
+    视觉口径对齐任务队列「已完成」卡片（`CompletedThumbnailCard` + `CoverAreaWidget`）：
+    无卡片底色、16:9 圆角(8)封面、封面下文字。选中不再画主题色描边（原绿框），
+    改为封面叠半透明主题色蒙版 + 右上角白底对勾；悬停时封面轻微变暗。
 
     不显示时长：条目能进列表的前提就是 `_looks_like_animated` 判定
     `duration in (None, 0)`（yt-dlp 不解码 animated_gif 的时长），
     所以「有时长才显示」的标签永远不可达，2026-10-11 复核后移除。
+
+    卡片必须 setFixedSize：AdaptiveFlowLayout 只用 sizeHint().height() 定高，
+    且会按 setWidgetMinimumWidth/MaximumWidth 覆写宽度（见 DEVELOPMENT.md 决策 30）。
     """
 
-    CARD_W = 200
-    COVER_H = 112          # 200 * 9/16
-    CARD_H = COVER_H + 52  # 上下留白 8 + 勾选行 + 间距
+    toggled = pyqtSignal()          # 勾选状态变化（页面据此刷新计数与按钮）
+
+    CARD_W = 240
+    COVER_H = 135                   # 240 * 9/16
+    _MARGIN = 6                     # 与 CompletedThumbnailCard 同款内边距
+    _GAP = 6
+    _TITLE_FONT = QFont("Microsoft YaHei", 11)
 
     def __init__(self, item: dict, parent=None):
         super().__init__(parent)
         self.item = item
-        self.setFixedSize(self.CARD_W, self.CARD_H)
-        self.setClickEnabled(True)
+        self._checked = True        # 与页面口径一致：解析后默认全选
+        self._hovered = False
         self.setCursor(Qt.CursorShape.PointingHandCursor)
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(6)
-
-        self.cover = RoundedCoverWidget(self.CARD_W - 16, self.COVER_H)
+        self.cover = _GifCover(self.CARD_W - 2 * self._MARGIN, self.COVER_H)
         self.cover.setText("加载中...")
         # 封面是子控件，默认会吞掉点击；设穿透后点击落在卡片上统一处理勾选
         self.cover.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+
+        self.title = QLabel(f"动图 {item['index']}")
+        self.title.setFont(self._TITLE_FONT)
+        self.title.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(self._MARGIN, self._MARGIN,
+                                  self._MARGIN, self._MARGIN)
+        layout.setSpacing(self._GAP)
         layout.addWidget(self.cover)
+        layout.addWidget(self.title)
 
-        row = QHBoxLayout()
-        row.setSpacing(6)
-        self.check = qfw.CheckBox(f"动图 {item['index']}")
-        self.check.stateChanged.connect(lambda _: self.update())
-        row.addWidget(self.check)
-        row.addStretch()
+        # 高度按控件自身字体度量（类属性 QFont 的全局度量可能与控件上下文差 1px）
+        title_h = QFontMetrics(self.title.font()).height()
+        self.setFixedSize(self.CARD_W,
+                          self._MARGIN * 2 + self.COVER_H + self._GAP + title_h)
 
-        layout.addLayout(row)
+        qconfig.themeChanged.connect(self._refresh_colors)
+        self._refresh_colors()
+
+    def _refresh_colors(self, *_):
+        """标题配色：选中 = 主题色，未选中 = 正文色（随主题切换刷新）。"""
+        if self._checked:
+            self.title.setStyleSheet(f"color: {qfw.themeColor().name()};")
+        else:
+            dark = qfw.isDarkTheme()
+            self.title.setStyleSheet(f"color: {'white' if dark else 'black'};")
+        self.cover.set_feedback(self._checked, self._hovered)
 
     def is_checked(self) -> bool:
-        return self.check.isChecked()
+        return self._checked
 
     def set_checked(self, checked: bool):
-        self.check.setChecked(checked)
+        checked = bool(checked)
+        if checked == self._checked:
+            return
+        self._checked = checked
+        self._refresh_colors()
+        self.toggled.emit()
 
     def mouseReleaseEvent(self, event):
-        # 勾选框自身会吞掉点击事件，不经此处；卡片其余区域点击 = 切换勾选
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.set_checked(not self._checked)
         super().mouseReleaseEvent(event)
-        self.check.setChecked(not self.check.isChecked())
 
-    def paintEvent(self, event):
-        """勾选时在卡片外圈描一条主题色边框，弱化"已选中"的辨识成本。"""
-        super().paintEvent(event)
-        if not self.is_checked():
+    def enterEvent(self, event):
+        self._hovered = True
+        self.cover.set_feedback(self._checked, True)
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self._hovered = False
+        self.cover.set_feedback(self._checked, False)
+        super().leaveEvent(event)
+
+
+class _CustomParamsView(qfw.FlyoutViewBase):
+    """「自定义编码参数」浮层内容。
+
+    参数填在浮层里（不插进页面布局）：内联展开会挤掉下面的动图展示区。
+    **没有确定/取消按钮**：关闭浮层（点框外任意位置）= 确定，故提示语要写清这一点。
+    页面侧只读 `params()` 的返回值——宽度/帧率没填或非法时返回 (None, 原因)。
+    """
+
+    def __init__(self, params: GifCustomParams = None, parent=None):
+        super().__init__(parent)
+        self.setFixedWidth(400)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 14, 16, 14)
+        layout.setSpacing(8)
+
+        layout.addWidget(qfw.StrongBodyLabel("自定义编码参数"))
+        hint = qfw.CaptionLabel(
+            "填好后点击框外任意位置即生效；不约束体积，宽度超过源宽度时收敛到源宽度")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        form = QGridLayout()
+        form.setHorizontalSpacing(10)
+        form.setVerticalSpacing(10)
+        form.setColumnStretch(1, 1)
+
+        form.addWidget(qfw.BodyLabel("宽度 (px)"), 0, 0)
+        self.width_edit = qfw.LineEdit()
+        self.width_edit.setPlaceholderText("必填，如 480（高度按源宽高比自动计算）")
+        self.width_edit.setValidator(QIntValidator(2, 99999, self))
+        form.addWidget(self.width_edit, 0, 1)
+
+        form.addWidget(qfw.BodyLabel("帧率上限"), 1, 0)
+        self.fps_edit = qfw.LineEdit()
+        self.fps_edit.setPlaceholderText("必填，如 30（源 ≤ 该值保持源帧率）")
+        dv = QDoubleValidator(0.1, 240, 2, self)
+        dv.setNotation(QDoubleValidator.Notation.StandardNotation)
+        self.fps_edit.setValidator(dv)
+        form.addWidget(self.fps_edit, 1, 1)
+
+        form.addWidget(qfw.BodyLabel("色数"), 2, 0)
+        self.colors_combo = qfw.ComboBox()
+        for c in _COLOR_OPTIONS:
+            self.colors_combo.addItem(str(c))
+        form.addWidget(self.colors_combo, 2, 1)
+
+        form.addWidget(qfw.BodyLabel("dither"), 3, 0)
+        self.dither_combo = qfw.ComboBox()
+        for label in _DITHER_LABELS:
+            # 注意：qfw ComboBox 的 userData 必须关键字传（位置传参会落进 icon 形参）
+            self.dither_combo.addItem(label, userData=_DITHER_LABELS[label])
+        form.addWidget(self.dither_combo, 3, 1)
+
+        layout.addLayout(form)
+        # 没有「确定/取消」按钮：关闭（点框外）即确认，故这里不排按钮行
+
+        self._fill(params)
+
+    def _fill(self, params: GifCustomParams = None):
+        """有已确认参数则预填（便于微调/原样关掉），否则宽度与帧率留空由用户填。
+
+        默认不预填 480/30：那是编造的默认值，会让用户以为不填就会按它编码。
+        """
+        colors = params.colors if params else 128
+        dither = params.dither if params else "none"
+
+        idx = self.colors_combo.findText(str(colors))
+        self.colors_combo.setCurrentIndex(idx if idx >= 0 else 1)
+        for i in range(self.dither_combo.count()):
+            if self.dither_combo.itemData(i) == dither:
+                self.dither_combo.setCurrentIndex(i)
+                break
+
+        if params is None:
             return
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-        pen = painter.pen()
-        pen.setColor(qfw.themeColor())
-        pen.setWidth(2)
-        painter.setPen(pen)
-        painter.drawRoundedRect(self.rect().adjusted(1, 1, -1, -1), 6, 6)
+        self.width_edit.setText(str(params.width))
+        self.fps_edit.setText("%g" % float(params.fps_cap))
+
+    def params(self):
+        """读表单 → (GifCustomParams, None)；非法时 (None, 原因)。"""
+        w_raw = self.width_edit.text().strip()
+        fps_raw = self.fps_edit.text().strip()
+        if not w_raw:
+            return None, "请填写自定义宽度"
+        if not fps_raw:
+            return None, "请填写帧率上限"
+        try:
+            params = GifCustomParams(
+                width=int(w_raw),
+                fps_cap=float(fps_raw),
+                colors=_COLOR_OPTIONS[self.colors_combo.currentIndex()],
+                dither=self.dither_combo.currentData() or "none",
+            )
+        except ValueError:
+            return None, "宽度/帧率须为有效数字"
+        try:
+            params.validate()
+        except RuntimeError as e:
+            return None, str(e)
+        return params, None
 
 
 class GifPage(PageBase):
+    _DEFAULT_QUALITY_INDEX = 2      # 「高质量」
+    _CUSTOM_INDEX = 4               # 「自定义…」
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self._ytdlp_warning_bar = None  # 「未找到 yt-dlp」常驻 infobar，装好后关闭
@@ -181,16 +392,20 @@ class GifPage(PageBase):
         self._last_channel = ''
         self._items = []                # 最近一次解析的动图条目
         self._cards = {}                # 条目序号 -> GifItemCard
+        self._custom_params = None      # 已确认的自定义参数（GifCustomParams）
+        self._custom_flyout = None      # 打开中的自定义参数浮层
+        # 已提交的档位：预设档点选即提交，「自定义…」只有浮层点「确定」才提交。
+        # 浮层被取消/点空白处关闭时回退到这里（浮层本身不落任何页面级状态，
+        # 是否确认记在浮层实例上，避免状态在页面上残留）。
+        self._committed_quality_index = self._DEFAULT_QUALITY_INDEX
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 20, 20, 20)
         layout.setSpacing(10)
 
-        title = qfw.TitleLabel("X (Twitter) 动图下载")
-        layout.addWidget(title)
+        layout.addWidget(qfw.TitleLabel("X (Twitter) 动图下载"))
         layout.addWidget(self.create_caption_label(
             "粘贴 X 动图链接，解析后勾选要下载的动图，自动转为 GIF"))
-        layout.addSpacing(6)
 
         # 检查 yt-dlp 可用性（PATH 全局或内置 tools/ 均可）
         if not is_ytdlp_available():
@@ -199,68 +414,101 @@ class GifPage(PageBase):
                 content="未找到 yt-dlp，动图下载不可用。请前往设置页下载安装")
             self.add_goto_settings_button(self._ytdlp_warning_bar)
 
-        # ---- 链接解析行 ----
-        url_row = QHBoxLayout()
+        # ---- 参数卡：链接 / 输出目录 / 编码质量 ----
+        layout.addSpacing(2)
+        card = qfw.CardWidget()
+        grid = QGridLayout(card)
+        grid.setContentsMargins(16, 14, 16, 14)
+        grid.setHorizontalSpacing(10)
+        grid.setVerticalSpacing(12)
+        grid.setColumnStretch(1, 1)
+        grid.setColumnMinimumWidth(0, 56)
+
         self.url_input = qfw.LineEdit()
         self.url_input.setPlaceholderText(
             "粘贴 X/Twitter 动图链接，如 https://x.com/xxx/status/123")
+        self.url_input.setClearButtonEnabled(True)
+        self.url_input.returnPressed.connect(self._start_parse)
         self.parse_btn = qfw.PrimaryPushButton("解析")
-        self.parse_btn.setFixedWidth(100)
+        self.parse_btn.setIcon(qfw.FluentIcon.SEARCH)
+        self.parse_btn.setFixedWidth(96)
         self.parse_btn.clicked.connect(self._start_parse)
-        self.reselect_btn = qfw.PushButton("全不选")
-        self.reselect_btn.setFixedWidth(100)
-        self.reselect_btn.setVisible(False)
-        self.reselect_btn.clicked.connect(self._toggle_all)
-        url_row.addWidget(self.url_input, stretch=1)
-        url_row.addWidget(self.parse_btn)
-        url_row.addWidget(self.reselect_btn)
-        layout.addLayout(url_row)
+        grid.addWidget(qfw.BodyLabel("动图链接"), 0, 0)
+        grid.addWidget(self.url_input, 0, 1)
+        grid.addWidget(self.parse_btn, 0, 2)
 
-        # ---- 表单 ----
-        grid = QGridLayout()
-        grid.setVerticalSpacing(12)
-        grid.setColumnStretch(1, 1)
-
-        lbl = qfw.BodyLabel("输出目录")
         self.out_dir = qfw.LineEdit()
         # 占位文案与嗅探页/直播监控页保持一致（默认目录即系统「下载」文件夹）
         self.out_dir.setPlaceholderText("默认: /下载")
+        self.out_dir.setClearButtonEnabled(True)
         browse_btn = qfw.PushButton("浏览")
-        browse_btn.setFixedWidth(100)
+        browse_btn.setFixedWidth(96)
         browse_btn.clicked.connect(lambda: self.browse_dir(self.out_dir))
-        grid.addWidget(lbl, 0, 0)
-        grid.addWidget(self.out_dir, 0, 1)
-        grid.addWidget(browse_btn, 0, 2)
+        grid.addWidget(qfw.BodyLabel("输出目录"), 1, 0)
+        grid.addWidget(self.out_dir, 1, 1)
+        grid.addWidget(browse_btn, 1, 2)
 
-        lbl = qfw.BodyLabel("编码质量")
         self.quality_combo = qfw.ComboBox()
         for q in (GifQuality.LOW, GifQuality.STANDARD, GifQuality.HIGH,
-                  GifQuality.BEST, "自定义…"):
+                  GifQuality.BEST, _CUSTOM_ITEM):
             self.quality_combo.addItem(q)
-        self.quality_combo.setCurrentIndex(2)   # 默认高质量
-        self.quality_combo.currentIndexChanged.connect(
-            self._on_quality_changed)
-        grid.addWidget(lbl, 1, 0)
-        grid.addWidget(self.quality_combo, 1, 1)
+        self.quality_combo.setCurrentIndex(self._DEFAULT_QUALITY_INDEX)
+        self.quality_combo.setMinimumWidth(180)
+        self.quality_combo.currentIndexChanged.connect(self._on_quality_changed)
+        # 自定义参数摘要 + 重开浮层的文字按钮（仅「自定义…」档出现）。
+        # 本行必须装在**定高容器**里：按需显隐会让行高在 27↔32px 之间跳，
+        # 把下面的卡片区推动几像素。
+        self.custom_summary = qfw.CaptionLabel("")
+        self.custom_edit_btn = qfw.TransparentPushButton("调整参数")
+        self.custom_edit_btn.setToolTip("打开自定义编码参数")
+        self.custom_edit_btn.clicked.connect(lambda: self._open_custom_flyout())
+        quality_row = QWidget()
+        row = QHBoxLayout(quality_row)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(8)
+        row.addWidget(self.quality_combo)
+        row.addWidget(self.custom_summary)
+        row.addWidget(self.custom_edit_btn)
+        row.addStretch(1)
+        quality_row.setFixedHeight(max(self.quality_combo.sizeHint().height(),
+                                       self.custom_edit_btn.sizeHint().height()))
+        grid.addWidget(qfw.BodyLabel("编码质量"), 2, 0)
+        grid.addWidget(quality_row, 2, 1)
+        self._update_custom_summary()
 
-        layout.addLayout(grid)
+        layout.addWidget(card)
 
-        # ---- 自定义参数卡片（选「自定义…」时显示）----
-        self.custom_card = self._build_custom_card()
-        self.custom_card.setVisible(False)
-        layout.addWidget(self.custom_card)
-
-        # ---- 动图选择区（解析成功后显示）----
+        # ---- 选择区操作行（计数 + 全选 + 下载）----
+        # 全选键从链接栏移到这里（与「选中」语义放一起）；本行始终存在，
+        # 卡片区是页面唯一的伸缩项（下方 view_stack），故解析前后位置不变。
+        action_row = QHBoxLayout()
+        action_row.setSpacing(8)
         self.selection_hint = self.create_caption_label("")
-        self.selection_hint.setVisible(False)
-        layout.addWidget(self.selection_hint)
+        action_row.addWidget(self.selection_hint)
+        action_row.addStretch(1)
+        self.reselect_btn = qfw.PushButton("全选")
+        self.reselect_btn.setFixedWidth(96)
+        self.reselect_btn.setEnabled(False)     # 解析出卡片后才可用
+        self.reselect_btn.clicked.connect(self._toggle_all)
+        self.dl_btn = qfw.PrimaryPushButton("下载并转 GIF")
+        self.dl_btn.setIcon(qfw.FluentIcon.DOWNLOAD)
+        self.dl_btn.setFixedWidth(180)
+        self.dl_btn.setEnabled(False)   # 解析出动图且至少勾选一项后才可点击
+        self.dl_btn.clicked.connect(self._start_download)
+        action_row.addWidget(self.reselect_btn)
+        action_row.addWidget(self.dl_btn)
+        layout.addLayout(action_row)
 
+        # ---- 展示区：空态占位 / 卡片网格 二选一 ----
+        # 两页共用一个伸缩槽位，切换只换内容不改几何：解析前后零位移（决策 35）。
+        # （隐藏的控件不参与 QBoxLayout 分配：若只隐藏网格，多余空白会被平均
+        #   分摊给布局里其余控件，表现为整页被撑开、解析完成瞬间弹回顶部。）
+        self.empty_state = self._build_empty_state()
         self.items_scroll = qfw.ScrollArea()
         self.items_scroll.setWidgetResizable(True)
         self.items_scroll.setFrameShape(QFrame.Shape.NoFrame)
         self.items_scroll.setHorizontalScrollBarPolicy(
             Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.items_scroll.setVisible(False)
         content = QWidget()
         content.setStyleSheet("QWidget { background: transparent; }")
         self.items_flow = qfw.AdaptiveFlowLayout(
@@ -272,14 +520,14 @@ class GifPage(PageBase):
         self.items_flow.setContentsMargins(4, 4, 4, 4)
         self.items_scroll.setWidget(content)
         self.items_scroll.enableTransparentBackground()
-        layout.addWidget(self.items_scroll, stretch=1)
+        # 平滑滚动与任务队列页同款（库默认 400ms 偏绵长）
+        set_smooth_scroll_params(self.items_scroll)
 
-        layout.addSpacing(6)
-        self.dl_btn = qfw.PrimaryPushButton("▶ 下载并转 GIF")
-        self.dl_btn.setFixedWidth(240)
-        self.dl_btn.setEnabled(False)   # 解析出动图且至少勾选一项后才可点击
-        self.dl_btn.clicked.connect(self._start_download)
-        layout.addWidget(self.dl_btn, alignment=Qt.AlignmentFlag.AlignCenter)
+        self.view_stack = QStackedWidget()
+        self.view_stack.setFrameShape(QFrame.Shape.NoFrame)
+        self.view_stack.addWidget(self.empty_state)     # 0：空态占位
+        self.view_stack.addWidget(self.items_scroll)    # 1：卡片网格
+        layout.addWidget(self.view_stack, stretch=1)
 
         self._setup_log_area(layout)
 
@@ -299,56 +547,111 @@ class GifPage(PageBase):
             content = content[:200] + "…"
         show_infobar(self, "error", title=title, content=content)
 
-    # -------- 自定义参数卡片 --------
+    # -------- 空态 / 自定义参数浮层 --------
 
-    def _build_custom_card(self) -> QWidget:
-        card = qfw.CardWidget()
-        inner = QGridLayout(card)
-        inner.setContentsMargins(16, 12, 16, 12)
-        inner.setVerticalSpacing(10)
-        inner.setColumnStretch(1, 1)
+    def _build_empty_state(self) -> QWidget:
+        """空态占位：解析前占住卡片区，说明这里会出现什么。"""
+        box = QWidget()
+        outer = QVBoxLayout(box)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(6)
+        outer.addStretch(1)
 
-        hint = qfw.CaptionLabel(
-            "自定义参数（不约束体积，按所填参数直接编码）")
-        inner.addWidget(hint, 0, 0, 1, 2)
+        icon = QLabel()
+        color = QColor("#8a8a8a") if qfw.isDarkTheme() else QColor("#b0b0b0")
+        icon.setPixmap(qfw.FluentIcon.DOWNLOAD.icon(color=color).pixmap(44, 44))
+        icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        outer.addWidget(icon)
 
-        lbl = qfw.BodyLabel("宽度 (px)")
-        self.cust_width = qfw.LineEdit()
-        self.cust_width.setPlaceholderText("如 480（高度按源宽高比自动计算）")
-        self.cust_width.setValidator(QIntValidator(2, 99999))
-        inner.addWidget(lbl, 1, 0)
-        inner.addWidget(self.cust_width, 1, 1)
+        tip = qfw.BodyLabel("还没有解析动图")
+        tip.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        outer.addWidget(tip)
 
-        lbl = qfw.BodyLabel("帧率上限")
-        self.cust_fps = qfw.LineEdit()
-        self.cust_fps.setPlaceholderText("如 30（源 ≤ 该值保持源帧率，超过则锁定）")
-        dv = QDoubleValidator(0.1, 240, 2)
-        dv.setNotation(QDoubleValidator.Notation.StandardNotation)
-        self.cust_fps.setValidator(dv)
-        inner.addWidget(lbl, 2, 0)
-        inner.addWidget(self.cust_fps, 2, 1)
+        # 与上一行同为 BodyLabel（字号一致）
+        hint = qfw.BodyLabel("请粘贴 X 动图链接并解析")
+        hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        outer.addWidget(hint)
 
-        lbl = qfw.BodyLabel("色数")
-        self.cust_colors = qfw.ComboBox()
-        for c in _COLOR_OPTIONS:
-            self.cust_colors.addItem(str(c))
-        self.cust_colors.setCurrentIndex(1)   # 默认 128
-        inner.addWidget(lbl, 3, 0)
-        inner.addWidget(self.cust_colors, 3, 1)
+        outer.addStretch(1)
+        return box
 
-        lbl = qfw.BodyLabel("dither 算法")
-        self.cust_dither = qfw.ComboBox()
-        for label in _DITHER_LABELS:
-            self.cust_dither.addItem(label, userData=_DITHER_LABELS[label])
-        self.cust_dither.setCurrentIndex(0)   # 默认关闭（与预设档一致）
-        inner.addWidget(lbl, 4, 0)
-        inner.addWidget(self.cust_dither, 4, 1)
-
-        return card
+    def _show_cards(self, show: bool):
+        """在「空态占位」与「卡片网格」间切换（同一伸缩槽位，几何不变）。"""
+        self.view_stack.setCurrentIndex(1 if show else 0)
 
     def _on_quality_changed(self, index: int):
-        is_custom = self.quality_combo.currentText() == "自定义…"
-        self.custom_card.setVisible(is_custom)
+        """质量下拉：选「自定义…」弹参数浮层，预设档直接提交并刷新摘要。
+
+        已确认过的自定义参数不清空（切回自定义时浮层用它预填），非自定义态下
+        它不参与入队（见 `_start_download`）。
+        """
+        if self.quality_combo.currentText() == _CUSTOM_ITEM:
+            self._open_custom_flyout()
+            return
+        self._committed_quality_index = index
+        self._update_custom_summary()
+
+    def _open_custom_flyout(self):
+        """在质量下拉上弹「自定义参数」浮层。
+
+        两个入口：下拉里选「自定义…」，以及质量行的「调整参数」文字按钮——浮层点
+        空白处即关（= 确定），没有这个按钮就只能反复切档位回来才能重开。
+        """
+        if self._custom_flyout is not None and self._custom_flyout.isVisible():
+            return
+        view = _CustomParamsView(self._custom_params)
+        flyout = qfw.Flyout.make(
+            view, target=self.quality_combo,
+            aniType=qfw.FlyoutAnimationType.DROP_DOWN)
+        flyout.closed.connect(lambda f=flyout: self._on_custom_flyout_closed(f))
+        self._custom_flyout = flyout
+
+    def _on_custom_flyout_closed(self, flyout):
+        """浮层关闭 **即确定**（浮层里没有确定/取消按钮）。
+
+        参数填全了 → 提交（同时把档位落回「自定义…」，blockSignals 防再弹浮层）。
+        没填全（宽度/帧率默认留空，用户没填）→ 不提交：已提交过自定义参数就沿用旧的，
+        否则回退到上一个预设档并提示原因，免得下拉"莫名跳回去"。
+        """
+        if self._custom_flyout is flyout:
+            self._custom_flyout = None
+
+        params, err = flyout.view.params()
+        if params is not None:
+            self._custom_params = params
+            self._committed_quality_index = self._CUSTOM_INDEX
+            self.quality_combo.blockSignals(True)
+            self.quality_combo.setCurrentIndex(self._CUSTOM_INDEX)
+            self.quality_combo.blockSignals(False)
+            self._update_custom_summary()
+            return
+
+        if self._committed_quality_index == self._CUSTOM_INDEX:
+            # 旧参数仍然生效，保持自定义档原样
+            self._update_custom_summary()
+            return
+
+        self.quality_combo.blockSignals(True)
+        self.quality_combo.setCurrentIndex(self._committed_quality_index)
+        self.quality_combo.blockSignals(False)
+        self._update_custom_summary()
+        show_infobar(self, "warning", title="自定义参数未生效",
+                     content=f"{err}，已保持原档位", duration=4000)
+
+    def _update_custom_summary(self):
+        """刷新质量行右侧的摘要与「调整参数」文字按钮（两者仅自定义档出现）。
+
+        显隐都发生在定高容器里（见 `__init__` 的 quality_row），故不改变行高。
+        """
+        active = (self._custom_params is not None
+                  and self.quality_combo.currentText() == _CUSTOM_ITEM)
+        self.custom_summary.setVisible(active)
+        self.custom_edit_btn.setVisible(active)
+        if not active:
+            return
+        p = self._custom_params
+        self.custom_summary.setText(
+            f"{p.width}px · {p.fps_cap:g}fps · {p.colors} 色 · {p.dither}")
 
     # -------- 解析 --------
 
@@ -417,7 +720,6 @@ class GifPage(PageBase):
         if not items:
             self.log("该链接没有动图（推文只含普通视频或图片）")
             self.selection_hint.setText("该链接没有动图")
-            self.selection_hint.setVisible(True)
             self._update_dl_button()
             return
         self._parsed_url = self._parsing_url
@@ -440,9 +742,8 @@ class GifPage(PageBase):
         # takeAllWidgets 才会 deleteLater（removeAllWidgets 只是移出布局，
         # 控件仍是 content 的子控件、继续可见）
         self.items_flow.takeAllWidgets()
-        self.items_scroll.setVisible(False)
-        self.selection_hint.setVisible(False)
-        self.reselect_btn.setVisible(False)
+        self._show_cards(False)
+        self.selection_hint.setText("")
         self._update_dl_button()
 
     def _build_cards(self, items):
@@ -450,12 +751,10 @@ class GifPage(PageBase):
         for item in items:
             card = GifItemCard(item)
             card.set_checked(True)   # 默认全部勾选
-            card.check.stateChanged.connect(lambda _: self._update_dl_button())
+            card.toggled.connect(self._update_dl_button)
             self._cards[item['index']] = card
             self.items_flow.addWidget(card)
-        self.reselect_btn.setVisible(True)
-        self.items_scroll.setVisible(True)
-        self.selection_hint.setVisible(True)
+        self._show_cards(True)
         self._update_dl_button()
 
     def _start_cover_load(self, seq: int):
@@ -504,45 +803,15 @@ class GifPage(PageBase):
     def _update_dl_button(self):
         selected = self._selected_indexes()
         n = len(selected)
-        self.dl_btn.setEnabled(n > 0)
         total = len(self._cards)
+        self.dl_btn.setEnabled(n > 0)
+        self.reselect_btn.setEnabled(total > 0)
         # 按钮文案表示"点下去会发生什么"：全勾选时是「全不选」，否则是「全选」
         self.reselect_btn.setText("全不选" if n == total and total else "全选")
         if total:
-            self.selection_hint.setText(f"共 {total} 个动图，已选 {n} 个")
+            self.selection_hint.setText(f"共 {total} 个动图 · 已选 {n} 个")
 
     # -------- 入队 --------
-
-    def _collect_custom_params(self):
-        """读取自定义卡片参数并校验，非法时 InfoBar 提示并返回 None。"""
-        w_raw = self.cust_width.text().strip()
-        fps_raw = self.cust_fps.text().strip()
-        if not w_raw:
-            show_infobar(self, "warning", title="提示",
-                         content="请填写自定义宽度", duration=3000)
-            return None
-        if not fps_raw:
-            show_infobar(self, "warning", title="提示",
-                         content="请填写帧率上限", duration=3000)
-            return None
-        try:
-            params = GifCustomParams(
-                width=int(w_raw),
-                fps_cap=float(fps_raw),
-                colors=_COLOR_OPTIONS[self.cust_colors.currentIndex()],
-                dither=self.cust_dither.currentData() or "none",
-            )
-        except ValueError:
-            show_infobar(self, "warning", title="提示",
-                         content="宽度/帧率须为有效数字", duration=3000)
-            return None
-        try:
-            params.validate()
-        except RuntimeError as e:
-            show_infobar(self, "warning", title="参数无效",
-                         content=str(e), duration=5000)
-            return None
-        return params
 
     def _start_download(self):
         url = self.url_input.text().strip()
@@ -571,12 +840,15 @@ class GifPage(PageBase):
                          content="请至少勾选一个动图", duration=3000)
             return
 
-        is_custom = self.quality_combo.currentText() == "自定义…"
+        is_custom = self.quality_combo.currentText() == _CUSTOM_ITEM
         quality = GifQuality.CUSTOM if is_custom else \
             self.quality_combo.currentText()
-        custom_params = self._collect_custom_params() if is_custom else None
+        custom_params = self._custom_params if is_custom else None
         if is_custom and custom_params is None:
-            return    # 校验未通过，提示已弹出
+            # 选了「自定义…」但没在浮层里点过「确定」（或取消后回退失败）
+            show_infobar(self, "warning", title="提示",
+                         content="请先点「调整参数」确认自定义参数", duration=4000)
+            return
 
         out_dir = self.read_path(self.out_dir) or DEFAULT_OUTPUT_DIR
         os.makedirs(out_dir, exist_ok=True)
