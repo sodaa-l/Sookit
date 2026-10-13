@@ -540,6 +540,16 @@ class Functions:
         # 详见 DEVELOPMENT.md 决策 33。
         if check_ffmpeg():
             cmd.append('--hls-prefer-ffmpeg')
+        # 关掉 yt-dlp 的「格式可用性探测」（--check-formats）：上传 ≤2 天的新视频，其所有
+        # m3u8_native(HLS) 格式会被提取器打上 __needs_testing，yt-dlp 下载前会先下第一个分片
+        # 试一次，而**探测失败即把该格式当作不可用丢弃**（success=False → Skipping →
+        # Requested format is not available），一次瞬时错误就能让整个任务失败。
+        # 该探测还是全链路里**唯一仍然走 Python 原生 ssl 去碰 HLS** 的环节：dl(test=True)
+        # 会另建一套精简 params，把 --hls-prefer-ffmpeg / --downloader 全部丢掉，所以正式
+        # 下载已经交给 ffmpeg（决策 33），探测仍走内建下载器——2026-10-13 用户实测正是死在
+        # 这里（TLS EOF 且重试必现）。本 App 的格式由用户从嗅探表显式勾选，探测那点"自动
+        # 跳过不可用格式"的收益用不上。详见 DEVELOPMENT.md 决策 36。
+        cmd.append('--no-check-formats')
         if extra_args:
             cmd.extend(extra_args)
         cmd.append(url)
