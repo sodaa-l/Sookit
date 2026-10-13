@@ -532,6 +532,14 @@ class Functions:
         output_template = os.path.join(out, '%(title)s.%(ext)s')
         cmd = build_ytdlp_cmd('-f', format_spec, '-o', output_template, '--newline',
                               '--no-overwrites')
+        # HLS（m3u8）流交给 ffmpeg 下载：hlsnative 直拼出来的 TS 里会残留「无 PTS/DTS
+        # 的包」（实测某 1080p HLS：40 个分片 → 40 个坏包），Matroska 封装器遇到这种包
+        # 直接失败（ERROR: Postprocessing: Conversion failed!），且没有任何 ffmpeg
+        # 参数能救；而经 ffmpeg 转封装一次即可把时间戳归一化（产物 0 坏包，合并 mkv 通过）。
+        # ffmpeg 不可用时保持原生下载器——否则会把「本来能下、不需要合并」的流变成报错。
+        # 详见 DEVELOPMENT.md 决策 33。
+        if check_ffmpeg():
+            cmd.append('--hls-prefer-ffmpeg')
         if extra_args:
             cmd.extend(extra_args)
         cmd.append(url)
@@ -551,7 +559,10 @@ class Functions:
         if remote_components:
             cmd.extend(['--remote-components', 'ejs:github'])
         if log: log(f"运行: {' '.join(cmd)}")
-        return run_ytdlp(cmd, log, process_ref, on_process_created)
+        # diagnostics=True：给 yt-dlp 加 -v 并把输出缓冲起来，失败时回放尾部
+        # （合并/封装类失败只有 -v 才有 ffmpeg 的 stderr，见 DEVELOPMENT.md 决策 34）
+        return run_ytdlp(cmd, log, process_ref, on_process_created,
+                         diagnostics=True)
 
     @staticmethod
     def check_live_status(url, log=None):

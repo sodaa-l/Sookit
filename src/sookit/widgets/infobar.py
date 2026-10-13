@@ -148,16 +148,22 @@ def _settle(bar: qfw.InfoBar):
     manager 在 show 瞬间按当时偏大的宽度算好 x（parentW - barW - margin），
     之后宽度收缩不会触发重定位（库只在父窗口 resize/其他条关闭时重算），
     导致右侧出现「宽度收缩量 + margin」的大段空隙，故收缩后需手动重算。
+
+    纯尽力而为：条已关闭/父对象已回收/C++ 对象已销毁时直接放弃，不影响功能。
+    注意 manager 的 `infoBars` 是 WeakKeyDictionary，查不到父对象时 `_pos` 抛的是
+    **KeyError**（2026-10-11 实测未捕获：日志 CRITICAL 2 次，同一条 bar 的
+    0ms/100ms 两个定时器都炸），而 `adjustSize()` 在对象已销毁时抛 RuntimeError，
+    故整段用一个 except 兜住这三类（见 DEVELOPMENT.md 决策 32）。
     """
-    bar.adjustSize()
-    if not bar.parent():
-        return
     try:
+        bar.adjustSize()
+        if not bar.parent():
+            return
         pos = qfw.InfoBarManager.make(bar.position)._pos(bar)
-    except (ValueError, RuntimeError):
-        return  # 已从 manager 移除或已销毁
-    ani = bar.property('slideAni')
-    if ani and ani.state() == QPropertyAnimation.State.Running:
-        ani.setEndValue(pos)  # 滑入动画（200ms）未结束，直接 move 会被逐帧覆盖
-    else:
-        bar.move(pos)
+        ani = bar.property('slideAni')
+        if ani and ani.state() == QPropertyAnimation.State.Running:
+            ani.setEndValue(pos)  # 滑入动画（200ms）未结束，直接 move 会被逐帧覆盖
+        else:
+            bar.move(pos)
+    except (KeyError, ValueError, RuntimeError):
+        return  # 已从 manager 移除 / 父对象已回收 / 控件已销毁

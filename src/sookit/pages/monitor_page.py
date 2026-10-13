@@ -196,7 +196,7 @@ class MonitorPage(PageBase):
 
         self._task_rows[task_id] = row
         self._task_titles[task_id] = title
-        out_dir = self.out_dir.text().strip() or DEFAULT_OUTPUT_DIR
+        out_dir = self.read_path(self.out_dir) or DEFAULT_OUTPUT_DIR
         self._task_info[task_id] = {'url': url, 'out_dir': out_dir, 'title': title}
 
         self._sniff_and_start_worker(task_id, url, out_dir, title, row)

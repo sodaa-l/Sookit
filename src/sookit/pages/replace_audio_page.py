@@ -60,13 +60,13 @@ class ReplaceAudioPage(PageBase):
         self._setup_log_area(layout)
 
     def _start_replace(self):
-        video = self.video.text().strip()
-        audio = self.audio.text().strip()
+        video = self.read_path(self.video)
+        audio = self.read_path(self.audio)
         if not video or not audio:
             show_infobar(self, "warning", title="提示", content="请选择视频和音频文件",
                          duration=3000)
             return
-        out_raw = self.out.text().strip()
+        out_raw = self.read_path(self.out)
         if out_raw:
             if os.path.isdir(out_raw) or not os.path.splitext(out_raw)[1]:
                 base = os.path.splitext(os.path.basename(video))[0]

@@ -274,7 +274,7 @@ class GifPage(PageBase):
         if is_custom and custom_params is None:
             return    # 校验未通过，提示已弹出
 
-        out_dir = self.out_dir.text().strip() or DEFAULT_OUTPUT_DIR
+        out_dir = self.read_path(self.out_dir) or DEFAULT_OUTPUT_DIR
         os.makedirs(out_dir, exist_ok=True)
 
         m = re.search(r'/status/(\d+)', url)

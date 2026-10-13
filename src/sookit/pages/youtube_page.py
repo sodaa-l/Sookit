@@ -766,7 +766,7 @@ class YouTubePage(PageBase):
             show_infobar(self, "warning", title="提示", content=msg, duration=3000)
             return
 
-        out_dir = self.out_dir.text().strip() or DEFAULT_OUTPUT_DIR
+        out_dir = self.read_path(self.out_dir) or DEFAULT_OUTPUT_DIR
         # 扩展名按封面 URL 推断（白名单外默认 .jpg），通用站点封面可能是 png/webp/avif
         ext = os.path.splitext(urlparse(cover_url).path)[1].lower()
         if ext not in ('.jpg', '.jpeg', '.png', '.webp', '.avif'):
@@ -862,7 +862,7 @@ class YouTubePage(PageBase):
 
     def _start_download(self, format_spec):
         url = self.url_input.text().strip()
-        out_dir = self.out_dir.text().strip()
+        out_dir = self.read_path(self.out_dir)
         if not out_dir:
             out_dir = DEFAULT_OUTPUT_DIR
 

@@ -54,14 +54,14 @@ class SubtitlePage(PageBase):
         self._setup_log_area(layout)
 
     def _start_burn(self):
-        video = self.video.text().strip()
-        sub = self.sub.text().strip()
+        video = self.read_path(self.video)
+        sub = self.read_path(self.sub)
         if not video or not sub:
             show_infobar(self, "warning", title="提示", content="请选择视频和字幕文件",
                          duration=3000)
             return
         # 处理输出路径：如果只选了目录，自动拼接文件名
-        out_raw = self.out.text().strip()
+        out_raw = self.read_path(self.out)
         if out_raw:
             if os.path.isdir(out_raw) or not os.path.splitext(out_raw)[1]:
                 base = os.path.splitext(os.path.basename(video))[0]

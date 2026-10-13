@@ -564,6 +564,119 @@ YTDLP workspace 优先且删除调用不变）。测试用 `VIDEOTOOLBOX_DATA_DI
 日志阶段号相应为 ①识别条目 ②下载动图 ③转码。实测同一链接：
 `共 3 个条目，其中动图 2 个，已跳过 1 个普通视频` → 只产出 2 个 GIF。
 
+### 32. 路径输入清洗 + InfoBar 定位守卫（2026-10-11）
+
+**路径输入清洗**：用户从资源管理器「复制为路径」粘出来的路径带引号（`"E:\Music\a.mp4"`），
+而各页此前只做 `.strip()`（只去空白、不去引号）。引号是 Win32 路径非法字符，后果有两种：
+- 直接当路径用 → `os.chdir` / `open` / ffmpeg / yt-dlp 报 `[WinError 123] 文件名、目录名或卷标语法不正确`；
+- 更隐蔽的一种：`burn_subtitles` 为规避 ffmpeg 的盘符冒号问题，会用**字幕路径的目录**当工作目录
+  （`os.chdir(os.path.dirname(subtitle))`），开头的引号会落进 dirname（末尾那个引号被分给 basename），
+  任务在调 ffmpeg 之前就失败——2026-10-11 用户实测，日志里的路径是
+  `"E:\Music\...\dazbee_weverse_261011`。
+
+- 新增 `PageBase.read_path(entry)`：`.strip()` → `sanitize_path()`（剥首尾引号 + `normpath`）；
+  **空输入返回 `""`**（不能直接调 sanitize_path——`normpath("")` 会变成 `"."`）。
+  只用于路径输入框：**URL 输入框不要用**（含 `://`，normpath 会改写）。
+- 换用点：`subtitle_page`（video/sub/out）、`replace_audio_page`（video/audio/out）、
+  `extract_audio_page`（video/out）、`gif_page`（out_dir）、`youtube_page`（out_dir ×2）、
+  `monitor_page`（out_dir）。「输出目录为空」的既有默认值处理不变（`or DEFAULT_OUTPUT_DIR` /
+  与视频同名拼接）。
+- 刻意不做：不在 `Functions.*` 里兜底清洗——保持「输入清洗在 UI 层」的单一职责，
+  队列任务之间的路径参数（均由程序内部产生）不重复清洗。
+
+**InfoBar 定位守卫**：`widgets/infobar._settle` 用 `qfw.InfoBarManager.make(pos)._pos(bar)` 重算位置，
+而 `_pos` 内部是 `self.infoBars[p].index(infoBar)`，`infoBars` 是 `WeakKeyDictionary`：
+条已关闭 / 父对象已被回收 → **KeyError**；C++ 对象已销毁 → `adjustSize()` 抛 RuntimeError。
+原守卫只写了 `(ValueError, RuntimeError)`，注释本意（「已从 manager 移除或已销毁」）恰好漏掉了
+真正会发生的 KeyError，于是冒到全局 excepthook 记成 CRITICAL——2026-10-11 实测 2 次
+（同一条 bar 的 0ms / 100ms 两个定时器都炸）。
+- 改为整段 try + `except (KeyError, ValueError, RuntimeError)`，`adjustSize()` 也纳入 try。
+  这属于纯尽力而为的定位同步（补的是「宽度收缩后重新定位」那颗补丁，见上文 InfoBar 段），失败即放弃。
+
+**验证（2026-10-11 离线冒烟，`QT_QPA_PLATFORM=offscreen`，全程 monkeypatch 不触网）**：
+25 项断言全过——import 环路检查（`pages/base` 新增 `core.functions` 依赖后主窗口与全部页面可导入）；
+`read_path` 口径（剥首尾引号 / 单引号 / 正斜杠归一 / 首尾空白 / 纯空白与空输入 → `""`）；
+页面用「用户实测那种带引号路径」入队后的 `args` 与 metadata（字幕页 video+sub+out 三处、
+音频覆盖页并单引号、音频提取页、动图页空目录回退 `DEFAULT_OUTPUT_DIR`）；
+`_settle` 在正常条 / manager 抛 KeyError / 控件已销毁三种情况下均不冒泡。
+另：用 `sip.delete` 故意在 manager 仍持有该条时销毁控件，会让**测试进程退出时 SIGSEGV**（3 次 2 中）
+——属测试副作用（悬空引用），与本次改动无关，已从常规用例里移除。
+UTF-8 3 次 + GBK（cp936）2 次退出码 0、断言零失败。
+
+### 33. HLS（m3u8）流改用 ffmpeg 下载（2026-10-11）
+
+**症状**：某 1080p YouTube 视频用 `-f 251+270` 下载，下载阶段一切正常，到合并阶段失败：
+`[Merger] Merging formats into "...mkv"` 紧接 `ERROR: Postprocessing: Conversion failed!`；
+应用日志只有这一句（传了 `--no-warnings`，ffmpeg 的 stderr 只有 yt-dlp 加 `-v` 才会打印）。
+
+**根因（用 `-v --keep-video` 复现定位）**：该视频只有 HLS 格式（yt-dlp 走了 visionOS 客户端，
+只返回 m3u8），`hlsnative` 把 40 个分片直拼成 `...f270.mp4`（**内容是 MPEG-TS**），
+每个分片交界处残留一个**无 PTS/DTS 的包**（实测 40 分片 → 40 个 `pts=N/A dts=N/A`）。
+合并进 mkv 时 Matroska 封装器直接失败：
+
+```
+[matroska] Timestamps are unset in a packet for stream 1 ...
+[matroska] Can't write packet with unknown timestamp
+[vost#0:1/copy] Error submitting a packet to the muxer: Invalid argument
+Conversion failed!
+```
+
+为什么只有 mkv 中招：yt-dlp 按两条流的编解码挑容器 —— `251`(webm/opus) + `270`(mp4/h264)
+没有共同的标准容器（mp4 不标准地装 opus、webm 装不了 h264），落到 matroska 兜底；
+而 mp4 / TS 封装器容忍缺时间戳的包（历史日志里同一链接 `140+270 → .mp4` 一直成功，
+这正是「换成 m4a 音频就没事」的原因）。
+
+**排除项（均实测，mkv 下全部失败）**：`-fflags +genpts`、`+igndts`、`avoid_negative_ts make_zero`、
+`copyts`(+`start_at_zero`)、`max_interleave_delta 0`、`-vsync 0`、`-strict -2/unofficial`、
+`-copyinkf`、mkv `-live 1`、`-muxdelay/-muxpreload 0`、`setts` 条件式补时间戳；
+换 ffmpeg 构建（gyan essentials 8.1.2 与 full 8.1.1 都试过）也无效。
+唯一可行的是「让视频先经过一次 mp4 封装」（时间戳被归一化，实测之后合 mkv rc=0），
+但 yt-dlp 的下载→合并流程里插不进中间步骤。
+
+**修法**：`Functions.download_youtube` 在 **ffmpeg 可用**时追加 `--hls-prefer-ffmpeg`，
+让 HLS 交给 ffmpeg 边下边转封装 —— 时间戳在下载阶段就被规范化。
+DASH / 直链不受影响（该参数只作用于 HLS）；ffmpeg 不可用时**不加**，
+避免把「本来能下、不需要合并」的流变成报错。
+
+**验证（2026-10-11）**：
+- 离线：ffmpeg 下载出的 HLS 产物 **0 个缺 PTS 包**（hlsnative 产物 40 个），且该产物与 opus 音频
+  合并进 mkv `rc=0`；同期 14 种 ffmpeg 参数组合在 mkv 下全部失败（对照）。
+- 命令拼装 7 项断言：flag 存在、位置在 URL 与 `extra_args` 之前、无 ffmpeg 时不加、
+  格式与输出模板不变、GIF 路径（带 `--playlist-items`）同样带上。
+- **端到端**：直接调用应用自己的 `Functions.download_youtube(url, "251+270", …)` 实跑（约 70MB），
+  合并成功、返回 `.mkv` 69.6MB、ffprobe 两条流（opus + h264 1920x1080）；
+  修复前同一组合连续两次都停在合并阶段。
+
+**遗留**（同日由决策 34 解决）：合并类失败时应用日志看不到 ffmpeg 的 stderr
+（yt-dlp 只在 `-v` 下打印），排查成本高。
+
+### 34. 下载失败时的诊断回放（2026-10-11）
+
+**动机**：决策 33 那次排查真正卡住的地方是**日志看不到 ffmpeg 报了什么** ——
+应用给 yt-dlp 传了 `--no-warnings`，`FFmpegMergerPP` 失败时只抛一句
+`ERROR: Postprocessing: Conversion failed!`；ffmpeg 的命令行与 stderr 只有 yt-dlp 加 `-v`
+才打印。没有这些信息，只能靠「复现下载 + `-v --keep-video`」手工定位（这次就是这么做的）。
+
+**做法**：`core/ffmpeg_utils.run_ytdlp` 新增 `diagnostics=False` 形参，
+`Functions.download_youtube` 传 `True`：
+- 诊断模式下给 yt-dlp 加 `-v`，输出按行缓冲进 `deque(maxlen=300)`；
+- **噪声行不进日志**：`[debug] ...`、ffmpeg 组件日志（`[https @ 0000020874d31040] Opening ... for reading`）、
+  `frame= ...` 等逐请求/逐帧输出。开了 `-v` 或用 ffmpeg 下载 HLS 后这些会**每个分片刷一行**，
+  放进日志会把 1MB×3 的轮转日志冲掉（`_is_ytdlp_noise()` 判定，注意 fp 地址是**裸十六进制、没有 `0x`**）；
+- 任务失败时把缓冲的**最后 40 行**回放进日志（标题「↓ yt-dlp 详细输出尾部（诊断）：」），
+  成功则只字不留；
+- `_error_lines` 顺手加了 20 行上限（`-v` 下 WARNING 可能变多）。
+
+**验证（2026-10-11）**：
+- 19 项断言：噪声判定（6 类噪声过滤 / 4 类正常行保留）；失败路径（有回放、回放含 verbose 级细节、
+  实时日志无 `[debug]`、保留 `ERROR:`）；成功路径（5 秒 HLS 真下载：产物正常、无回放、
+  日志无 `[debug]` / `[https @ ...]` / `frame=` 噪声、进度行仍在）。
+- **真实失败回放**：用 `extra_args=["--hls-prefer-native"]` 覆盖修复、故意走回出问题的老路径
+  （`251+270` 合 mkv），日志里直接出现了当初必须手工复现才能拿到的 ffmpeg 原始报错：
+  `[matroska @ ...] Timestamps are unset in a packet for stream 1` →
+  `Can't write packet with unknown timestamp` → `Error muxing a packet` → `Conversion failed!`，
+  还带上了 `Output #0, matroska, to '...temp.mkv'` 与 `yt_dlp.postprocessor.ffmpeg` 调用栈。
+
 ## AI 编码约定
 
 ### 环境

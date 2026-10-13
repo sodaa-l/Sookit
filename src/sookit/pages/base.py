@@ -14,6 +14,7 @@ import qfluentwidgets as qfw
 from sookit.core.workers import Worker
 from sookit.core.config import load_task_complete_action
 from sookit.core.ffmpeg_utils import get_video_duration
+from sookit.core.functions import sanitize_path
 from sookit.core.task_queue import TaskQueueManager, TaskType
 from sookit.widgets.infobar import show_infobar
 
@@ -77,6 +78,21 @@ class PageBase(QWidget):
     def log(self, msg):
         print(msg)
         logger.info(msg)
+
+    @staticmethod
+    def read_path(entry) -> str:
+        """读取路径输入框并清洗（去首尾空白与引号 + normpath），空输入返回 ""。
+
+        从资源管理器「复制为路径」粘出来会带引号（"E:\\Music\\a.mp4"），而引号是
+        Win32 路径非法字符，直接交给 os.chdir / open / ffmpeg / yt-dlp 会报
+        WinError 123（实测字幕烧录：`os.chdir(os.path.dirname(subtitle))` 的 dirname
+        保留了开头那个引号 → 任务在调 ffmpeg 前就失败，见 DEVELOPMENT.md 决策 32）。
+
+        空输入不能直接交给 sanitize_path——`normpath("")` 会变成 "."。
+        只用于路径输入框；URL 输入框不要用（含 `://`，normpath 会改写）。
+        """
+        text = (entry.text() or "").strip()
+        return sanitize_path(text) if text else ""
 
     def browse_file(self, entry, file_types):
         path, _ = QFileDialog.getOpenFileName(self, "选择文件", "", file_types)

@@ -7,6 +7,7 @@ import os
 import sys
 import subprocess
 import re
+from collections import deque
 from shutil import which
 
 from sookit.paths import get_tools_dir
@@ -125,11 +126,47 @@ def _build_ytdlp_error(returncode, error_lines):
     return f"yt-dlp 退出码: {returncode}，目标文件不存在或不完整{detail}"
 
 
+# yt-dlp / ffmpeg 的高噪声行：逐请求（`[https @ 0x...] Opening '...' for reading`）、
+# 逐帧统计（`frame= ... speed= ...`）等。开了 -v 或用 ffmpeg 下载 HLS 时每个分片刷一行，
+# 只进失败诊断缓冲，不进 UI 日志。
+_FFMPEG_TAG_RE = re.compile(r'^\[[^\]\s]+ @ [0-9a-fA-F]+\]')
+_FFMPEG_STAT_PREFIXES = ('frame=', 'size=', 'video:', 'audio:', 'subtitle:',
+                         'other streams:', 'global headers:', 'muxing overhead:')
+
+
+def _is_ytdlp_noise(line: str) -> bool:
+    """是否为「不该进日志」的噪声行（诊断缓冲仍会保留）。"""
+    return (line.startswith('[debug]')
+            or bool(_FFMPEG_TAG_RE.match(line))
+            or line.startswith(_FFMPEG_STAT_PREFIXES))
+
+
 def run_ytdlp(cmd_list, log_callback, process_ref=None, on_process_created=None,
-              on_path=None):
+              on_path=None, diagnostics=False):
+    """执行 yt-dlp 命令并返回产物路径列表。
+
+    diagnostics=True 时给 yt-dlp 加 `-v`，把完整输出缓冲在内存里：
+    逐请求/逐帧的噪声行（`[debug] ...`、ffmpeg 组件日志、`frame=` 统计）**不进日志**，
+    只在任务失败时把尾部回放到日志。合并类失败（如 Matroska 封装器拒绝畸形包）
+    只有 `-v` 才有 ffmpeg 的 stderr，不这么做就只能看到一句
+    `ERROR: Postprocessing: Conversion failed!`（见 DEVELOPMENT.md 决策 34）。
+    """
     # 提前初始化，确保任何异常路径（如 Popen 失败）下 except 都能安全访问
     _last_dest = None
     _error_lines = []   # 收集 yt-dlp 的 ERROR 输出行，用于失败时给出具体原因
+    _diag = deque(maxlen=300) if diagnostics else None   # -v 输出尾部（失败时回放）
+
+    def _dump_diagnostics():
+        """失败时回放 yt-dlp 详细输出尾部（尽力而为，自身不得抛异常）。"""
+        if not _diag or log_callback is None:
+            return
+        try:
+            log_callback("↓ yt-dlp 详细输出尾部（诊断）：")
+            for ln in list(_diag)[-40:]:
+                log_callback("  " + ln[:280])
+        except Exception:
+            pass
+
     try:
         # 创建临时文件用于 --print-to-file 输出最终路径
         import tempfile
@@ -142,6 +179,9 @@ def run_ytdlp(cmd_list, log_callback, process_ref=None, on_process_created=None,
         # 否则 Popen 会把 --encoding 当程序名执行而启动失败。
         cmd_list = cmd_list[:1] + ['--encoding', 'utf-8'] + cmd_list[1:] + \
                    ['--print-to-file', 'after_move:filepath', tmp_path]
+        # 诊断模式：-v 才能拿到 ffmpeg 的命令行与 stderr（合并失败的唯一线索）
+        if diagnostics:
+            cmd_list = cmd_list[:1] + ['-v'] + cmd_list[1:]
 
         # 继承当前环境并设置 SSL 证书路径，确保系统 yt-dlp 能正常建立 HTTPS 连接
         env = os.environ.copy()
@@ -166,27 +206,32 @@ def run_ytdlp(cmd_list, log_callback, process_ref=None, on_process_created=None,
             line = process.stdout.readline()
             if not line and process.poll() is not None:
                 break
-            if line and log_callback:
-                log_callback(line.strip())
-            if line:
-                ls = line.strip()
-                if ls.lower().startswith("error") or ": error" in ls.lower() or ls.lower().startswith("warning"):
-                    # ERROR/WARNING 行收集（去重、去重绘控制字符）
-                    clean = ls.replace("\r", "")
-                    if clean and clean not in _error_lines:
-                        _error_lines.append(clean)
+            if not line:
+                continue
+            ls = line.strip()
+            if _diag is not None:
+                _diag.append(ls)
+            # 噪声行（-v 调试行 / ffmpeg 逐请求与逐帧输出）只留在诊断缓冲里
+            if log_callback and not (_diag is not None and _is_ytdlp_noise(ls)):
+                log_callback(ls)
+            if ls.lower().startswith("error") or ": error" in ls.lower() or ls.lower().startswith("warning"):
+                # ERROR/WARNING 行收集（去重、去重绘控制字符）
+                clean = ls.replace("\r", "")
+                if clean and clean not in _error_lines:
+                    _error_lines.append(clean)
+                    if len(_error_lines) > 20:   # -v 下 WARNING 可能很多，只留尾部
+                        _error_lines.pop(0)
             # 从输出中提取目标文件路径（备选方案）
-            if line:
-                for prefix in ('[download] Destination: ',
-                               '[Merger] Merging formats into ',
-                               '[ExtractAudio] Destination: '):
-                    if prefix in line:
-                        raw = line[line.index(prefix) + len(prefix):].strip().strip('"')
-                        if raw:
-                            _last_dest = raw
-                            # 实时暴露目标文件路径（供任务记录对应的 .part，取消时精准删除本任务临时文件）
-                            if on_path is not None:
-                                on_path(raw)
+            for prefix in ('[download] Destination: ',
+                           '[Merger] Merging formats into ',
+                           '[ExtractAudio] Destination: '):
+                if prefix in ls:
+                    raw = ls[ls.index(prefix) + len(prefix):].strip().strip('"')
+                    if raw:
+                        _last_dest = raw
+                        # 实时暴露目标文件路径（供任务记录对应的 .part，取消时精准删除本任务临时文件）
+                        if on_path is not None:
+                            on_path(raw)
         # 读取 --print-to-file 输出的最终路径（最可靠）。
         # 一个 Task 可能产出多个最终文件（如 -f '137,140' 不合并时视频+音频），
         # yt-dlp 会把每个最终路径写为一行，因此按行拆分收集为列表。
@@ -223,6 +268,7 @@ def run_ytdlp(cmd_list, log_callback, process_ref=None, on_process_created=None,
     except Exception as e:
         # 收集到的 ERROR 行里若包含登录/反爬特征，优先给出明确提示
         msg = str(e)
+        _dump_diagnostics()   # 失败时回放 -v 详情（含 ffmpeg 命令行与 stderr）
         if _error_lines:
             for el in _error_lines:
                 if "sign in to confirm" in el.lower():
