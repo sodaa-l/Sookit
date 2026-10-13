@@ -182,6 +182,8 @@ flowchart TB
 | 32 | 路径输入清洗 + InfoBar 定位守卫（2026-10-11） | 路径输入框统一 `read_path()` 洗引号；InfoBar `_settle` 守卫须吞 KeyError | [32-path-sanitize-infobar.md](decisions/32-path-sanitize-infobar.md) |
 | 33 | HLS（m3u8）流改用 ffmpeg 下载（2026-10-11） | **HLS(m3u8) 必须走 `--hls-prefer-ffmpeg`**（hlsnative 直拼的 TS 带无时间戳包，mkv 合并必失败） | [33-hls-prefer-ffmpeg.md](decisions/33-hls-prefer-ffmpeg.md) |
 | 34 | 下载失败时的诊断回放（2026-10-11） | `run_ytdlp(diagnostics=True)`：失败时回放 `-v` 尾部（含 ffmpeg stderr） | [34-ytdlp-diagnostics.md](decisions/34-ytdlp-diagnostics.md) |
+| 35 | 嗅探页「下载封面」文件名归属（2026-10-13） | 封面文件名只能取「当前面板所属视频」：嗅探中用链接 ID、完成后用标题；开始新嗅探即作废旧标题/频道/时长 | [35-cover-filename-owner.md](decisions/35-cover-filename-owner.md) |
+| 36 | 关闭 yt-dlp 格式探测（2026-10-13） | 下载命令固定加 `--no-check-formats`：新视频 HLS 的「探测失败即弃用格式」会让一次抖动整单失败，且该探测走 Python ssl（不吃 `--hls-prefer-ffmpeg`） | [36-no-check-formats.md](decisions/36-no-check-formats.md) |
 | 37 | 动图页版式重构：解析前后零位移（2026-10-13） | 展示区（空态/网格二选一 `QStackedWidget`）必须是页面**唯一且常驻的伸缩项**——隐藏伸缩项会让多余空白平摊给其余控件（整页被顶开）；卡片选中反馈画在**封面控件自身**（父 `paintEvent` 会被子控件盖掉）；按需显隐的控件（自定义档的摘要/「调整参数」）必须放在**定高容器**里，否则行高跳变会推版式 | [37-gif-page-layout-stability.md](decisions/37-gif-page-layout-stability.md) |
 
 ## AI 编码约定
