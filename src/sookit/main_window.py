@@ -24,6 +24,8 @@ from sookit.paths import get_icon_path
 # ---------- 从 widgets 导入自定义控件 ----------
 from sookit.widgets.cover_image import CoverImageWidget
 from sookit.widgets.infobar import show_infobar
+from sookit.widgets.notifier import notify_task_completed, notify_task_failed, \
+    notify_update_notice, get_toast_bridge
 
 # ---------- 从 core.functions 导入工具函数和功能类 ----------
 from sookit.core.functions import (
@@ -111,6 +113,9 @@ class MainWindow(qfw.FluentWindow):
         # 更新状态（驱动导航"设置" Badge）：Sookit 新版本号 / yt-dlp 有新版或未安装
         self._sookit_update = None
         self._ytdlp_update = False
+        # 系统通知去重（决策 38）：同一版本只弹一次，状态清除后重置
+        self._sookit_toasted_ver = None
+        self._ytdlp_toast_open = False
         # PATH 来源 yt-dlp 更新提示（仅 InfoBar，不点亮 Badge）：
         # _path_ytdlp_notified 记录会话内已提示过的版本号（同版本不重复弹）
         self._path_ytdlp_bar = None
@@ -126,6 +131,43 @@ class MainWindow(qfw.FluentWindow):
 
         # 延时自动检查更新（避免阻塞启动渲染；release 未上传/查询失败时静默跳过）
         QTimer.singleShot(2000, self._check_update_at_startup)
+
+        # 系统通知接线（决策 38：主窗口不在焦点时任务完成/失败弹 Windows Toast）
+        self._setup_task_toast()
+
+    # ========== 系统通知（决策 38） ==========
+
+    def _setup_task_toast(self):
+        """连接任务完成/失败信号与 WinRT 回调桥（回调线程 → 主线程）"""
+        bridge = get_toast_bridge()
+        bridge.open_path_requested.connect(self._open_path_from_toast)
+        bridge.activate_requested.connect(self._activate_from_toast)
+        from sookit.core.task_queue import TaskQueueManager
+        mgr = TaskQueueManager.instance()
+        mgr.task_completed.connect(self._on_task_completed_toast)
+        mgr.task_failed.connect(self._on_task_failed_toast)
+
+    def _window_focused(self) -> bool:
+        """主窗口是否拥有焦点（隐藏/最小化/被其他窗口遮挡均视为不焦点）"""
+        return QApplication.activeWindow() is self
+
+    def _on_task_completed_toast(self, task):
+        if not self._window_focused():
+            notify_task_completed(task)
+
+    def _on_task_failed_toast(self, task):
+        if not self._window_focused():
+            notify_task_failed(task)
+
+    def _open_path_from_toast(self, path: str):
+        """通知「打开文件夹」按钮回调（已转回主线程）"""
+        if path and os.path.isdir(path):
+            QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+
+    def _activate_from_toast(self):
+        """通知正文点击回调（已转回主线程）：显示并激活主窗口"""
+        self.show()
+        self.activateWindow()
 
     def _on_stack_changed(self, index: int):
         """切换到任务队列页时：进行中为空且已完成非空 → 直接落在"已完成"。"""
@@ -200,15 +242,29 @@ class MainWindow(qfw.FluentWindow):
         """记录 Sookit 新版本状态并刷新 Badge（None = 无更新/已被忽略，跟随静默）"""
         self._sookit_update = latest
         self._update_settings_badge()
+        # 系统通知（决策 38）：主窗口不在焦点时提示；同版本去重（周期检查每 4h 重复触发）
+        if latest and latest != self._sookit_toasted_ver and not self._window_focused():
+            self._sookit_toasted_ver = latest
+            notify_update_notice("Sookit 有新版本", f"最新版本 {latest}，可前往设置页更新。")
 
     def notify_ytdlp_update(self, available: bool):
         """SettingsPage 回调：yt-dlp 有新版本/未安装(True) 或 已更新(False)，刷新 Badge"""
         self._ytdlp_update = available
         self._update_settings_badge()
+        # 系统通知（决策 38）：主窗口不在焦点时提示；状态清除后允许再次提示
+        if available and not self._ytdlp_toast_open and not self._window_focused():
+            self._ytdlp_toast_open = True
+            notify_update_notice("yt-dlp 需要更新", "检测到 yt-dlp 有新版本或未安装，请前往设置页下载/更新。")
         if not available:
+            self._ytdlp_toast_open = False
             # 更新完成/状态清除：收口主窗口的「yt-dlp 有新版本」提示条（tools 来源）
             self._close_tools_ytdlp_bar()
             self._tools_ytdlp_notified = None
+
+    def notify_ytdlp_updated(self):
+        """设置页 yt-dlp/Deno 更新成功回调：主窗口不在焦点时弹系统通知（决策 38）"""
+        if not self._window_focused():
+            notify_update_notice("yt-dlp 更新完毕", "yt-dlp/Deno 已更新到最新版本。")
 
     def _center_on_screen(self):
         """在 show() 之前居中，用 width/height 而非 frameGeometry"""
@@ -596,6 +652,9 @@ class MainWindow(qfw.FluentWindow):
         self._close_setup_bar()
         ok, status, error, path = result
         if ok:
+            # 系统通知（决策 38）：主窗口不在焦点时提示安装包就绪
+            if not self._window_focused():
+                notify_update_notice("Sookit 安装包已就绪", f"安装器已保存到：\n{path}\n\n请运行安装器完成更新。")
             bar = show_infobar(self, "success", title="安装器已就绪",
                                content=f"安装器已保存到：\n{path}，\n\n请运行安装器完成更新。")
             open_btn = qfw.PushButton("运行安装器")

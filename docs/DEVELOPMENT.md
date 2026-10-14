@@ -140,6 +140,7 @@ flowchart TB
 | `elided_label.py` | `ElidedLabel`：多行省略标签（已完成页卡片标题最多两行，超宽末尾加 …，行数 1~2 自适应）；QTextLayout 算截断点 + `fm.elidedText`，注意 UTF-16 偏移换算与字体度量同源（见设计决策 21） |
 | `task_card.py` | 任务卡片（2 种类型 + 工厂函数 + 封面三级加载） |
 | `infobar.py` | `show_infobar()` 统一提示（见 InfoBar 提示规范） |
+| `notifier.py` | Windows 系统通知封装（windows-toasts，决策 38）：惰性 Toaster 单例 + WinRT 回调线程转主线程信号桥 |
 
 ## 决策索引
 
@@ -185,6 +186,7 @@ flowchart TB
 | 35 | 嗅探页「下载封面」文件名归属（2026-10-13） | 封面文件名只能取「当前面板所属视频」：嗅探中用链接 ID、完成后用标题；开始新嗅探即作废旧标题/频道/时长 | [35-cover-filename-owner.md](decisions/35-cover-filename-owner.md) |
 | 36 | 关闭 yt-dlp 格式探测（2026-10-13） | 下载命令固定加 `--no-check-formats`：新视频 HLS 的「探测失败即弃用格式」会让一次抖动整单失败，且该探测走 Python ssl（不吃 `--hls-prefer-ffmpeg`） | [36-no-check-formats.md](decisions/36-no-check-formats.md) |
 | 37 | 动图页版式重构：解析前后零位移（2026-10-13） | 展示区（空态/网格二选一 `QStackedWidget`）必须是页面**唯一且常驻的伸缩项**——隐藏伸缩项会让多余空白平摊给其余控件（整页被顶开）；卡片选中反馈画在**封面控件自身**（父 `paintEvent` 会被子控件盖掉）；按需显隐的控件（自定义档的摘要/「调整参数」）必须放在**定高容器**里，否则行高跳变会推版式 | [37-gif-page-layout-stability.md](decisions/37-gif-page-layout-stability.md) |
+| 38 | 主窗口不在焦点时的 Windows 系统通知（2026-10-14） | 交互通知必须用 `InteractableWindowsToaster`；`ToastButton` 无独立回调，统一走 `Toast.on_activated` 按 arguments 区分；回调在 WinRT 线程，经 `_ToastSignalBridge` 信号转回主线程；初始化/发送异常一律静默降级 | [38-windows-toast-notifications.md](decisions/38-windows-toast-notifications.md) |
 
 ## AI 编码约定
 

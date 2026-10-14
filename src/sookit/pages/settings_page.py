@@ -20,6 +20,7 @@ from sookit.core.functions import (
     load_theme_color, save_theme_color, THEME_COLORS, get_ffmpeg_path,
     set_autostart, is_autostart, load_close_action, save_close_action,
     load_task_complete_action, save_task_complete_action,
+    load_toast_notification_enabled, save_toast_notification_enabled,
 )
 from sookit.core.utils import set_smooth_scroll_params
 from sookit import APP_NAME, APP_VERSION
@@ -114,6 +115,18 @@ class SettingsPage(QWidget):
         self.task_complete_combo.setCurrentIndex(self._last_task_complete_idx)
         task_complete_lay.addWidget(self.task_complete_combo)
         layout.addWidget(task_complete_card)
+
+        # 系统通知（决策 38：主窗口不在焦点时任务完成/失败弹 Windows Toast）
+        toast_card = qfw.CardWidget(self)
+        toast_card.setMinimumHeight(70)
+        toast_lay = QHBoxLayout(toast_card)
+        toast_lay.setContentsMargins(15, 12, 15, 12)
+        toast_lay.addWidget(qfw.BodyLabel("任务完成/失败时系统通知"))
+        toast_lay.addStretch()
+        self.toast_switch = qfw.SwitchButton()
+        self.toast_switch.setChecked(True)
+        toast_lay.addWidget(self.toast_switch)
+        layout.addWidget(toast_card)
 
         layout.addSpacing(16)
 
@@ -259,6 +272,8 @@ class SettingsPage(QWidget):
         self.close_action_combo.currentIndexChanged.connect(self._on_close_action_changed)
         # 任务完成后信号连接
         self.task_complete_combo.currentIndexChanged.connect(self._on_task_complete_changed)
+        # 系统通知开关信号连接（决策 38）
+        self.toast_switch.checkedChanged.connect(self._on_toast_notification_changed)
         # 检查更新按钮信号连接
         self.check_update_btn.clicked.connect(self._on_check_update)
 
@@ -302,6 +317,10 @@ class SettingsPage(QWidget):
             os.system("shutdown /a >nul 2>nul")
         self._last_task_complete_idx = index
         save_task_complete_action(index)
+
+    def _on_toast_notification_changed(self, checked: bool):
+        """系统通知开关变更（决策 38）"""
+        save_toast_notification_enabled(checked)
 
     def _on_check_update(self):
         """「检查更新」按钮：复用主窗口更新流程（后台查询 → 结果回显）。
@@ -429,9 +448,10 @@ class SettingsPage(QWidget):
                 break
 
     def _load_general_config(self):
-        """加载常规配置到 UI（开机自启状态、任务完成后）"""
+        """加载常规配置到 UI（开机自启状态、任务完成后、系统通知）"""
         self.autostart_switch.setChecked(is_autostart())
         self.task_complete_combo.setCurrentIndex(load_task_complete_action())
+        self.toast_switch.setChecked(load_toast_notification_enabled())
 
     def _create_worker(self, cmd, parser):
         """创建后台线程 worker，返回 worker 对象"""
@@ -849,5 +869,8 @@ class SettingsPage(QWidget):
             win = self.window()
             if win is not None and hasattr(win, "refresh_ytdlp_status"):
                 win.refresh_ytdlp_status()
+            # 系统通知（决策 38）：主窗口不在焦点时提示更新完毕
+            if win is not None and hasattr(win, "notify_ytdlp_updated"):
+                win.notify_ytdlp_updated()
         # 刷新版本
         QTimer.singleShot(1000, self._check_versions)

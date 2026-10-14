@@ -18,7 +18,16 @@ a = Analysis(
         # 应用图标：打包态 __file__ 位于 _internal/sookit，assets 须放 _internal/sookit/assets
         (os.path.join(SRC, "sookit", "assets"), "sookit/assets"),
     ],
-    hiddenimports=[],
+    hiddenimports=[
+        # windows-toasts 系统通知（决策 38）：notifier.py 内惰性 import，显式钉住依赖链避免漏收
+        "windows_toasts",
+        "winrt",
+        "winrt.runtime",
+        "winrt.windows.foundation",
+        "winrt.windows.foundation.collections",
+        "winrt.windows.data.xml.dom",
+        "winrt.windows.ui.notifications",
+    ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

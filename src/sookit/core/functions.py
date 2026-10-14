@@ -60,6 +60,7 @@ from sookit.core.config import (
     load_download_config, save_download_config,
     load_close_action, save_close_action,
     load_task_complete_action, save_task_complete_action,
+    load_toast_notification_enabled, save_toast_notification_enabled,
     THEME_COLORS, DEFAULT_THEME_COLOR, load_theme_color, save_theme_color,
     set_autostart, is_autostart,
 )
