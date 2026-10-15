@@ -1,5 +1,9 @@
 # 决策 33. HLS（m3u8）流改用 ffmpeg 下载（2026-10-11）
 
+> ⚠️ **2026-10-15 起已被[决策 38](38-merge-target-prediction.md)修订**：`download_youtube`
+> 不再加 `--hls-prefer-ffmpeg`，改由嗅探页预测合并落点 + mkv 风险弹窗引导。
+> 本文的根因分析（hlsnative 坏包、mkv 才致命）仍然成立，是决策 38 的依据。
+
 > 决策索引：[DEVELOPMENT.md](../DEVELOPMENT.md#决策索引)（编号与代码注释里的「决策 33」一一对应）
 
 **症状**：某 1080p YouTube 视频用 `-f 251+270` 下载，下载阶段一切正常，到合并阶段失败：

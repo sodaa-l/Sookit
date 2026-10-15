@@ -852,20 +852,71 @@ class YouTubePage(PageBase):
 
     # -------- 格式下载 --------
     def do_download(self):
-        checked = []
+        checked_fmts = []
         for row in range(self.format_table.rowCount()):
             item = self.format_table.item(row, 0)
             if item and item.checkState() == Qt.CheckState.Checked:
                 if row < len(self._formats_data):
-                    checked.append(self._formats_data[row]['format_id'])
+                    checked_fmts.append(self._formats_data[row])
 
-        if not checked:
+        if not checked_fmts:
             show_infobar(self, "warning", title="提示", content="请至少勾选一个格式",
                          duration=3000)
             return
 
+        # 合并落点预测（决策 38）：非标编码组合会兜底合并为 mkv，而 hlsnative 直拼
+        # 产物合 mkv 必失败（决策 33），弹窗引导改选标准组合，用户可选择强行继续
+        if self._predict_mkv_merge(checked_fmts):
+            # 文案手动预折行：qfw MessageBox 宽度取未折行文本的 sizeHint，
+            # 不预折行会撑得极宽（实测 ~700px）
+            box = qfw.MessageBox(
+                "非标准编码组合",
+                "当前勾选的「视频流 + 音频流」编码没有共同的标准容器\n"
+                "可能导致下载失败\n"
+                "\n"
+                "建议改选：avc1/hevc/av01 + mp4a（合并为 MP4）\n"
+                "或 vp9/av01 + opus（合并为 WEBM）\n"
+                "\n"
+                "仍要下载，还是返回修改勾选？",
+                self.window())
+            box.yesButton.setText("仍要下载")
+            box.cancelButton.setText("返回修改")
+            if not box.exec():
+                return
+
         # '+' 拼接交 yt-dlp：视频流+音频流自动用 ffmpeg 合并为一个有声视频
-        self._start_download('+'.join(checked))
+        self._start_download('+'.join(f['format_id'] for f in checked_fmts))
+
+    # 合并落点判定用编码族表（决策 38）。编码字符串取嗅探结果的 codec 主名
+    # （'vp09.00.10.08' → 'vp09'，见 Functions.sniff_youtube）。
+    # av01 双族：YouTube 的 av1 流 ext 有 webm/mp4 两种，配 opus 合 webm、
+    # 配 mp4a 合 mp4 均为标准组合。
+    _WEBM_VIDEO_CODECS = frozenset({'vp8', 'vp9', 'vp09', 'av01', 'av1'})
+    _WEBM_AUDIO_CODECS = frozenset({'opus', 'vorbis'})
+    _MP4_VIDEO_CODECS = frozenset({'avc1', 'h264', 'h265', 'hev1', 'hevc', 'dvh1', 'dva1',
+                                   'av01', 'av1'})
+    _MP4_AUDIO_CODECS = frozenset({'mp4a', 'aac', 'm4a'})
+
+    @classmethod
+    def _predict_mkv_merge(cls, fmts):
+        """预测勾选组合是否可能兜底合并为 mkv（决策 38）。
+
+        仅当恰好「一个视频流 + 一个音频流」（存在合并环节）时判定；任一编码
+        未知/缺失时不判定（放行，避免误报）。判定规则：视频/音频编码同属
+        webm 族（vp8/vp9/av01 + opus/vorbis）或同属 mp4 族（avc1/hevc/av01 +
+        mp4a/aac）视为标准组合；其余组合（含跨族）视为可能落 mkv。
+        """
+        videos = [f for f in fmts if f.get('type') == FormatType.VIDEO_ONLY]
+        audios = [f for f in fmts if f.get('type') == FormatType.AUDIO_ONLY]
+        if len(fmts) != 2 or len(videos) != 1 or len(audios) != 1:
+            return False
+        v = (videos[0].get('vcodec') or '').strip().lower()
+        a = (audios[0].get('acodec') or '').strip().lower()
+        if not v or not a:
+            return False
+        webm_ok = v in cls._WEBM_VIDEO_CODECS and a in cls._WEBM_AUDIO_CODECS
+        mp4_ok = v in cls._MP4_VIDEO_CODECS and a in cls._MP4_AUDIO_CODECS
+        return not (webm_ok or mp4_ok)
 
     def _start_download(self, format_spec):
         url = self.url_input.text().strip()

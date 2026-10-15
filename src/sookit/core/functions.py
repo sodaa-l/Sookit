@@ -553,14 +553,11 @@ class Functions:
         output_template = os.path.join(out, '%(title)s.%(ext)s')
         cmd = build_ytdlp_cmd('-f', format_spec, '-o', output_template, '--newline',
                               '--no-overwrites')
-        # HLS（m3u8）流交给 ffmpeg 下载：hlsnative 直拼出来的 TS 里会残留「无 PTS/DTS
-        # 的包」（实测某 1080p HLS：40 个分片 → 40 个坏包），Matroska 封装器遇到这种包
-        # 直接失败（ERROR: Postprocessing: Conversion failed!），且没有任何 ffmpeg
-        # 参数能救；而经 ffmpeg 转封装一次即可把时间戳归一化（产物 0 坏包，合并 mkv 通过）。
-        # ffmpeg 不可用时保持原生下载器——否则会把「本来能下、不需要合并」的流变成报错。
-        # 详见 DEVELOPMENT.md 决策 33。
-        if check_ffmpeg():
-            cmd.append('--hls-prefer-ffmpeg')
+        # HLS（m3u8）流不再强制走 ffmpeg 下载。原决策 33 为规避 hlsnative 直拼产物
+        # 的「无 PTS/DTS 坏包」在 mkv 合并时必失败，一律加 --hls-prefer-ffmpeg；
+        # 2026-10-15 起修订（决策 38）：嗅探页改为「预测合并落点 + mkv 风险弹窗引导
+        # 用户选标准组合」，监控页走 bestvideo+bestaudio 自动选格式不会落到非标组合，
+        # 故全局移除该参数——顺带恢复 HLS 阶段的下载进度可见性。
         # 关掉 yt-dlp 的「格式可用性探测」（--check-formats）：上传 ≤2 天的新视频，其所有
         # m3u8_native(HLS) 格式会被提取器打上 __needs_testing，yt-dlp 下载前会先下第一个分片
         # 试一次，而**探测失败即把该格式当作不可用丢弃**（success=False → Skipping →
