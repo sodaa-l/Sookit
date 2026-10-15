@@ -95,7 +95,12 @@ def _get_toaster():
 
 
 def _resolve_open_dir(task) -> str:
-    """「打开文件夹」按钮的目标目录：优先 output_dir，兜底产物文件所在目录"""
+    """「打开文件夹」按钮的目标目录：优先 output_dir，兜底产物文件所在目录
+
+    最后兜底 `task.output_path`：FFmpeg/GIF 类任务没有 output_dir，也不填
+    Task.output_files（产物路径只回填到 output_path），少这层就只能在下载任务上出现按钮。
+    该字段可能是目录（metadata 的 out_dir 回填）也可能是文件路径，两种都处理。
+    """
     output_dir = getattr(task, "output_dir", "") or ""
     if output_dir and os.path.isdir(output_dir):
         return output_dir
@@ -103,6 +108,12 @@ def _resolve_open_dir(task) -> str:
         d = os.path.dirname(f)
         if d and os.path.isdir(d):
             return d
+    path = getattr(task, "output_path", "") or ""
+    if path and os.path.isdir(path):
+        return path
+    d = os.path.dirname(path)
+    if d and os.path.isdir(d):
+        return d
     return ""
 
 

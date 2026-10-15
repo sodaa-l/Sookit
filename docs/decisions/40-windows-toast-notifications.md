@@ -44,7 +44,9 @@ Sookit 支持 `--silent` 启动与「最小化至托盘」关闭行为，任务�
   跨线程 emit 自动走队列连接，主窗口接到后开目录 / `show()+activateWindow()`。
 - **目标目录解析**：**仅成功通知**带「打开文件夹」按钮（用户定版：失败现场可能是已清理的
   workspace/空目录，不给按钮）；目标优先 `task.output_dir`（完成后产物已移入），
-  兜底 `output_files[0]` 所在目录；都没有则不带按钮。
+  兜底 `output_files[0]` 所在目录，再兜底 `task.output_path`（2026-10-15 补：FFmpeg/GIF
+  类任务没有前两者，产物路径只回填到 `output_path`；该字段可能是文件也可能是目录）；
+  都没有则不带按钮。
 - **开关**：`general.toast_notification`（默认开），设置页「任务完成/失败时系统通知」SwitchButton，
   经 `config.load/save_toast_notification_enabled()` 读写。
 - **打包**：`notifier.py` 内惰性 import，`sookit.spec` 的 `hiddenimports` 显式钉住
