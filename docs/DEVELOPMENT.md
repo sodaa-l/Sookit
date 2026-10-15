@@ -140,7 +140,7 @@ flowchart TB
 | `elided_label.py` | `ElidedLabel`：多行省略标签（已完成页卡片标题最多两行，超宽末尾加 …，行数 1~2 自适应）；QTextLayout 算截断点 + `fm.elidedText`，注意 UTF-16 偏移换算与字体度量同源（见设计决策 21） |
 | `task_card.py` | 任务卡片（2 种类型 + 工厂函数 + 封面三级加载） |
 | `infobar.py` | `show_infobar()` 统一提示（见 InfoBar 提示规范） |
-| `notifier.py` | Windows 系统通知封装（windows-toasts，决策 38）：惰性 Toaster 单例 + WinRT 回调线程转主线程信号桥 |
+| `notifier.py` | Windows 系统通知封装（windows-toasts，决策 40）：惰性 Toaster 单例 + WinRT 回调线程转主线程信号桥 |
 
 ## 决策索引
 
@@ -181,12 +181,14 @@ flowchart TB
 | 30 | 「动图下载」页接 UI + 自定义编码质量（2026-10-07） | 动图页 UI + 自定义编码质量；**2026-10-11 起流程改为「解析 → 卡片勾选 → 只下载选中项」**（见本条追加段）；**2026-10-13 版式/视觉重构见决策 37** | [30-gif-page-ui.md](decisions/30-gif-page-ui.md) |
 | 31 | 任务队列通用 kwargs 通道（2026-10-11） | `Task`/`TaskWorker`/`add_task`/`run_queued_task` 通用 kwargs 通道 + `RESERVED_TASK_KWARGS` 保留名校验 | [31-queue-kwargs-channel.md](decisions/31-queue-kwargs-channel.md) |
 | 32 | 路径输入清洗 + InfoBar 定位守卫（2026-10-11） | 路径输入框统一 `read_path()` 洗引号；InfoBar `_settle` 守卫须吞 KeyError | [32-path-sanitize-infobar.md](decisions/32-path-sanitize-infobar.md) |
-| 33 | HLS（m3u8）流改用 ffmpeg 下载（2026-10-11） | **HLS(m3u8) 必须走 `--hls-prefer-ffmpeg`**（hlsnative 直拼的 TS 带无时间戳包，mkv 合并必失败） | [33-hls-prefer-ffmpeg.md](decisions/33-hls-prefer-ffmpeg.md) |
+| 33 | HLS（m3u8）流改用 ffmpeg 下载（2026-10-11） | **已被决策 38 修订（2026-10-15）**：不再加 `--hls-prefer-ffmpeg`；根因分析（hlsnative 无 PTS/DTS 坏包、仅 mkv 合并致命）仍有效 | [33-hls-prefer-ffmpeg.md](decisions/33-hls-prefer-ffmpeg.md) |
 | 34 | 下载失败时的诊断回放（2026-10-11） | `run_ytdlp(diagnostics=True)`：失败时回放 `-v` 尾部（含 ffmpeg stderr） | [34-ytdlp-diagnostics.md](decisions/34-ytdlp-diagnostics.md) |
 | 35 | 嗅探页「下载封面」文件名归属（2026-10-13） | 封面文件名只能取「当前面板所属视频」：嗅探中用链接 ID、完成后用标题；开始新嗅探即作废旧标题/频道/时长 | [35-cover-filename-owner.md](decisions/35-cover-filename-owner.md) |
 | 36 | 关闭 yt-dlp 格式探测（2026-10-13） | 下载命令固定加 `--no-check-formats`：新视频 HLS 的「探测失败即弃用格式」会让一次抖动整单失败，且该探测走 Python ssl（不吃 `--hls-prefer-ffmpeg`） | [36-no-check-formats.md](decisions/36-no-check-formats.md) |
 | 37 | 动图页版式重构：解析前后零位移（2026-10-13） | 展示区（空态/网格二选一 `QStackedWidget`）必须是页面**唯一且常驻的伸缩项**——隐藏伸缩项会让多余空白平摊给其余控件（整页被顶开）；卡片选中反馈画在**封面控件自身**（父 `paintEvent` 会被子控件盖掉）；按需显隐的控件（自定义档的摘要/「调整参数」）必须放在**定高容器**里，否则行高跳变会推版式 | [37-gif-page-layout-stability.md](decisions/37-gif-page-layout-stability.md) |
-| 38 | 主窗口不在焦点时的 Windows 系统通知（2026-10-14） | 交互通知必须用 `InteractableWindowsToaster`；`ToastButton` 无独立回调，统一走 `Toast.on_activated` 按 arguments 区分；回调在 WinRT 线程，经 `_ToastSignalBridge` 信号转回主线程；初始化/发送异常一律静默降级 | [38-windows-toast-notifications.md](decisions/38-windows-toast-notifications.md) |
+| 38 | 合并落点预测 + mkv 风险弹窗（2026-10-15） | 下载**不加** `--hls-prefer-ffmpeg`（修订决策 33）；嗅探页勾「视频流+音频流」时按编码族预测落点，跨族（可能落 mkv）弹窗引导选 h264+aac 或 vp9+opus，允许强行继续；编码未知不拦截 | [38-merge-target-prediction.md](decisions/38-merge-target-prediction.md) |
+| 39 | HLS 进度改用分片序号（2026-10-15） | 带 `(frag i/M)` 的行用 `i/M*100` 作进度（同期 HLS 行的总量是 yt-dlp 动态估算值，百分比会反复回退，起步甚至会先冲 100% 再跌到个位数）；`M<5` 退回字节百分比；已否决「锚点单调」「跌幅兜底」「分母变化阈值」三种备选（实测均失效） | [39-hls-progress-by-fragment.md](decisions/39-hls-progress-by-fragment.md) |
+| 40 | 主窗口不在焦点时的 Windows 系统通知（2026-10-14） | 交互通知必须用 `InteractableWindowsToaster`；`ToastButton` 无独立回调，统一走 `Toast.on_activated` 按 arguments 区分；回调在 WinRT 线程，经 `_ToastSignalBridge` 信号转回主线程；初始化/发送异常一律静默降级 | [40-windows-toast-notifications.md](decisions/40-windows-toast-notifications.md) |
 
 ## AI 编码约定
 

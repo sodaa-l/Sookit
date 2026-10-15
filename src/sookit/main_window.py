@@ -113,7 +113,7 @@ class MainWindow(qfw.FluentWindow):
         # 更新状态（驱动导航"设置" Badge）：Sookit 新版本号 / yt-dlp 有新版或未安装
         self._sookit_update = None
         self._ytdlp_update = False
-        # 系统通知去重（决策 38）：同一版本只弹一次，状态清除后重置
+        # 系统通知去重（决策 40）：同一版本只弹一次，状态清除后重置
         self._sookit_toasted_ver = None
         self._ytdlp_toast_open = False
         # PATH 来源 yt-dlp 更新提示（仅 InfoBar，不点亮 Badge）：
@@ -132,10 +132,10 @@ class MainWindow(qfw.FluentWindow):
         # 延时自动检查更新（避免阻塞启动渲染；release 未上传/查询失败时静默跳过）
         QTimer.singleShot(2000, self._check_update_at_startup)
 
-        # 系统通知接线（决策 38：主窗口不在焦点时任务完成/失败弹 Windows Toast）
+        # 系统通知接线（决策 40：主窗口不在焦点时任务完成/失败弹 Windows Toast）
         self._setup_task_toast()
 
-    # ========== 系统通知（决策 38） ==========
+    # ========== 系统通知（决策 40） ==========
 
     def _setup_task_toast(self):
         """连接任务完成/失败信号与 WinRT 回调桥（回调线程 → 主线程）"""
@@ -242,7 +242,7 @@ class MainWindow(qfw.FluentWindow):
         """记录 Sookit 新版本状态并刷新 Badge（None = 无更新/已被忽略，跟随静默）"""
         self._sookit_update = latest
         self._update_settings_badge()
-        # 系统通知（决策 38）：主窗口不在焦点时提示；同版本去重（周期检查每 4h 重复触发）
+        # 系统通知（决策 40）：主窗口不在焦点时提示；同版本去重（周期检查每 4h 重复触发）
         if latest and latest != self._sookit_toasted_ver and not self._window_focused():
             self._sookit_toasted_ver = latest
             notify_update_notice("Sookit 有新版本", f"最新版本 {latest}，可前往设置页更新。")
@@ -251,7 +251,7 @@ class MainWindow(qfw.FluentWindow):
         """SettingsPage 回调：yt-dlp 有新版本/未安装(True) 或 已更新(False)，刷新 Badge"""
         self._ytdlp_update = available
         self._update_settings_badge()
-        # 系统通知（决策 38）：主窗口不在焦点时提示；状态清除后允许再次提示
+        # 系统通知（决策 40）：主窗口不在焦点时提示；状态清除后允许再次提示
         if available and not self._ytdlp_toast_open and not self._window_focused():
             self._ytdlp_toast_open = True
             notify_update_notice("yt-dlp 需要更新", "检测到 yt-dlp 有新版本或未安装，请前往设置页下载/更新。")
@@ -262,7 +262,7 @@ class MainWindow(qfw.FluentWindow):
             self._tools_ytdlp_notified = None
 
     def notify_ytdlp_updated(self):
-        """设置页 yt-dlp/Deno 更新成功回调：主窗口不在焦点时弹系统通知（决策 38）"""
+        """设置页 yt-dlp/Deno 更新成功回调：主窗口不在焦点时弹系统通知（决策 40）"""
         if not self._window_focused():
             notify_update_notice("yt-dlp 更新完毕", "yt-dlp/Deno 已更新到最新版本。")
 
@@ -652,7 +652,7 @@ class MainWindow(qfw.FluentWindow):
         self._close_setup_bar()
         ok, status, error, path = result
         if ok:
-            # 系统通知（决策 38）：主窗口不在焦点时提示安装包就绪
+            # 系统通知（决策 40）：主窗口不在焦点时提示安装包就绪
             if not self._window_focused():
                 notify_update_notice("Sookit 安装包已就绪", f"安装器已保存到：\n{path}\n\n请运行安装器完成更新。")
             bar = show_infobar(self, "success", title="安装器已就绪",

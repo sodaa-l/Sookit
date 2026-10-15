@@ -1,6 +1,6 @@
 """
 widgets/notifier.py
-Windows 系统通知封装（见 DEVELOPMENT.md 决策 38）
+Windows 系统通知封装（见 DEVELOPMENT.md 决策 40）
 
 主窗口不在焦点时，任务完成/失败通过 windows-toasts 弹系统 Toast：
 - 交互通知必须用 InteractableWindowsToaster（按钮能力依赖可识别 AUMID）；
@@ -27,7 +27,7 @@ _OPEN_FOLDER_ARG = "open_folder"
 
 # 自有 AUMID（HKCU 注册表注册，Electron/Tauri 同款方案）。
 # 注册后通知显示「Sookit」品牌名+图标，且横幅/通知中心不被降级；
-# 注册失败退回库默认的 cmd 借用身份（横幅可能被系统压制，见决策 38）。
+# 注册失败退回库默认的 cmd 借用身份（横幅可能被系统压制，见决策 40）。
 _AUMID = "Sookit"
 _AUMID_REG_KEY = r"Software\Classes\AppUserModelId\Sookit"
 

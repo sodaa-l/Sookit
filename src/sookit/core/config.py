@@ -110,7 +110,7 @@ def save_task_complete_action(action: int):
     save_config(config)
 
 
-# ---------- 系统通知配置（决策 38） ----------
+# ---------- 系统通知配置（决策 40） ----------
 
 def load_toast_notification_enabled():
     """加载系统通知开关: 任务完成/失败且主窗口不在焦点时弹 Windows 系统通知（默认开）"""

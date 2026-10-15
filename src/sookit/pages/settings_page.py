@@ -116,7 +116,7 @@ class SettingsPage(QWidget):
         task_complete_lay.addWidget(self.task_complete_combo)
         layout.addWidget(task_complete_card)
 
-        # 系统通知（决策 38：主窗口不在焦点时任务完成/失败弹 Windows Toast）
+        # 系统通知（决策 40：主窗口不在焦点时任务完成/失败弹 Windows Toast）
         toast_card = qfw.CardWidget(self)
         toast_card.setMinimumHeight(70)
         toast_lay = QHBoxLayout(toast_card)
@@ -272,7 +272,7 @@ class SettingsPage(QWidget):
         self.close_action_combo.currentIndexChanged.connect(self._on_close_action_changed)
         # 任务完成后信号连接
         self.task_complete_combo.currentIndexChanged.connect(self._on_task_complete_changed)
-        # 系统通知开关信号连接（决策 38）
+        # 系统通知开关信号连接（决策 40）
         self.toast_switch.checkedChanged.connect(self._on_toast_notification_changed)
         # 检查更新按钮信号连接
         self.check_update_btn.clicked.connect(self._on_check_update)
@@ -319,7 +319,7 @@ class SettingsPage(QWidget):
         save_task_complete_action(index)
 
     def _on_toast_notification_changed(self, checked: bool):
-        """系统通知开关变更（决策 38）"""
+        """系统通知开关变更（决策 40）"""
         save_toast_notification_enabled(checked)
 
     def _on_check_update(self):
@@ -869,7 +869,7 @@ class SettingsPage(QWidget):
             win = self.window()
             if win is not None and hasattr(win, "refresh_ytdlp_status"):
                 win.refresh_ytdlp_status()
-            # 系统通知（决策 38）：主窗口不在焦点时提示更新完毕
+            # 系统通知（决策 40）：主窗口不在焦点时提示更新完毕
             if win is not None and hasattr(win, "notify_ytdlp_updated"):
                 win.notify_ytdlp_updated()
         # 刷新版本

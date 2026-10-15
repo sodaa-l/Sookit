@@ -19,7 +19,7 @@ a = Analysis(
         (os.path.join(SRC, "sookit", "assets"), "sookit/assets"),
     ],
     hiddenimports=[
-        # windows-toasts 系统通知（决策 38）：notifier.py 内惰性 import，显式钉住依赖链避免漏收
+        # windows-toasts 系统通知（决策 40）：notifier.py 内惰性 import，显式钉住依赖链避免漏收
         "windows_toasts",
         "winrt",
         "winrt.runtime",
