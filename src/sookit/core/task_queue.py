@@ -652,6 +652,11 @@ class TaskQueueManager(QObject):
 class ProgressParser:
     """进度解析器"""
     
+    # HLS 分片行尾的 `(frag i/M)`：i 是已完成分片数，只增不减，可用它算单调进度。
+    # M 小于该值时一格太粗（1/M），退回字节百分比（见决策 39）。
+    _FRAG_RE = re.compile(r'\(frag\s+(\d+)/(\d+)\)')
+    _FRAG_MIN = 5
+
     @staticmethod
     def parse_ytdlp_output(line: str) -> dict:
         """
@@ -659,14 +664,28 @@ class ProgressParser:
         原生下载器: [download]   5.2% of   50.21MiB at  2.50MiB/s ETA 00:19
         aria2c:     [aria2c] Downloaded 5.2% of 50.21MiB at 2.50MiB/s ETA 00:19
         aria2c 原生: [#a1b2c3 0.1MiB/50.2MiB(5%) CN:2 DL:1.2MiB/s ETA:00:19]
+        HLS 分片:   [download]  14.1% of ~   1.12GiB at 4.42MiB/s ETA 03:52 (frag 142/1004)
         返回: {"progress": 5.2, "speed": "1.2MiB/s", "eta": "00:19"}
         """
         # 匹配进度百分比（兼容 yt-dlp 原生 [download] / aria2c 包装 [aria2c] 等前缀格式）
         progress_match = re.search(
             r'\[(?:download|aria2c|NativeDownloader|wget|curl)\]\s+'
             r'(?:Downloaded\s+)?(\d+\.?\d*)%', line)
-        if progress_match:
-            result = {"progress": float(progress_match.group(1))}
+
+        # HLS 分片行优先用分片序号算进度：这类行的总量是 yt-dlp 的动态估算值（`of ~` 前缀），
+        # 每完成一个分片就重估一次分母，百分比会反复回退（实测 1 小时视频 900 次、单次最大
+        # 0.4pp；起步阶段更会先冲到 100% 再跌到个位数），而分片序号严格单调（实测 0 次递减）。
+        # M 太小时一格太粗，退回字节百分比（见决策 39）。
+        frag_progress = None
+        frag_match = ProgressParser._FRAG_RE.search(line)
+        if frag_match:
+            done, total = int(frag_match.group(1)), int(frag_match.group(2))
+            if total >= ProgressParser._FRAG_MIN:
+                frag_progress = min(done / total * 100.0, 100.0)
+
+        if frag_progress is not None or progress_match:
+            result = {"progress": (frag_progress if frag_progress is not None
+                                   else float(progress_match.group(1)))}
 
             # 匹配速度（yt-dlp/包装格式: at 2.50MiB/s）
             speed_match = re.search(r'at\s+(\d+\.?\d*\w+/s)', line)
