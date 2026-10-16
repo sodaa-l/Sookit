@@ -90,9 +90,17 @@ Sookit 支持 `--silent` 启动与「最小化至托盘」关闭行为，任务�
 - **代际校验**：动图解析 `_parse_seq` 与嗅探 `_sniff_seq` 先行，过期结果不误弹。
 - **文案结构**：`headline`（结果行）+ `title`（视频/推文标题或链接）+ 可选 `detail`；
   标题取不到时回退 URL，保证通知至少有结果行。
-- 遗留（本次未改）：`youtube_page._on_sniff_error` 的应用内 InfoBar 仍嵌在
-  「已提取 video_id 且封面未加载」分支内（YouTube 链接嗅探前已加载封面 → 失败时没有 InfoBar）；
-  系统通知已无条件弹出，该 InfoBar 条件待确认后再动。
+- **嗅探失败 InfoBar 移出「补封面」分支（2026-10-16 二次折修）**：原先 `show_infobar(...)`
+  缩进在 `if self._sniff_video_id and not self.cover_label._pixmap:` 内部，失败提示成了补封面的赠品。
+  进一步实测发现根因比缩进更硬：**`not <QPixmap>` 在 PyQt6 下恒为 False**——`QPixmap` 未定义
+  `__bool__`（`bool(QPixmap())` 与 `bool(QPixmap(2,2))` 都为 True），判空只能用 `isNull()`，
+  因此该分支**任何情况都不执行**，这条 InfoBar 自 2026-08-29「InfoBar 统一入口」迁移以来
+  **从未弹出过**。修复：把 `show_infobar(...)` 移到 `if` 之外（全项目仅此一处用了 `not pixmap`，
+  其余 11 处判空均正确用了 `isNull()`）。
+- 遗留（本次未改）：`_load_cover_image` + 「已从 URL 提取封面选项」日志仍在该 `if` 内，受同一个
+  恒假条件影响而永不执行。是否把条件改成 `self.cover_label._pixmap.isNull()`（复活该兜底）需单独确认：
+  复活后 YouTube 链接嗅探失败会额外尝试一次封面加载，非 YouTube 的 ID 会在 `_load_cover_image`
+  内被 `build_thumbnails` 拦下，代价可控但属行为变化。
 
 ## 防御性设计
 

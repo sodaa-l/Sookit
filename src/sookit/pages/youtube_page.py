@@ -507,10 +507,14 @@ class YouTubePage(PageBase):
         self.cover_title.setText("封面下载（嗅探失败）")
         self.cover_meta.setText("视频信息获取失败，但仍可尝试下载封面")
         # 如果封面还未加载，尝试加载
+        # 注意：`not <QPixmap>` 在 PyQt6 下恒为 False（QPixmap 未定义 __bool__，空图也为真），
+        # 所以本分支实际从不执行；判空必须用 isNull()。是否改名留待单独确认（见决策 40 追加段）
         if self._sniff_video_id and not self.cover_label._pixmap:
             self._load_cover_image(self._sniff_video_id)
             self.log("已从 URL 提取封面选项，可尝试下载封面")
-            show_infobar(self, "error", title="嗅探失败", content=err_msg)
+        # 失败提示与「补封面」无关：必须放在 if 之外，任何失败路径都要弹
+        # （曾缩进在 if 内，而该 if 因上面的恒假条件从不执行 → 这条提示从未弹出过）
+        show_infobar(self, "error", title="嗅探失败", content=err_msg)
 
     def _sniff_timeout(self):
         if self._sniff_worker and self._sniff_worker.isRunning():
