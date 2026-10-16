@@ -97,10 +97,14 @@ Sookit 支持 `--silent` 启动与「最小化至托盘」关闭行为，任务�
   因此该分支**任何情况都不执行**，这条 InfoBar 自 2026-08-29「InfoBar 统一入口」迁移以来
   **从未弹出过**。修复：把 `show_infobar(...)` 移到 `if` 之外（全项目仅此一处用了 `not pixmap`，
   其余 11 处判空均正确用了 `isNull()`）。
-- 遗留（本次未改）：`_load_cover_image` + 「已从 URL 提取封面选项」日志仍在该 `if` 内，受同一个
-  恒假条件影响而永不执行。是否把条件改成 `self.cover_label._pixmap.isNull()`（复活该兜底）需单独确认：
-  复活后 YouTube 链接嗅探失败会额外尝试一次封面加载，非 YouTube 的 ID 会在 `_load_cover_image`
-  内被 `build_thumbnails` 拦下，代价可控但属行为变化。
+- **补封面兜底一并复活并加归属校验（2026-10-16 三折修）**：该 `if` 里的 `_load_cover_image` +
+  「已从 URL 提取封面选项」日志同样被恒假条件埋没，已改为
+  `current_id = extract_youtube_id(self._last_sniff_url)`，条件 `current_id and self.cover_label._pixmap.isNull()`。
+  **刻意不用 `self._sniff_video_id`**：它跨次嗅探保留、且只在 YouTube 站点赋值（`_on_sniff_done`
+  有意不写 BV 号），换到非 YouTube 链接后仍指向上一部视频，直接拿它补封面会加载错视频的封面
+  ——决策 35「封面文件名归属」同类问题在此处的另一面。
+  行为变化：YouTube 链接嗅探失败且封面尚未加载时，会多一次封面加载尝试；非 YouTube 链接
+  （ID 为 None/空）仍不触发。
 
 ## 防御性设计
 
