@@ -75,9 +75,19 @@ Sookit 支持 `--silent` 启动与「最小化至托盘」关闭行为，任务�
   注册基准窗口，`notifier._should_notify()` 统一判「开关开 且 主窗口不在焦点」；
   页面无需自建焦点判断，也不必各自 `hasattr(window, ...)` 探测。
 - **主动取消不通知**：`youtube_page.stop_sniff`（用户点「停止嗅探」）不弹，与任务取消口径一致。
+- **嗅探页引入代际序号 `_sniff_seq`（2026-10-16 折修）**：`do_sniff` / `stop_sniff` 各递增一次，
+  `done`/`error` 的 connect 用 `lambda ..., s=seq` 捕获本轮序号，回调首部比对不符即丢弃。
+  动机是 `GenericWorker` 的固有竞态——`run()` 里「检查 `_stop_flag`」与「`emit` 跨线程信号」
+  之间有时间缝：用户恰在此刻点停止（或信号已排队）时，`request_stop()` 拦不住那条在途结果，
+  旧实现只有 `_sniff_timed_out`（仅超时置位）这一个守卫，停止后仍可能弹通知或填格式表。
+  与动图页 `_parse_seq` 同构，顺带消除「旧嗅探结果覆盖新嗅探」。
+  两个易踩点：① `stop_sniff` 的序号递增**无条件**执行（不能只在 `isRunning()` 时递增）；
+  ② 回调里的复位动作（停计时器 / 恢复按钮）必须放在序号比对**之前**，否则过期回调
+  会被整体跳过、把 UI 卡在「停止嗅探」态。
+  超时路径**仍用** `_sniff_timed_out`（不递增代际）：超时自身已给出反馈，两者分工不同。
 - **超时只弹一次**：`_sniff_timeout` 先置 `_sniff_timed_out`，随后到达的 `_on_sniff_error`
   提前 return，不会出现「超时 + 失败」两条。
-- **代际校验复用**：动图解析的 `seq` 校验与嗅探的 `_sniff_timed_out` 守卫先行，过期结果不误弹。
+- **代际校验**：动图解析 `_parse_seq` 与嗅探 `_sniff_seq` 先行，过期结果不误弹。
 - **文案结构**：`headline`（结果行）+ `title`（视频/推文标题或链接）+ 可选 `detail`；
   标题取不到时回退 URL，保证通知至少有结果行。
 - 遗留（本次未改）：`youtube_page._on_sniff_error` 的应用内 InfoBar 仍嵌在

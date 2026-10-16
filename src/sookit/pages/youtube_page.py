@@ -91,6 +91,10 @@ class YouTubePage(PageBase):
         self._sniff_duration = 0
         self._last_sniff_url = ''
         self._sniff_worker = None
+        # 嗅探代际：每次开始/停止嗅探递增。回调携带发起时的序号，对不上即丢弃——
+        # 覆盖「用户停止后仍有在途结果到达」的竞态与「旧嗅探结果覆盖新嗅探」两种情况
+        # （见 docs/decisions/40-windows-toast-notifications.md 追加段）
+        self._sniff_seq = 0
         self._cover_loader_worker = None
         self._cover_download_worker = None
         self._cover_data = None  # 封面原始字节数据（供任务队列复用）
@@ -281,6 +285,9 @@ class YouTubePage(PageBase):
         self._formats_data = []
         self.download_btn.setEnabled(False)  # 新嗅探开始，重置按钮可用性
         self._sniff_timed_out = False
+        # 新一轮嗅探：递增代际并捕获本轮序号，上一轮（含用户已停止但仍在途）的结果一律作废
+        self._sniff_seq += 1
+        seq = self._sniff_seq
         self._last_sniff_url = url
         # 清空封面
         self.cover_label.clearPixmap("嗅探中...")
@@ -307,8 +314,8 @@ class YouTubePage(PageBase):
 
         self._sniff_worker = GenericWorker(
             Functions.sniff_youtube, args=(url,), kwargs={'log': None})
-        self._sniff_worker.done.connect(self._on_sniff_done)
-        self._sniff_worker.error.connect(self._on_sniff_error)
+        self._sniff_worker.done.connect(lambda info, s=seq: self._on_sniff_done(s, info))
+        self._sniff_worker.error.connect(lambda msg, s=seq: self._on_sniff_error(s, msg))
         self._sniff_worker.start()
         self.log("▶ 正在嗅探视频信息...")
         self._sniff_timer = QTimer(self)
@@ -317,25 +324,32 @@ class YouTubePage(PageBase):
         self._sniff_timer.start(60000)
 
     def stop_sniff(self):
+        # 代际失效在最前面且无条件执行：worker 可能已经跑完并把结果排进了信号队列，
+        # 此时 request_stop() 拦不住它，只能靠序号丢弃；同时也保证「按钮已是停止态、
+        # worker 其实已结束」时 UI 能复位（否则只剩 _on_sniff_* 里的复位会因序号不符而跳过）
+        self._sniff_seq += 1
         if hasattr(self, '_sniff_timer') and self._sniff_timer and self._sniff_timer.isActive():
             self._sniff_timer.stop()
-        if self._sniff_worker and self._sniff_worker.isRunning():
+        if self._sniff_worker is not None and self._sniff_worker.isRunning():
             self._sniff_worker.request_stop()
             self._sniff_worker.wait(1000)
-            self._reset_sniff_btn()
-            self.log("嗅探已停止")
-            show_infobar(self, "info", title="已停止", content="嗅探已停止",
-                         duration=3000)
+        self._reset_sniff_btn()
+        self.log("嗅探已停止")
+        show_infobar(self, "info", title="已停止", content="嗅探已停止",
+                     duration=3000)
 
     def _reset_sniff_btn(self):
         # 切换按钮：显示蓝色嗅探，隐藏灰色停止嗅探
         self.stop_sniff_btn.setVisible(False)
         self.sniff_btn.setVisible(True)
 
-    def _on_sniff_done(self, info):
+    def _on_sniff_done(self, seq, info):
+        # 先做与结果无关的复位（过期回调也必须复位，否则按钮/计时器会卡在嗅探态）
         if hasattr(self, '_sniff_timer') and self._sniff_timer and self._sniff_timer.isActive():
             self._sniff_timer.stop()
         self._reset_sniff_btn()
+        if seq != self._sniff_seq:
+            return  # 过期结果：用户已停止或已发起新一轮嗅探
         if self._sniff_timed_out:
             return
 
@@ -474,10 +488,13 @@ class YouTubePage(PageBase):
             cat = 3
         return (cat, -self._parse_quality_value(fmt['quality']))
 
-    def _on_sniff_error(self, err_msg):
+    def _on_sniff_error(self, seq, err_msg):
+        # 先复位（过期回调也要复位，理由同 _on_sniff_done）
         if hasattr(self, '_sniff_timer') and self._sniff_timer and self._sniff_timer.isActive():
             self._sniff_timer.stop()
         self._reset_sniff_btn()
+        if seq != self._sniff_seq:
+            return  # 过期结果：用户已停止或已发起新一轮嗅探
         if self._sniff_timed_out:
             return
         self.log(f"嗅探失败: {err_msg}")
@@ -498,6 +515,8 @@ class YouTubePage(PageBase):
     def _sniff_timeout(self):
         if self._sniff_worker and self._sniff_worker.isRunning():
             self._sniff_timed_out = True
+            # 超时沿用 _sniff_timed_out 守卫而不递增代际：超时自身已给出反馈，
+            # 随后到达的结果由该标记丢弃即可（与 stop_sniff 的序号机制分工不同）
             # 先尝试安全退出
             self._sniff_worker.request_stop()
             # 等待 2 秒，如果仍未退出则强制终止
