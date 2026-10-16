@@ -19,6 +19,7 @@ from sookit.core.task_queue import TaskQueueManager, TaskType
 from sookit.core.workers import MonitorWorker
 from sookit.pages.base import PageBase
 from sookit.widgets.infobar import show_infobar
+from sookit.widgets.notifier import notify_result_notice
 
 
 class MonitorPage(PageBase):
@@ -149,17 +150,19 @@ class MonitorPage(PageBase):
                     self.error.emit(str(e))
 
         worker = ChannelSniffWorker()
-        worker.done.connect(lambda v: self._on_channel_done(v))
-        worker.error.connect(lambda e: self._on_channel_error(e))
+        worker.done.connect(lambda v, u=url: self._on_channel_done(v, u))
+        worker.error.connect(lambda e, u=url: self._on_channel_error(e, u))
         self._channel_sniff_worker = worker
         worker.start()
 
-    def _on_channel_done(self, videos):
+    def _on_channel_done(self, videos, url=""):
         self.add_btn.setEnabled(True)
         self.add_btn.setText("+ 添加监控")
         self._channel_sniff_worker = None
         if not videos:
             self.log("频道中未找到任何视频")
+            # 系统通知（决策 40 扩展）：0 条对用户是「没拿到想要的结果」，单独提示
+            notify_result_notice("频道嗅探完成", url, "该频道中没有找到可添加的视频")
             return
         added = 0
         for v in videos:
@@ -170,13 +173,17 @@ class MonitorPage(PageBase):
         self.log(f"已从频道添加 {added} 个视频到监控列表")
         show_infobar(self, "success", title="完成",
                      content=f"已添加 {added} 个视频到监控列表", duration=3000)
+        # 系统通知（决策 40 扩展）：主窗口不在焦点时告知频道嗅探结果
+        notify_result_notice("频道嗅探完成", url, f"已添加 {added} 个视频到监控列表")
 
-    def _on_channel_error(self, err):
+    def _on_channel_error(self, err, url=""):
         self.add_btn.setEnabled(True)
         self.add_btn.setText("+ 添加监控")
         self._channel_sniff_worker = None
         self.log(f"频道嗅探失败: {err}")
         show_infobar(self, "error", title="嗅探失败", content=err, duration=5000)
+        # 系统通知（决策 40 扩展）：主窗口不在焦点时告知频道嗅探失败
+        notify_result_notice("频道嗅探失败", url, err)
 
     def _add_single_task(self, task_id, url, title):
         row = self.task_table.rowCount()

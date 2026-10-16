@@ -22,7 +22,9 @@ Sookit 支持 `--silent` 启动与「最小化至托盘」关闭行为，任务�
   yt-dlp 需要更新/未安装（`notify_ytdlp_update(True)`）、yt-dlp/Deno 更新完毕
   （`notify_ytdlp_updated`，设置页 `_on_ytdlp_download_done` 成功分支回调）。
   更新类为无按钮纯文本（`notify_update_notice`），点击正文统一拉起主窗口。
-- **焦点判断**：所有通知统一 `QApplication.activeWindow() is self`，不焦点才弹。
+- **焦点判断**：所有通知统一以「主窗口是否持有焦点」为准（`QApplication.activeWindow() is 主窗口`），
+  不焦点才弹。主窗口内的事件自行判定；页面侧的事件经 `notifier._should_notify()` 统一判定
+  （基准窗口由 `set_main_window()` 注册，见下方 2026-10-16 追加段）。
 - **更新通知去重**：Sookit 按版本号（周期检查每 4h 重复触发，同版本只弹一次，
   状态清除即重置）；yt-dlp 用 `open` 标记（清除后允许再次提示）。
 - **任务通知触发**：`task_completed` / `task_failed` 信号（`TaskQueueManager` 单例），
@@ -47,11 +49,40 @@ Sookit 支持 `--silent` 启动与「最小化至托盘」关闭行为，任务�
   兜底 `output_files[0]` 所在目录，再兜底 `task.output_path`（2026-10-15 补：FFmpeg/GIF
   类任务没有前两者，产物路径只回填到 `output_path`；该字段可能是文件也可能是目录）；
   都没有则不带按钮。
-- **开关**：`general.toast_notification`（默认开），设置页「任务完成/失败时系统通知」SwitchButton，
+- **开关**：`general.toast_notification`（默认开），设置页「任务与嗅探/解析结果系统通知」SwitchButton
+  （2026-10-16 起文案覆盖嗅探/解析，之前为「任务完成/失败时系统通知」），
   经 `config.load/save_toast_notification_enabled()` 读写。
 - **打包**：`notifier.py` 内惰性 import，`sookit.spec` 的 `hiddenimports` 显式钉住
   `windows_toasts` 与 `winrt` / `winrt.windows.foundation(.collections)` /
   `winrt.windows.data.xml.dom` / `winrt.windows.ui.notifications`，防止模块图漏收 pyd。
+
+## 追加：嗅探 / 解析 / 频道嗅探结果纳入通知（2026-10-16）
+
+主窗口不在焦点时，以下三类**非任务队列**流程的成功/失败也弹系统通知——它们走
+`GenericWorker`/`QThread`，没有 `Task` 对象，因此由页面在回调处直接调
+`notifier.notify_result_notice(headline, title, detail)`（无按钮，点击正文拉起主窗口）。
+
+| 流程 | 触发点 | 成功 | 失败 / 0 结果 |
+| --- | --- | --- | --- |
+| 视频嗅探 | `youtube_page._on_sniff_done` | 「嗅探成功」+ 标题 + 频道/时长/格式数 | 无可用格式 → 「嗅探完成（无可用格式）」单独一条 |
+| 视频嗅探 | `youtube_page._on_sniff_error` / `_sniff_timeout` | — | 「嗅探失败」/「嗅探超时」+ 链接 + 错误摘要（截 200 字） |
+| 动图解析 | `gif_page._on_parse_done` | 「解析成功」+ 标题 + 动图数 | 0 条 → 「未找到动图」 |
+| 动图解析 | `gif_page._on_parse_error` | — | 「解析失败」+ 链接 + 错误 |
+| 频道嗅探 | `monitor_page._on_channel_done` | 「频道嗅探完成」+ 已添加 N 个视频 | 频道无视频 → 同 headline，详情说明 |
+| 频道嗅探 | `monitor_page._on_channel_error` | — | 「频道嗅探失败」+ 错误 |
+
+- **焦点闸门收口**：`notifier.set_main_window(window)` 由 `main_window._setup_task_toast()`
+  注册基准窗口，`notifier._should_notify()` 统一判「开关开 且 主窗口不在焦点」；
+  页面无需自建焦点判断，也不必各自 `hasattr(window, ...)` 探测。
+- **主动取消不通知**：`youtube_page.stop_sniff`（用户点「停止嗅探」）不弹，与任务取消口径一致。
+- **超时只弹一次**：`_sniff_timeout` 先置 `_sniff_timed_out`，随后到达的 `_on_sniff_error`
+  提前 return，不会出现「超时 + 失败」两条。
+- **代际校验复用**：动图解析的 `seq` 校验与嗅探的 `_sniff_timed_out` 守卫先行，过期结果不误弹。
+- **文案结构**：`headline`（结果行）+ `title`（视频/推文标题或链接）+ 可选 `detail`；
+  标题取不到时回退 URL，保证通知至少有结果行。
+- 遗留（本次未改）：`youtube_page._on_sniff_error` 的应用内 InfoBar 仍嵌在
+  「已提取 video_id 且封面未加载」分支内（YouTube 链接嗅探前已加载封面 → 失败时没有 InfoBar）；
+  系统通知已无条件弹出，该 InfoBar 条件待确认后再动。
 
 ## 防御性设计
 

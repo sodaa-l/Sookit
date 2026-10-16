@@ -25,6 +25,7 @@ from sookit.core.functions import (
 from sookit.widgets.cover_image import CoverImageWidget
 from sookit.widgets.combo_box import StaticComboBox
 from sookit.widgets.infobar import show_infobar
+from sookit.widgets.notifier import notify_result_notice
 from sookit.pages.base import PageBase
 from sookit.core.task_queue import TaskType
 from sookit.core.ffmpeg_utils import run_ytdlp
@@ -377,11 +378,19 @@ class YouTubePage(PageBase):
             self.log("该视频暂无可用下载格式，但仍可下载封面")
             show_infobar(self, "info", title="提示",
                          content="暂无可用下载格式，但仍可下载封面", duration=4000)
+            notify_result_notice(
+                "嗅探完成（无可用格式）", self._sniff_title,
+                f"频道: {info.get('channel', '未知')} · 时长: {dur_str} · 该视频暂无可用下载格式")
             return
 
         sorted_fmts = sorted(fmts, key=self._format_sort_key)
         self._formats_data = sorted_fmts
         self.format_table.setRowCount(len(sorted_fmts))
+
+        # 系统通知（决策 40 扩展）：主窗口不在焦点时告知嗅探结果（窗口在前台时只留页面内反馈）
+        notify_result_notice(
+            "嗅探成功", self._sniff_title,
+            f"频道: {info.get('channel', '未知')} · 时长: {dur_str} · 可用格式 {len(sorted_fmts)} 个")
 
         # 预勾选：有"视频+音频"勾首行（即最佳 VA）；否则勾最佳"视频流"+"音频流"各一。
         # 排序保证每类型首次出现的行即该类型最佳项（视频流按分辨率、音频流按码率降序）。
@@ -472,6 +481,8 @@ class YouTubePage(PageBase):
         if self._sniff_timed_out:
             return
         self.log(f"嗅探失败: {err_msg}")
+        # 系统通知（决策 40 扩展）：失败时无条件通知（页面内 InfoBar 只在部分分支出现）
+        notify_result_notice("嗅探失败", self._last_sniff_url, err_msg)
         # video_id 可能已在 do_sniff 中设置
         if not self._sniff_video_id:
             self._sniff_video_id = extract_youtube_id(self._last_sniff_url)
@@ -495,6 +506,10 @@ class YouTubePage(PageBase):
             self._reset_sniff_btn()
             self.log("嗅探超时（60秒），请检查网络或链接是否有效")
             show_infobar(self, "error", title="超时", content="嗅探超时，请检查网络或链接")
+            # 系统通知（决策 40 扩展）：超时归入失败类；_sniff_timed_out 守卫保证随后的
+            # error 回调提前 return，同一次嗅探只会弹这一条
+            notify_result_notice("嗅探超时", self._last_sniff_url,
+                                 "60 秒内未返回视频信息，请检查网络或链接是否有效")
 
     # -------- 封面加载（异步下载并在左侧显示）--------
     def _load_cover_image(self, video_id):

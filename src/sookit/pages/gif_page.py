@@ -44,6 +44,7 @@ from sookit.core.utils import get_certifi_ssl_context, set_smooth_scroll_params
 from sookit.core.workers import GenericWorker
 from sookit.pages.base import PageBase
 from sookit.widgets.infobar import show_infobar
+from sookit.widgets.notifier import notify_result_notice
 from sookit.widgets.task_card import RoundedCoverWidget
 
 # 色数固定选项（GIF 调色板常用档位，含内核 COLOR_CANDIDATES）
@@ -721,17 +722,25 @@ class GifPage(PageBase):
             self.log("该链接没有动图（推文只含普通视频或图片）")
             self.selection_hint.setText("该链接没有动图")
             self._update_dl_button()
+            # 系统通知（决策 40 扩展）：0 条对用户是「没拿到想要的结果」，单独提示
+            notify_result_notice("未找到动图", self._last_title or self._parsing_url,
+                                 "该链接没有动图（推文只含普通视频或图片）")
             return
         self._parsed_url = self._parsing_url
         self.log(f"解析到 {len(items)} 个动图，默认全部勾选")
         self._build_cards(items)
         self._start_cover_load(seq)
+        # 系统通知（决策 40 扩展）：主窗口不在焦点时告知解析结果
+        notify_result_notice("解析成功", self._last_title or self._parsing_url,
+                             f"共解析到 {len(items)} 个动图")
 
     def _on_parse_error(self, seq: int, msg: str):
         if seq != self._parse_seq:
             return
         self.log(f"解析失败: {msg}")
         show_infobar(self, "error", title="解析失败", content=msg, duration=-1)
+        # 系统通知（决策 40 扩展）：主窗口不在焦点时告知解析失败
+        notify_result_notice("解析失败", self._parsing_url, msg)
 
     # -------- 选择区 --------
 

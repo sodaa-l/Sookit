@@ -2,7 +2,13 @@
 widgets/notifier.py
 Windows 系统通知封装（见 DEVELOPMENT.md 决策 40）
 
-主窗口不在焦点时，任务完成/失败通过 windows-toasts 弹系统 Toast：
+主窗口不在焦点时通过 windows-toasts 弹系统 Toast，覆盖三类事件：
+- 任务完成/失败（TaskQueueManager 信号，由 main_window 接线）
+- 嗅探/解析/频道嗅探结果（页面直接调 notify_result_notice）
+- 更新类（notify_update_notice）
+三类共用同一开关 general.toast_notification 与「主窗口不持有焦点」闸门。
+
+实现要点：
 - 交互通知必须用 InteractableWindowsToaster（按钮能力依赖可识别 AUMID）；
   默认 AUMID 为系统 Command Prompt，来源名以 attribution text 显示 "Sookit"
 - ToastButton 自身无回调：按钮点击与正文点击统一走 Toast.on_activated，
@@ -35,6 +41,9 @@ _toaster = None          # InteractableWindowsToaster 惰性单例（None=尚未
 _toaster_failed = False  # 初始化失败标记（失败后本会话不再重试，避免刷异常日志）
 
 _bridge = None
+
+# 主窗口引用（焦点闸门基准，main_window 启动时经 set_main_window 注册）
+_main_window = None
 
 
 def _register_sookit_aumid() -> bool:
@@ -73,6 +82,31 @@ def get_toast_bridge() -> _ToastSignalBridge:
     if _bridge is None:
         _bridge = _ToastSignalBridge()
     return _bridge
+
+
+def set_main_window(window) -> None:
+    """注册主窗口作为焦点闸门基准（main_window 启动时调用一次）"""
+    global _main_window
+    _main_window = window
+
+
+def _should_notify() -> bool:
+    """系统通知总闸门：开关打开 且 主窗口不在焦点
+
+    焦点口径与决策 40 一致（QApplication.activeWindow() is 主窗口）：
+    最小化/隐藏到托盘/被其他窗口遮挡都算不焦点，此时才值得弹系统通知；
+    窗口在前台时页面自身已有 InfoBar，不再重复打扰。
+    """
+    if not load_toast_notification_enabled():
+        return False
+    if _main_window is None:
+        # 未注册（无窗口场景）不做焦点判定，交由开关与发送链路决定
+        return True
+    try:
+        from PyQt6.QtWidgets import QApplication
+        return QApplication.activeWindow() is not _main_window
+    except Exception:  # noqa: BLE001 判定失败保守不弹：通知属锦上添花，不得因自身异常打扰
+        return False
 
 
 def _get_toaster():
@@ -203,3 +237,23 @@ def notify_update_notice(title: str, content: str) -> bool:
     title = (title or "").strip() or "Sookit"
     content = (content or "").strip()
     return _show_plain_toast([title, content] if content else [title])
+
+
+def notify_result_notice(headline: str, title: str, detail: str = "") -> bool:
+    """嗅探/解析类结果通知（无按钮，点击正文拉起主窗口）
+
+    三段结构：结果行 headline（如「嗅探成功」/「解析失败」）+ 对象标题 title
+    （视频标题、推文标题或链接）+ 可选详情 detail（失败时为错误摘要，截断 200 字）。
+
+    与任务通知的差别：嗅探/解析走 GenericWorker/QThread，不经任务队列，
+    故没有 task 对象可用——由页面在回调里传文案。是否弹由 _should_notify()
+    统一判定（开关 + 主窗口不持有焦点），窗口在前台时页面已有 InfoBar，不打扰。
+    """
+    if not _should_notify():
+        return False
+    fields = [(headline or "").strip() or "Sookit"]
+    if (title or "").strip():
+        fields.append(title.strip())
+    if (detail or "").strip():
+        fields.append(detail.strip()[:200])
+    return _show_plain_toast(fields)

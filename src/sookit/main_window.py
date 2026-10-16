@@ -25,7 +25,7 @@ from sookit.paths import get_icon_path
 from sookit.widgets.cover_image import CoverImageWidget
 from sookit.widgets.infobar import show_infobar
 from sookit.widgets.notifier import notify_task_completed, notify_task_failed, \
-    notify_update_notice, get_toast_bridge
+    notify_update_notice, get_toast_bridge, set_main_window
 
 # ---------- 从 core.functions 导入工具函数和功能类 ----------
 from sookit.core.functions import (
@@ -132,13 +132,14 @@ class MainWindow(qfw.FluentWindow):
         # 延时自动检查更新（避免阻塞启动渲染；release 未上传/查询失败时静默跳过）
         QTimer.singleShot(2000, self._check_update_at_startup)
 
-        # 系统通知接线（决策 40：主窗口不在焦点时任务完成/失败弹 Windows Toast）
+        # 系统通知接线（决策 40：主窗口不在焦点时任务完成/失败、嗅探/解析结果弹 Windows Toast）
         self._setup_task_toast()
 
     # ========== 系统通知（决策 40） ==========
 
     def _setup_task_toast(self):
-        """连接任务完成/失败信号与 WinRT 回调桥（回调线程 → 主线程）"""
+        """连接任务完成/失败信号与 WinRT 回调桥（回调线程 → 主线程），并注册焦点闸门基准"""
+        set_main_window(self)
         bridge = get_toast_bridge()
         bridge.open_path_requested.connect(self._open_path_from_toast)
         bridge.activate_requested.connect(self._activate_from_toast)

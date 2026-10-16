@@ -116,12 +116,12 @@ class SettingsPage(QWidget):
         task_complete_lay.addWidget(self.task_complete_combo)
         layout.addWidget(task_complete_card)
 
-        # 系统通知（决策 40：主窗口不在焦点时任务完成/失败弹 Windows Toast）
+        # 系统通知（决策 40：主窗口不在焦点时任务完成/失败、嗅探/解析结果弹 Windows Toast）
         toast_card = qfw.CardWidget(self)
         toast_card.setMinimumHeight(70)
         toast_lay = QHBoxLayout(toast_card)
         toast_lay.setContentsMargins(15, 12, 15, 12)
-        toast_lay.addWidget(qfw.BodyLabel("任务完成/失败时系统通知"))
+        toast_lay.addWidget(qfw.BodyLabel("任务与嗅探/解析结果系统通知"))
         toast_lay.addStretch()
         self.toast_switch = qfw.SwitchButton()
         self.toast_switch.setChecked(True)
