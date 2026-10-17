@@ -80,9 +80,6 @@ from sookit.core.app_update import (
     is_updater_available, launch_app_setup_downloader,
 )
 
-# deprecated: import 时快照，请改用 is_ytdlp_available()（动态检测，内置版安装后无需重启即生效）
-YTDLP_AVAILABLE = is_ytdlp_available()
-
 
 # ---------- 通用函数 ----------
 
@@ -138,11 +135,6 @@ def ensure_output_dir(path=None):
 
 def sanitize_path(path):
     return os.path.normpath(path.strip().strip('"').strip("'"))
-
-def sanitize_filename(name):
-    """去除 Windows 文件名非法字符 \\ / : * ? \" < > |，替换为 _"""
-    import re
-    return re.sub(r'[\\/:*?"<>|]', '_', name).strip()
 
 
 # ---------- 格式类型常量 ----------

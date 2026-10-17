@@ -118,10 +118,6 @@ class _CancellableWorker(QObject):
         """on_proc 回调：记录当前 aria2c 子进程。"""
         self._proc = proc
 
-    def current_pid(self):
-        """当前 aria2c 进程 pid（无则 None）。"""
-        return self._proc.pid if self._proc is not None else None
-
     def force_terminate(self):
         """强制终止当前 aria2c 进程树（兜底，不按进程名全局杀）。
 

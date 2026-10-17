@@ -316,12 +316,6 @@ class MainWindow(qfw.FluentWindow):
 
     # ========== 自动更新 ==========
 
-    def _info_parent(self):
-        """返回当前内容区页面作为 InfoBar 的 parent（定位在标题栏下方），
-        使提示位置与其他页面（如 yt-dlp 更新）一致；内容区为空时回退主窗口。"""
-        page = self.stackedWidget.currentWidget()
-        return page if page is not None else self
-
     def _run_check_update_async(self, done_cb):
         """后台线程查询更新状态，结果回主线程交给 done_cb((sookit, path_ytdlp, tools_ytdlp))。
 

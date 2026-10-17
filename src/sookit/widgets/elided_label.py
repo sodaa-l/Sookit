@@ -119,21 +119,12 @@ class ElidedLabel(QLabel):
 
     # ---- 公共 API ----
 
-    def fixedHeight(self) -> int:
-        """当前宽度/文本/字体下标签的固定高度（父布局高度预算使用此值）"""
-        fm = QFontMetrics(self.font())
-        return self._n * fm.height()
-
     def setText(self, text: str):
         self._full_text = text or ""
         self._apply_elision()
 
     def text(self) -> str:
         return self._full_text
-
-    def setMaxLines(self, max_lines: int):
-        self._max_lines = max(1, int(max_lines))
-        self._apply_elision()
 
     # ---- 内部 ----
 

@@ -965,16 +965,6 @@ class CompletedThumbnailCard(QWidget):
 
 from sookit.core.task_queue import COVER_CACHE_DIR
 
-def _set_cover_from_data(cover_widget, data):
-    """从二进制数据设置封面"""
-    pixmap = QPixmap()
-    if pixmap.loadFromData(QByteArray(data)):
-        scaled = pixmap.scaled(
-            cover_widget.width(), cover_widget.height(),
-            Qt.AspectRatioMode.KeepAspectRatioByExpanding,
-            Qt.TransformationMode.SmoothTransformation)
-        cover_widget.setPixmap(scaled)
-
 def _cache_cover_file(task_id, data):
     """将封面数据保存到本地缓存"""
     try:
