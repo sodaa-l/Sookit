@@ -3,8 +3,8 @@ core/ytdlp_utils.py
 yt-dlp 集中管理：来源解析、命令组装、内置安装与更新。
 
 设计原则：
-- PATH 中的全局 yt-dlp 优先（尊重用户自行管理，如 scoop/pipx 安装）。
-- 未检测到 PATH 版本时，回退到项目内置 tools/yt-dlp/yt-dlp.exe。
+- 项目内置 tools/yt-dlp/yt-dlp.exe 优先（版本可控，可随应用内「下载/更新」前移）。
+- 未检测到内置版本时，回退到 PATH 中的全局 yt-dlp（尊重用户自行管理，如 scoop/pipx 安装）。
 - 内置版本捆绑 EJS 求解器脚本，需配套 Deno 运行时（tools/yt-dlp/deno.exe）。
   调用时通过 --js-runtimes deno:<绝对路径> 显式指定，开箱即用支持 YouTube JS 挑战。
 - 下载安装/更新全部写入项目 tools/ 目录，不修改 PATH、不写注册表。
@@ -75,22 +75,22 @@ def get_ytdlp_deno_path() -> Path | None:
 # ---------- 来源解析 ----------
 
 def get_ytdlp_cmd() -> list[str] | None:
-    """返回当前生效的 yt-dlp 命令前缀（PATH 优先 → tools/ 回退），均不可用返回 None"""
-    exe = _which("yt-dlp")
-    if exe:
-        return [exe]
+    """返回当前生效的 yt-dlp 命令前缀（内置 tools 优先 → PATH 回退），均不可用返回 None"""
     p = get_ytdlp_exe_path()
     if p.is_file():
         return [str(p)]
+    exe = _which("yt-dlp")
+    if exe:
+        return [exe]
     return None
 
 
 def get_ytdlp_source() -> str | None:
-    """yt-dlp 来源: 'path' | 'tools' | None"""
-    if _which("yt-dlp"):
-        return "path"
+    """yt-dlp 来源: 'tools' | 'path' | None（内置优先，PATH 仅在无内置版时生效）"""
     if get_ytdlp_exe_path().is_file():
         return "tools"
+    if _which("yt-dlp"):
+        return "path"
     return None
 
 
