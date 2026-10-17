@@ -38,7 +38,7 @@ from sookit.core.functions import (
     Functions, is_ytdlp_available, load_download_config,
     DEFAULT_OUTPUT_DIR,
 )
-from sookit.core.gif_utils import GifQuality, GifCustomParams, DITHER_CHOICES
+from sookit.core.gif_utils import GifQuality, GifCustomParams
 from sookit.core.task_queue import TaskQueueManager, TaskType
 from sookit.core.utils import get_certifi_ssl_context, set_smooth_scroll_params
 from sookit.core.workers import GenericWorker

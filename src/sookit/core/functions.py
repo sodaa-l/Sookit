@@ -9,7 +9,6 @@ import sys
 import subprocess
 import tempfile
 import urllib.request
-from pathlib import Path
 
 # ---------- 依赖检查 ----------
 # yt-dlp - 可选依赖，PATH 全局安装优先，未检测到则回退项目内置 tools/yt-dlp/yt-dlp.exe。

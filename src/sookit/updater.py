@@ -25,7 +25,7 @@ import time
 import traceback
 from pathlib import Path
 
-from PyQt6.QtCore import Qt, QThread, QObject, pyqtSignal, QTimer
+from PyQt6.QtCore import QThread, QObject, pyqtSignal, QTimer
 from PyQt6.QtWidgets import QApplication, QVBoxLayout, QHBoxLayout, QDialog
 
 import qfluentwidgets as qfw

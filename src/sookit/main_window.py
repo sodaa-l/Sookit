@@ -6,13 +6,10 @@ sookit/main_window.py
 import logging
 import os
 import random
-import sys
 
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QFileDialog, \
-    QApplication, QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView, \
-    QSplitter, QLabel, QSizePolicy, QSystemTrayIcon
-from PyQt6.QtCore import Qt, QThread, QObject, pyqtSignal, pyqtSlot, QTimer, QByteArray, QSize, QUrl
-from PyQt6.QtGui import QTextCursor, QIcon, QDesktopServices
+from PyQt6.QtWidgets import QApplication
+from PyQt6.QtCore import QThread, QObject, pyqtSignal, pyqtSlot, QTimer, QUrl
+from PyQt6.QtGui import QIcon, QDesktopServices
 
 import qfluentwidgets as qfw
 from qfluentwidgets import FluentIcon as FIF, NavigationItemPosition, \
@@ -22,29 +19,22 @@ from sookit import APP_NAME, APP_VERSION
 from sookit.paths import get_icon_path
 
 # ---------- 从 widgets 导入自定义控件 ----------
-from sookit.widgets.cover_image import CoverImageWidget
 from sookit.widgets.infobar import show_infobar
 from sookit.widgets.notifier import notify_task_completed, notify_task_failed, \
     notify_update_notice, get_toast_bridge, set_main_window
 
-# ---------- 从 core.functions 导入工具函数和功能类 ----------
+# ---------- 从 core.functions 导入工具函数 ----------
 from sookit.core.functions import (
-    Functions, sanitize_path, format_duration, format_filesize,
-    extract_youtube_id, build_thumbnails,
-    fetch_youtube_metadata, get_video_duration, run_ffmpeg, run_ytdlp,
-    load_theme_color, load_close_action, DEFAULT_OUTPUT_DIR, ensure_output_dir,
-    check_latest_version, get_current_version, get_ignored_version,
+    load_theme_color, load_close_action,
+    check_latest_version, get_current_version,
     set_ignored_version, is_updater_available, launch_app_setup_downloader,
     check_path_ytdlp_update, check_tools_ytdlp_update, RELEASES_URL,
 )
 
-# ---------- 从 core.workers 导入工作线程 ----------
-from sookit.core.workers import Worker, MonitorWorker
-
 
 # ---------- 从 pages 导入所有页面类 ----------
 from sookit.pages import (
-    PageBase, YouTubePage,
+    YouTubePage,
     SubtitlePage, ReplaceAudioPage, ExtractAudioPage,
     MonitorPage, GifPage, QueuePage, SettingsPage
 )

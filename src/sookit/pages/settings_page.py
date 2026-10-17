@@ -13,7 +13,7 @@ from qfluentwidgets import DotInfoBadge, InfoBadgePosition
 from sookit.core.functions import (
     is_ytdlp_available, get_ytdlp_source, build_ytdlp_cmd,
     launch_ytdlp_updater,
-    get_ytdlp_current_version, get_deno_current_version,
+    get_deno_current_version,
     check_ytdlp_deno_update_needed, check_path_ytdlp_update,
     get_ytdlp_latest_version,
     check_ffmpeg, check_aria2c, load_download_config, save_download_config,

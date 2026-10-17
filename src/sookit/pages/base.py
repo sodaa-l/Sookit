@@ -5,10 +5,10 @@ pages/base.py
 
 import os
 import logging
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QFileDialog, QApplication
+from PyQt6.QtWidgets import QWidget, QFileDialog, QApplication
 
 logger = logging.getLogger("Sookit")
-from PyQt6.QtCore import Qt, QTimer, QMimeData
+from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QFont, QDragEnterEvent, QDropEvent
 import qfluentwidgets as qfw
 from sookit.core.workers import Worker
