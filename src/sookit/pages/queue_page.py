@@ -4,13 +4,12 @@ pages/queue_page.py
 """
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QFont
-from PyQt6.QtWidgets import QVBoxLayout, QHBoxLayout, QWidget, QFrame
+from PyQt6.QtWidgets import QVBoxLayout, QWidget, QFrame
 
 import qfluentwidgets as qfw
 
 from sookit.core.task_queue import TaskQueueManager, Task, TaskStatus
-from sookit.widgets.task_card import create_task_card, TaskCardBase, CompletedThumbnailCard
+from sookit.widgets.task_card import create_task_card, CompletedThumbnailCard
 from sookit.pages.base import PageBase
 from sookit.widgets.infobar import show_infobar
 from sookit.core.utils import set_smooth_scroll_params

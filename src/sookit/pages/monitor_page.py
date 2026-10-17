@@ -6,14 +6,14 @@ import os
 import time
 
 from PyQt6.QtWidgets import (
-    QVBoxLayout, QHBoxLayout, QWidget, QTableWidget, QTableWidgetItem,
+    QVBoxLayout, QHBoxLayout, QWidget, QTableWidgetItem,
     QHeaderView, QAbstractItemView
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
 
 import qfluentwidgets as qfw
 
-from sookit.core.functions import Functions, is_ytdlp_available, extract_youtube_id, fetch_youtube_metadata, load_download_config, DEFAULT_OUTPUT_DIR, ensure_output_dir
+from sookit.core.functions import Functions, is_ytdlp_available, extract_youtube_id, fetch_youtube_metadata, load_download_config, DEFAULT_OUTPUT_DIR
 from sookit.core.youtube_utils import build_thumbnails
 from sookit.core.task_queue import TaskQueueManager, TaskType
 from sookit.core.workers import MonitorWorker

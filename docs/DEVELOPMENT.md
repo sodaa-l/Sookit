@@ -23,7 +23,7 @@ src/sookit/        代码包 (标准 src 布局)
     │   └─ ...         youtube_page (视频嗅探, 类名保留 YouTubePage 但已全站点通用) 等
     │
     ├─ core/           业务逻辑层
-    │   ├─ functions.py     Functions 类 — 聚合所有功能接口 + 模块再导出
+    │   ├─ functions.py     Functions 类 — 功能中枢 + 少量仍在用的聚合入口（非兼容层）
     │   ├─ task_queue.py    TaskQueueManager (单例) — 任务调度 + workspace + registry
     │   ├─ workers.py       QThread 工作线程 (Worker / TaskWorker / MonitorWorker)
     │   ├─ ffmpeg_utils.py  FFmpeg/yt-dlp/aria2c 路径查找和子进程管理
@@ -91,7 +91,7 @@ flowchart TB
 
 | 文件 | 职责 | 关键导出 |
 | --- | --- | --- |
-| `functions.py` | 功能中枢。聚合所有子模块并再导出保持向后兼容 | `Functions` (类, 所有 func 均为 @staticmethod) |
+| `functions.py` | 功能中枢（`Functions` 类）。**不是兼容层**——只从子模块引入本文件要用的函数，以及页面仍在使用的少量聚合入口；新增代码应直接从源模块 import（见设计决策 41） | `Functions` (类, 所有 func 均为 @staticmethod) |
 | `ffmpeg_utils.py` | FFmpeg 路径、子进程执行 (`run_ffmpeg`/`run_ytdlp`)、时长/大小格式化 | `run_ffmpeg()`, `run_ytdlp()`, `check_ffmpeg()`, `extract_video_frame()` |
 | `ytdlp_utils.py` | yt-dlp/Deno 版本检查、下载 (aria2c+urllib 双通道)、独立下载器调起 | `download_ytdlp()`, `download_deno()`, `get_*_version()`, `check_ytdlp_deno_update_needed()`, `check_path_ytdlp_update()`, `check_tools_ytdlp_update()`, `launch_ytdlp_updater()` |
 | `app_update.py` | **Sookit 自身自动更新** (原 core/updater.py，注意与顶层 updater.exe 入口区分) | `check_latest_version()`, `download_installer()`, `is_newer()` |
@@ -99,7 +99,7 @@ flowchart TB
 | `task_queue.py` | 任务队列单例。进度、workspace 生命周期、active_workspaces registry、JSON 持久化 | `TaskQueueManager`, `Task`, `TaskStatus`, `TaskType`, `_generate_ulid()` |
 | `workers.py` | 后台线程: Worker(通用) / TaskWorker(队列, 含 workspace/进程树清理) / MonitorWorker(直播轮询) | `TaskWorker`, `MonitorWorker`, `_kill_process_tree()` |
 | `config.py` | JSON 配置文件读写 + 缓存 + 线程锁。主题色、开机自启、下载配置 | `load_config()`, `save_config()`, `load_download_config()` |
-| `utils.py` | 滚动条样式、SSL 上下文 | `get_scrollbar_style()`, `get_certifi_ssl_context()` |
+| `utils.py` | 平滑滚动参数、SSL 上下文 | `set_smooth_scroll_params()`, `get_certifi_ssl_context()` |
 | `gif_utils.py` | MP4→GIF 自动参数决策转码（帧率锁死 / 色数 MAE 决策 / 预算内最大化宽度）。依赖 numpy+Pillow（延迟 import） | `convert_to_gif()` |
 
 ### 入口与下载器
@@ -189,6 +189,7 @@ flowchart TB
 | 38 | 合并落点预测 + mkv 风险弹窗（2026-10-15） | 下载**不加** `--hls-prefer-ffmpeg`（修订决策 33）；嗅探页勾「视频流+音频流」时按编码族预测落点，跨族（可能落 mkv）弹窗引导选 h264+aac 或 vp9+opus，允许强行继续；编码未知不拦截 | [38-merge-target-prediction.md](decisions/38-merge-target-prediction.md) |
 | 39 | HLS 进度改用分片序号（2026-10-15） | 带 `(frag i/M)` 的行用 `i/M*100` 作进度（同期 HLS 行的总量是 yt-dlp 动态估算值，百分比会反复回退，起步甚至会先冲 100% 再跌到个位数）；`M<5` 退回字节百分比；已否决「锚点单调」「跌幅兜底」「分母变化阈值」三种备选（实测均失效） | [39-hls-progress-by-fragment.md](decisions/39-hls-progress-by-fragment.md) |
 | 40 | 主窗口不在焦点时的 Windows 系统通知（2026-10-14） | 交互通知必须用 `InteractableWindowsToaster`；`ToastButton` 无独立回调，统一走 `Toast.on_activated` 按 arguments 区分；回调在 WinRT 线程，经 `_ToastSignalBridge` 信号转回主线程；初始化/发送异常一律静默降级；**2026-10-16 起嗅探/解析/频道嗅探结果也弹**（页面调 `notify_result_notice`，焦点闸门收口在 `notifier._should_notify`，开关复用 `general.toast_notification`）；嗅探页回调必须带 `_sniff_seq` 代际校验，`stop_sniff` 需**无条件**递增该序号、且复位动作在比对之前；嗅探失败 InfoBar 不得再缩进进「补封面」分支（该分支条件 `not QPixmap` 恒假，`.isNull()` 才是判空写法；该分支已用「当前链接 ID」归属校验复活，勿改用跨次保留的 `_sniff_video_id`） | [40-windows-toast-notifications.md](decisions/40-windows-toast-notifications.md) |
+| 41 | 死代码清理：未使用 import / 零引用函数 / 门面再导出（2026-10-17） | **`core/functions.py` 不是兼容层**，只是「`Functions` 类 + 少量仍在用的聚合入口」，新增代码直接从源模块 import；删死代码的判定＝「本文件不用 + 无人从这里 import 且真用」，Qt 框架回调（dragEnterEvent/dropEvent/changeEvent/heightForWidth）不得按零引用删 | [41-dead-code-cleanup.md](decisions/41-dead-code-cleanup.md) |
 
 ## AI 编码约定
 
@@ -283,10 +284,13 @@ class MyNewPage(PageBase):
 ### 导入规范
 
 ```python
-from sookit.core.functions import Functions, check_ffmpeg, run_ffmpeg
+from sookit.core.functions import Functions
+from sookit.core.ffmpeg_utils import check_ffmpeg, run_ffmpeg   # 具体函数直接从源模块 import
 from sookit.core.task_queue import TaskType, TaskQueueManager
 from sookit.pages.base import PageBase
 ```
+
+> `core/functions.py` **不是兼容层**：它只保留 `Functions` 类与页面仍在使用的少量聚合入口，新增代码请直接从源模块 import（见设计决策 41）。
 
 ### 新增代码时注意
 

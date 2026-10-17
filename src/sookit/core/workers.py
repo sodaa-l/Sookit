@@ -3,7 +3,6 @@ core/workers.py
 后台工作线程
 """
 
-import os
 import re
 import sys
 import threading

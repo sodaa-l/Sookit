@@ -9,7 +9,6 @@ import sys
 import subprocess
 import tempfile
 import urllib.request
-from pathlib import Path
 
 # ---------- 依赖检查 ----------
 # yt-dlp - 可选依赖，PATH 全局安装优先，未检测到则回退项目内置 tools/yt-dlp/yt-dlp.exe。
@@ -42,47 +41,42 @@ def _run_ytdlp_json(url, *extra_args, timeout=180):
                            or f"yt-dlp 退出码: {result.returncode}")
     return json.loads(result.stdout)
 
-# ---------- 从子模块导入并重新导出（保持向后兼容）----------
+# ---------- 从子模块导入（供本文件内部使用 + 保留页面仍在使用的聚合入口）----------
 
 from sookit.core.ffmpeg_utils import (
-    get_ffmpeg_path, get_ffprobe_path, check_ffmpeg,
-    get_video_duration, format_duration, format_filesize,
+    get_ffmpeg_path, check_ffmpeg,
+    format_duration, format_filesize,
     run_ffmpeg, run_ytdlp,
     get_aria2c_path, check_aria2c,
 )
 from sookit.core.youtube_utils import (
-    extract_youtube_id, YOUTUBE_THUMBNAILS, build_thumbnails,
+    extract_youtube_id, build_thumbnails,
     normalize_thumbnails, fetch_youtube_metadata,
 )
 from sookit.core.gif_utils import convert_to_gif
 from sookit.core.config import (
-    get_config_path, load_config, save_config,
     load_download_config, save_download_config,
     load_close_action, save_close_action,
     load_task_complete_action, save_task_complete_action,
     load_toast_notification_enabled, save_toast_notification_enabled,
-    THEME_COLORS, DEFAULT_THEME_COLOR, load_theme_color, save_theme_color,
+    THEME_COLORS, load_theme_color, save_theme_color,
     set_autostart, is_autostart,
 )
 from sookit.core.utils import get_certifi_ssl_context
 from sookit.core.ytdlp_utils import (
-    get_ytdlp_cmd, get_ytdlp_source, is_ytdlp_available,
-    get_ytdlp_deno_path, build_ytdlp_cmd, download_ytdlp_bundle,
-    download_ytdlp, download_deno, get_ytdlp_exe_path,
-    get_ytdlp_current_version, get_deno_current_version,
-    get_ytdlp_latest_version, get_deno_latest_version,
+    get_ytdlp_source, is_ytdlp_available,
+    build_ytdlp_cmd,
+    get_deno_current_version,
+    get_ytdlp_latest_version,
     check_ytdlp_deno_update_needed, launch_ytdlp_updater,
     check_path_ytdlp_update, check_tools_ytdlp_update,
 )
 from sookit.core.app_update import (
-    is_newer, get_current_version, get_latest_version,
-    check_latest_version, get_ignored_version, set_ignored_version,
-    download_installer, RELEASES_URL,
+    get_current_version,
+    check_latest_version, set_ignored_version,
+    RELEASES_URL,
     is_updater_available, launch_app_setup_downloader,
 )
-
-# deprecated: import 时快照，请改用 is_ytdlp_available()（动态检测，内置版安装后无需重启即生效）
-YTDLP_AVAILABLE = is_ytdlp_available()
 
 
 # ---------- 通用函数 ----------
@@ -139,11 +133,6 @@ def ensure_output_dir(path=None):
 
 def sanitize_path(path):
     return os.path.normpath(path.strip().strip('"').strip("'"))
-
-def sanitize_filename(name):
-    """去除 Windows 文件名非法字符 \\ / : * ? \" < > |，替换为 _"""
-    import re
-    return re.sub(r'[\\/:*?"<>|]', '_', name).strip()
 
 
 # ---------- 格式类型常量 ----------

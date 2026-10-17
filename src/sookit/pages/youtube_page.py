@@ -8,19 +8,19 @@ import urllib.request
 from urllib.parse import urlparse
 
 from PyQt6.QtWidgets import (
-    QVBoxLayout, QHBoxLayout, QSplitter, QWidget, QFileDialog,
-    QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView
+    QVBoxLayout, QHBoxLayout, QSplitter, QWidget,
+    QTableWidgetItem, QHeaderView, QAbstractItemView
 )
-from PyQt6.QtCore import Qt, QThread, QTimer, QRectF, QByteArray, pyqtSignal
+from PyQt6.QtCore import Qt, QThread, QTimer, QByteArray, pyqtSignal
 
 from sookit.core.workers import GenericWorker
-from PyQt6.QtGui import QFont, QPixmap, QImage, QPainter, QColor, QPainterPath
+from PyQt6.QtGui import QFont, QPixmap, QImage
 
 import qfluentwidgets as qfw
 
 from sookit.core.functions import (
     Functions, FormatType, is_ytdlp_available, extract_youtube_id, format_duration, build_thumbnails,
-    load_download_config, DEFAULT_OUTPUT_DIR, ensure_output_dir
+    load_download_config, DEFAULT_OUTPUT_DIR
 )
 from sookit.widgets.cover_image import CoverImageWidget
 from sookit.widgets.combo_box import StaticComboBox

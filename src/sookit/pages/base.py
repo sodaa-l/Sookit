@@ -5,10 +5,10 @@ pages/base.py
 
 import os
 import logging
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QFileDialog, QApplication
+from PyQt6.QtWidgets import QWidget, QFileDialog, QApplication
 
 logger = logging.getLogger("Sookit")
-from PyQt6.QtCore import Qt, QTimer, QMimeData
+from PyQt6.QtCore import QTimer
 from PyQt6.QtGui import QFont, QDragEnterEvent, QDropEvent
 import qfluentwidgets as qfw
 from sookit.core.workers import Worker
@@ -126,21 +126,6 @@ class PageBase(QWidget):
         grid.addWidget(lbl, row, 0)
         grid.addWidget(entry, row, 1)
         grid.addWidget(btn, row, 2)
-        return entry
-
-    def create_start_button(self, parent, row, text, func, args_getter):
-        btn = qfw.PrimaryPushButton(text)
-        btn.setFixedWidth(200)
-        btn.clicked.connect(lambda: self.run_task(func, args_getter()))
-        parent.addWidget(btn, row, 1, alignment=Qt.AlignmentFlag.AlignCenter)
-        return btn
-
-    def add_time_input(self, grid, label, row, placeholder):
-        lbl = qfw.BodyLabel(label)
-        entry = qfw.LineEdit()
-        entry.setPlaceholderText(placeholder)
-        grid.addWidget(lbl, row, 0)
-        grid.addWidget(entry, row, 1)
         return entry
 
     @staticmethod
