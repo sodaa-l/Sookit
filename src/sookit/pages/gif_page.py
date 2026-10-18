@@ -12,12 +12,12 @@ X (Twitter) 动图下载 页面
 输出 GIF 的文件名仍取 yt-dlp 下载到的 mp4 标题，与显示名无关。
 
 版式（2026-10-13 重构）：标题/说明 → 参数卡（链接·输出目录·编码质量）→
-选择区操作行（计数·全选·下载）→ 展示区。展示区是「空态占位 / 卡片网格」
+选择区操作行（计数·全选动图·下载）→ 展示区。展示区是「空态占位 / 卡片网格」
 二选一的堆叠槽位，也是页面唯一的伸缩项，故解析前后整页零位移。
 
 质量可选四档预设（core/gif_utils.GifQuality），或「自定义…」——参数填在
 浮层（_CustomParamsView）里，不插进页面布局，否则展开时会把卡片展示区挤没；
-确认后质量行显示参数摘要与「调整参数」文字按钮（仅该档出现），点它可重开浮层。
+确认后质量行显示参数摘要与「调整参数」按钮（仅该档出现），点它可重开浮层。
 视频条目沿用页面所选质量档，不特殊强制「最佳质量」。
 
 解析只读元数据（yt-dlp -J），不下载媒体；条目序号（1-based，原始条目列表次序）
@@ -483,11 +483,11 @@ class GifPage(PageBase):
         self.quality_combo.setCurrentIndex(self._DEFAULT_QUALITY_INDEX)
         self.quality_combo.setMinimumWidth(180)
         self.quality_combo.currentIndexChanged.connect(self._on_quality_changed)
-        # 自定义参数摘要 + 重开浮层的文字按钮（仅「自定义…」档出现）。
+        # 自定义参数摘要 + 重开浮层的按钮（仅「自定义…」档出现）。
         # 本行必须装在**定高容器**里：按需显隐会让行高在 27↔32px 之间跳，
         # 把下面的卡片区推动几像素。
         self.custom_summary = qfw.CaptionLabel("")
-        self.custom_edit_btn = qfw.TransparentPushButton("调整参数")
+        self.custom_edit_btn = qfw.PushButton("调整参数")
         self.custom_edit_btn.setToolTip("打开自定义编码参数")
         self.custom_edit_btn.clicked.connect(lambda: self._open_custom_flyout())
         quality_row = QWidget()
@@ -506,15 +506,16 @@ class GifPage(PageBase):
 
         layout.addWidget(card)
 
-        # ---- 选择区操作行（计数 + 全选 + 下载）----
+        # ---- 选择区操作行（计数 + 全选动图 + 下载）----
         # 全选键从链接栏移到这里（与「选中」语义放一起）；本行始终存在，
         # 卡片区是页面唯一的伸缩项（下方 view_stack），故解析前后位置不变。
+        # 文案随作用域切换：「全选动图」/「全不选」（决策 44）。
         action_row = QHBoxLayout()
         action_row.setSpacing(8)
         self.selection_hint = self.create_caption_label("")
         action_row.addWidget(self.selection_hint)
         action_row.addStretch(1)
-        self.reselect_btn = qfw.PushButton("全选")
+        self.reselect_btn = qfw.PushButton("全选动图")
         self.reselect_btn.setFixedWidth(96)
         self.reselect_btn.setEnabled(False)     # 解析出卡片后才可用
         self.reselect_btn.clicked.connect(self._toggle_all)
@@ -622,7 +623,7 @@ class GifPage(PageBase):
     def _open_custom_flyout(self):
         """在质量下拉上弹「自定义参数」浮层。
 
-        两个入口：下拉里选「自定义…」，以及质量行的「调整参数」文字按钮——浮层点
+        两个入口：下拉里选「自定义…」，以及质量行的「调整参数」按钮——浮层点
         空白处即关（= 确定），没有这个按钮就只能反复切档位回来才能重开。
         """
         if self._custom_flyout is not None and self._custom_flyout.isVisible():
@@ -667,7 +668,7 @@ class GifPage(PageBase):
                      content=f"{err}，已保持原档位", duration=4000)
 
     def _update_custom_summary(self):
-        """刷新质量行右侧的摘要与「调整参数」文字按钮（两者仅自定义档出现）。
+        """刷新质量行右侧的摘要与「调整参数」按钮（两者仅自定义档出现）。
 
         显隐都发生在定高容器里（见 `__init__` 的 quality_row），故不改变行高。
         """
@@ -839,14 +840,14 @@ class GifPage(PageBase):
             card.cover.setText("封面加载失败")
 
     def _gif_indexes(self):
-        """「全选」的作用域：有动图时只到动图，纯视频链接才退回全部条目。"""
+        """「全选动图」的作用域：有动图时只到动图，纯视频链接才退回全部条目。"""
         return [i for i, c in self._cards.items() if c.kind != 'video'] \
             or list(self._cards)
 
     def _toggle_all(self):
-        """「全选/全不选」，口径见决策 44：
+        """「全选动图/全不选」，口径见决策 44：
 
-        - 「全选」只勾动图，**不碰视频**（视频必须由用户手动勾选并确认，全选不得
+        - 「全选动图」只勾动图，**不碰视频**（视频必须由用户手动勾选并确认，全选不得
           悄悄把视频带上）；
         - 「全不选」清空全部（含用户手动勾上的视频），否则按钮会变成“点不干净”。
         """
@@ -856,7 +857,7 @@ class GifPage(PageBase):
 
     def _set_all_checked(self, checked: bool):
         # 勾选时跳过视频：视频只能手动勾（决策 44）。纯视频链接没有动图可选，
-        # 此时作用域退回全部条目，让「全选」仍然可用。
+        # 此时作用域退回全部条目，按钮文案也退回「全选」，仍然可用。
         has_gif = any(c.kind != 'video' for c in self._cards.values())
         for card in self._cards.values():
             if checked and has_gif and card.kind == 'video':
@@ -873,10 +874,16 @@ class GifPage(PageBase):
         total = len(self._cards)
         self.dl_btn.setEnabled(n > 0)
         self.reselect_btn.setEnabled(total > 0)
-        # 按钮文案表示"点下去会发生什么"：作用域内全勾选时是「全不选」，否则「全选」
+        # 按钮文案表示"点下去会发生什么"：作用域内全勾选时是「全不选」，否则「全选动图」
+        # （纯视频链接没有动图可选、作用域退回全部条目，此时仍用「全选」）。
         scope = self._gif_indexes()
         all_on = bool(scope) and all(self._cards[i].is_checked() for i in scope)
-        self.reselect_btn.setText("全不选" if all_on else "全选")
+        if all_on:
+            self.reselect_btn.setText("全不选")
+        elif any(c.kind != 'video' for c in self._cards.values()):
+            self.reselect_btn.setText("全选动图")
+        else:
+            self.reselect_btn.setText("全选")
         if total:
             n_gif, n_video = self._count_kinds()
             if n_gif and n_video:
