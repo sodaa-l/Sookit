@@ -3444,7 +3444,7 @@ wheels = [
 
 [[package]]
 name = "sookit"
-version = "261018.1"
+version = "261019.1"
 source = { editable = "." }
 dependencies = [
     { name = "certifi" },
