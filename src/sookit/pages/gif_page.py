@@ -145,6 +145,11 @@ class _GifCover(RoundedCoverWidget):
         self._checked, self._hovered = checked, hovered
         self.update()
 
+    def refresh_theme(self):
+        """主题切换后强制重绘：徽章配色读 `qfw.isDarkTheme()`，状态位没变时
+        `set_feedback` 会提前返回、留下上一个主题的颜色。"""
+        self.update()
+
     def paintEvent(self, event):
         super().paintEvent(event)
         if not (self._checked or self._hovered):
@@ -166,7 +171,12 @@ class _GifCover(RoundedCoverWidget):
             self._draw_check_badge(painter, rect)
 
     def _draw_check_badge(self, painter, rect):
-        """右上角圆形对勾：主题色圆底 + 白色勾线 + 1px 半透明白描边（自绘，不依赖图标资源）。"""
+        """右上角圆形对勾：主题色圆底 + 勾线 + 1px 半透明描边（自绘，不依赖图标资源）。
+
+        勾线颜色随主题：浅色主题的主题色是深青（#009faa），白勾对比强；深色主题的
+        主题色是高亮青（#29f1ff，亮度 0.78），白勾几乎糊在圆底上，改用近黑色勾线
+        （2026-10-19 用户口径：深色模式下勾要是黑色）。
+        """
         radius = 11
         cx = rect.right() - 10 - radius
         cy = rect.top() + 10 + radius
@@ -176,15 +186,22 @@ class _GifCover(RoundedCoverWidget):
         painter.setBrush(qfw.themeColor())
         painter.drawEllipse(QPointF(cx, cy), radius, radius)
 
-        # 半透明白描边：浅色/同色系封面上把圆底和背景分开（描边压在填充之上，
+        ring_color = QColor(255, 255, 255, 150)
+        mark_color = QColor(255, 255, 255)
+        if qfw.isDarkTheme():
+            # 深色下圆底本身很亮，白描边/白勾都失去对比，一并换成暗色系
+            ring_color = QColor(0, 0, 0, 90)
+            mark_color = QColor(26, 26, 26)
+
+        # 半透明描边：浅色/同色系封面上把圆底和背景分开（描边压在填充之上，
         # 外沿比填充外扩 0.5px，视觉尺寸几乎不变；线宽 1px 再细就糊在抗锯齿里了）
-        ring = QPen(QColor(255, 255, 255, 150))
+        ring = QPen(ring_color)
         ring.setWidthF(1.0)
         painter.setPen(ring)
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawEllipse(QPointF(cx, cy), radius, radius)
 
-        pen = QPen(QColor(255, 255, 255))
+        pen = QPen(mark_color)
         pen.setWidth(2)
         pen.setCapStyle(Qt.PenCapStyle.RoundCap)
         pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
@@ -271,6 +288,7 @@ class GifItemCard(QWidget):
             dark = qfw.isDarkTheme()
             self.title.setStyleSheet(f"color: {'white' if dark else 'black'};")
         self.cover.set_feedback(self._checked, self._hovered)
+        self.cover.refresh_theme()
 
     def is_checked(self) -> bool:
         return self._checked
@@ -958,7 +976,8 @@ class GifPage(PageBase):
             self.quality_combo.currentText()
         custom_params = self._custom_params if is_custom else None
         if is_custom and custom_params is None:
-            # 选了「自定义…」但没在浮层里点过「确定」（或取消后回退失败）
+            # 兜底：正常交互下到不了（浮层关闭时参数没填全会自动回退到预设档，
+            # 见 _on_custom_flyout_closed），留着防信号被绕过等异常路径。
             show_infobar(self, "warning", title="提示",
                          content="请先点「调整参数」确认自定义参数", duration=4000)
             return
