@@ -253,7 +253,12 @@ class TaskCardBase(qfw.CardWidget):
 # ---------- 圆角封面控件 ----------
 
 class RoundedCoverWidget(QWidget):
-    """自绘封面控件，圆角绘制，无黑边；支持图标占位"""
+    """自绘封面控件，圆角绘制，无黑边；支持图标占位
+
+    圆角裁剪按**控件 rect** 建路径、并开抗锯齿（见决策 43）：封面图用
+    KeepAspectRatioByExpanding 缩放后比控件大，居中偏移为负，若按图建圆角
+    路径则四个圆角整个落在控件外、被控件边界切成直角。
+    """
     def __init__(self, w, h, parent=None):
         super().__init__(parent)
         self._pixmap = QPixmap()
@@ -281,6 +286,8 @@ class RoundedCoverWidget(QWidget):
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        # 圆角边缘必须抗锯齿：不加时 8px 圆角只剩 2px 台阶，肉眼就是方角
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         rect = self.rect()
         radius = 8
         
@@ -308,7 +315,8 @@ class RoundedCoverWidget(QWidget):
                 painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, self._text)
             return
         
-        # 缩放图片适应控件，保持比例
+        # 缩放图片铺满控件，保持比例（KeepAspectRatioByExpanding 保证 scaled ≥ 控件，
+        # 溢出的部分靠居中偏移裁掉）
         scaled = self._pixmap.scaled(
             rect.size(),
             Qt.AspectRatioMode.KeepAspectRatioByExpanding,
@@ -317,10 +325,13 @@ class RoundedCoverWidget(QWidget):
         x = (rect.width() - scaled.width()) // 2
         y = (rect.height() - scaled.height()) // 2
         
-        # 圆角裁剪
+        # 圆角裁剪必须按控件 rect 建路径：scaled 一般比控件大（x/y 为负），
+        # 若按 (x, y, scaled) 建圆角路径，四个圆角整个落在控件外，被控件边界
+        # 切成直角——非 16:9 的封面看起来就是方角（实测 228x135 控件配
+        # 1200x675 源图四角像素即封面本色，圆角完全消失）
         painter.save()
         clip = QPainterPath()
-        clip.addRoundedRect(QRectF(x, y, scaled.width(), scaled.height()), radius, radius)
+        clip.addRoundedRect(QRectF(rect), radius, radius)
         painter.setClipPath(clip)
         painter.drawPixmap(x, y, scaled)
         painter.restore()
