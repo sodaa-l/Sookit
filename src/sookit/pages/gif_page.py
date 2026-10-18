@@ -948,6 +948,21 @@ class GifPage(PageBase):
                          content="请至少勾选一个动图或视频", duration=3000)
             return
 
+        # 质量档取值与兜底校验排在确认弹窗之前：校验若失败就当场返回，不该让用户
+        # 先点了「仍要转 GIF」再被打回——弹窗是确认动作，不是校验动作。
+        is_custom = self.quality_combo.currentText() == _CUSTOM_ITEM
+        quality = GifQuality.CUSTOM if is_custom else \
+            self.quality_combo.currentText()
+        custom_params = self._custom_params if is_custom else None
+        if is_custom and custom_params is None:
+            # 兜底：正常交互下到不了——浮层（Qt.Popup 窗口）会吞掉外部点击，用户
+            # 点「下载」时只会先收起浮层、档位随之回退到预设档（见
+            # _on_custom_flyout_closed）。这里防的是信号被绕过等异常路径；一旦漏掉，
+            # 下游 convert_to_gif 会在"下载完整个视频之后"才抛「未知的编码质量档位」。
+            show_infobar(self, "warning", title="提示",
+                         content="请先点「调整参数」确认自定义参数", duration=4000)
+            return
+
         # 视频转 GIF 的确认（决策 44）：视频默认不勾选，是用户显式勾上的，但视频
         # 转 GIF 体积大、耗时长（尤其 4K 长视频），下载前最后一次确认。取消则整单
         # 返回、不入队，由用户自行取消勾选后再点下载。
@@ -970,17 +985,6 @@ class GifPage(PageBase):
             box.cancelButton.setText("返回修改")
             if not box.exec():
                 return
-
-        is_custom = self.quality_combo.currentText() == _CUSTOM_ITEM
-        quality = GifQuality.CUSTOM if is_custom else \
-            self.quality_combo.currentText()
-        custom_params = self._custom_params if is_custom else None
-        if is_custom and custom_params is None:
-            # 兜底：正常交互下到不了（浮层关闭时参数没填全会自动回退到预设档，
-            # 见 _on_custom_flyout_closed），留着防信号被绕过等异常路径。
-            show_infobar(self, "warning", title="提示",
-                         content="请先点「调整参数」确认自定义参数", duration=4000)
-            return
 
         out_dir = self.read_path(self.out_dir) or DEFAULT_OUTPUT_DIR
         os.makedirs(out_dir, exist_ok=True)
