@@ -158,17 +158,25 @@ class _GifCover(RoundedCoverWidget):
             self._draw_check_badge(painter, rect)
 
     def _draw_check_badge(self, painter, rect):
-        """右上角白底圆形对勾（自绘，不依赖图标资源）。"""
+        """右上角圆形对勾：主题色圆底 + 白色勾线 + 1px 半透明白描边（自绘，不依赖图标资源）。"""
         radius = 11
         cx = rect.right() - 10 - radius
         cy = rect.top() + 10 + radius
 
         painter.setClipping(False)
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor(255, 255, 255))
+        painter.setBrush(qfw.themeColor())
         painter.drawEllipse(QPointF(cx, cy), radius, radius)
 
-        pen = QPen(qfw.themeColor())
+        # 半透明白描边：浅色/同色系封面上把圆底和背景分开（描边压在填充之上，
+        # 外沿比填充外扩 0.5px，视觉尺寸几乎不变；线宽 1px 再细就糊在抗锯齿里了）
+        ring = QPen(QColor(255, 255, 255, 150))
+        ring.setWidthF(1.0)
+        painter.setPen(ring)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawEllipse(QPointF(cx, cy), radius, radius)
+
+        pen = QPen(QColor(255, 255, 255))
         pen.setWidth(2)
         pen.setCapStyle(Qt.PenCapStyle.RoundCap)
         pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
@@ -187,7 +195,7 @@ class GifItemCard(QWidget):
 
     视觉口径对齐任务队列「已完成」卡片（`CompletedThumbnailCard` + `CoverAreaWidget`）：
     无卡片底色、16:9 圆角(8)封面、封面下文字。选中不再画主题色描边（原绿框），
-    改为封面叠半透明主题色蒙版 + 右上角白底对勾；悬停时封面轻微变暗。
+    改为右上角主题色圆底白色对勾；悬停时封面轻微变暗。
 
     不显示时长：条目能进列表的前提就是 `_looks_like_animated` 判定
     `duration in (None, 0)`（yt-dlp 不解码 animated_gif 的时长），
