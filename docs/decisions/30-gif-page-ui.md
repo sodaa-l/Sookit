@@ -82,6 +82,11 @@ offscreen 页面构造/卡片显隐/参数校验/主窗口导入通过；GBK 环
 YTDLP workspace 优先且删除调用不变）。测试用 `VIDEOTOOLBOX_DATA_DIR/COVER_DIR/LOG_DIR` 重定向到临时目录，
 不写真实 completed_tasks.json。
 
+> **2026-10-19 起本段口径已被决策 44 改写**：动图页现在也把同一条推文里的普通视频列进
+> 列表（显示「视频 N」、默认不勾选、勾选后下载前弹窗确认）。下面「只处理动图」记录的是
+> 当时的问题与判定函数 `_looks_like_animated` 的由来；`_looks_like_animated` 本身原样保留，
+> 只是在其上新增了 `_entry_kind` 一档。阅读实现时以决策 44 为准。
+
 **只处理动图（2026-10-07 用户实测追加）**：此前 `-f "b[ext=mp4]/b"` 会下载 playlist 的全部条目，
 同一条推文里的普通视频也被转成 GIF（实测「2 动图 + 1 个 4K/23.8s 视频」中视频被转出 9.60MB GIF）。
 新增 `_looks_like_animated(entry)`：X 的 animated_gif 条目 `duration` 为 None 且 `resolution`/`width`/`height`
@@ -155,3 +160,17 @@ E 队列 kwargs 通道（GIF 任务经 `add_task(..., kwargs={'selected_indexes'
 FFMPEG 任务 `Task.kwargs == {}`、行为不变；YTDLP 分支同步 `TaskWorker.run()` 空 kwargs 不报错）。
 UTF-8 环境 3 次、GBK（cp936，未设 `PYTHONUTF8`）3 次，退出码均为 0、断言零失败。
 **真实链接端到端尚未复测**（2026-10-07 的 14 项断言针对已删除的 `fetch_media_meta` 流程）。
+
+**2026-10-19 追加（决策 44）**：动图页现在也列出同一条推文里的普通视频（显示「视频 N」、默认
+不勾选、勾选后点「下载」先弹确认框）。因此本文中这些表述已失效，读实现请以
+[决策 44](44-gif-page-video-items.md) 为准：
+
+| 本文旧表述 | 现状 |
+|---|---|
+| `fetch_gif_items` 「只列动图」 | 列出动图 + 视频，返回项多 `kind` / `video_no`，**排序在数据层完成（动图在前）** |
+| `items` 结构 `{index, url, title, duration, cover_url}` | 多 `kind`、`video_no` |
+| `download_and_convert_gif` 与 `_looks_like_animated` 求交集（防把视频也转成 GIF） | 改与 `_entry_kind` 求交集（放行视频、只挡 `None` 档）；空交集文案改「选中的条目无法转换」 |
+| 解析出 0 个动图时只提示不入队 | 改为「0 个动图或视频」才提示 |
+| 卡片默认全选 | 动图默认勾选、**视频默认不勾选**；「全选」只作用动图 |
+
+`_looks_like_animated` 本身原样保留，仍是「是不是动图」的唯一判定。

@@ -177,6 +177,31 @@ def _looks_like_animated(entry: dict) -> bool:
     return True
 
 
+def _entry_kind(entry: dict):
+    """把 yt-dlp 条目粗分为 'gif'（X 动图）/ 'video'（普通视频）/ None（不入列表）。
+
+    `_looks_like_animated` 只回答「是不是动图」；动图页自 2026-10-19 起还要把
+    同一条推文里的普通视频也列出来（显示名「视频 N」，默认不勾选，勾选后下载前
+    弹窗确认），故需要第二档判定。见 docs/decisions/44-gif-page-video-items.md。
+
+    判定口径（与 `_looks_like_animated` 共享同一份实测事实）：
+      - 无时长 + 无分辨率 → 动图（理由见上，判定函数本身不改）；
+      - 有明确时长 → 视频；
+      - 有分辨率但无时长 → None（罕见条目，既不列动图也不列视频）。
+
+    为什么判视频只认「有明确时长」：X 的**图片**条目同样没有时长、没有分辨率，
+    与动图在元数据上无法区分——它们会沿用旧口径落进 'gif' 档（下载时由 yt-dlp
+    的格式串 `b[ext=mp4]/b` 自然筛掉，不是本次引入的行为）。因此只有
+    `duration not in (None, 0)` 才敢认定视频，**误判方向刻意保守**：解析不出时长
+    的视频会被当成动图（多下一个动图，不会漏），绝不会把图片伪造成「视频 N」。
+    """
+    if _looks_like_animated(entry):
+        return 'gif'
+    if entry.get('duration') not in (None, 0):
+        return 'video'
+    return None
+
+
 # ---------- 功能类 ----------
 
 class Functions:
@@ -274,15 +299,17 @@ class Functions:
                 （TaskWorker GIF 分支固定传入这三个 kwargs）
             selected_indexes: **关键字专用**（任务队列经 kwargs 通道传入，见
                 DEVELOPMENT.md 决策 31）。只转换这些条目序号（1-based，对应
-                **原始条目列表**的次序，None = 该链接下的全部动图）。序号来自
+                **原始条目列表**的次序，None = 该链接下的全部动图与视频）。序号来自
                 `fetch_gif_items` 返回的 items（页面只收集被勾选那些的 index），
-                此处再与动图判定求交集——序号可能来自过期的解析结果，不过滤
-                会把同一条推文里的普通视频也转成 GIF。
-        只处理动图：先按 `_looks_like_animated` 判定 playlist 各条目，用
-        `--playlist-items` 只下载动图条目（同一条推文里的普通视频既不下载也不
-        转码）；`selected_indexes` 非空时再按页面勾选收窄；整条链接不含动图时
-        直接抛错（任务失败并提示）。
-        返回最终 GIF 路径：单文件 str，含多个动图时为 list。
+                此处再与条目类型判定求交集——序号可能来自过期的解析结果，不过滤
+                会把同一条推文里的图片等无法转码的条目也纳入。
+        条目口径（决策 44）：先按 `_entry_kind` 判定 playlist 各条目，用
+        `--playlist-items` 只下载「动图 + 普通视频」条目（图片被排除）；
+        `selected_indexes` 非空时再按页面勾选收窄。普通视频自 2026-10-19 起
+        允许下载转 GIF，但必须由用户在页面上显式勾选（默认不勾选、勾了先弹确认），
+        任务函数本身不再额外拦截。整条链接既无动图也无视频时直接抛错（任务失败
+        并提示）。
+        返回最终 GIF 路径：单文件 str，含多个条目时为 list。
 
         进度约定：下载阶段无法解析为百分比（GIF 任务不走 YTDLP 进度解析），
         保持 0；转码阶段把 convert_to_gif 的 0~100 映射到 30~100
@@ -302,38 +329,48 @@ class Functions:
         if clean_url != url and log:
             log(f"链接含媒体序号后缀，已剥离: {clean_url}")
 
-        # ---- ① 条目识别：只挑动图，跳过同一条推文里的普通视频 ----
-        # （实测反馈：推文「2 动图 + 1 个 4K 视频」会把视频也转成 GIF）
+        # ---- ① 条目识别：动图 + 普通视频（2026-10-19 起视频也纳入，见决策 44）----
+        # 历史：此前只挑动图、跳过同一条推文里的普通视频（实测推文「2 动图 + 1 个
+        # 4K 视频」会把视频也转成 GIF）。现在视频由页面显式勾选才下载：默认不勾选，
+        # 勾了会先弹窗确认，故此处放行视频条目，但仍沿用 `_entry_kind` 过滤掉图片。
         if log:
-            log("[GIF] ① 正在识别动图条目（yt-dlp）...")
+            log("[GIF] ① 正在识别动图/视频条目（yt-dlp）...")
         try:
             info = _run_ytdlp_json(clean_url)
         except Exception as e:
             raise RuntimeError(f"识别动图条目失败: {e}")
         entries = [e for e in (info.get('entries') or []) if e] or [info]
-        animated = [i + 1 for i, e in enumerate(entries)
-                    if _looks_like_animated(e)]
-        if not animated:
-            raise RuntimeError("该链接没有动图（推文只含普通视频或图片），已跳过")
-        # selected_indexes 为页面选中的原始条目序号：与动图判定求交集，避免过期
-        # 序号把普通视频也纳入下载范围
+        kinds = {i + 1: _entry_kind(e) for i, e in enumerate(entries)}
+        convertible = [i for i, k in kinds.items() if k is not None]
+        if not convertible:
+            raise RuntimeError("该链接没有动图或视频（推文只含图片），已跳过")
+        # selected_indexes 为页面选中的原始条目序号：与「可转换条目」求交集，
+        # 避免过期序号把图片等无法转码的条目也纳入下载范围
         if selected_indexes:
-            wanted = [i for i in animated if i in set(selected_indexes)]
+            wanted = [i for i in convertible if i in set(selected_indexes)]
             if not wanted:
-                raise RuntimeError("选中的条目不是动图，可能链接已更换，请重新嗅探")
-            skipped = len(animated) - len(wanted)
+                raise RuntimeError("选中的条目无法转换（可能链接已更换），请重新解析")
+            skipped = len(convertible) - len(wanted)
             if log and skipped:
-                log(f"[GIF] 已按选择过滤：跳过 {skipped} 个未选中的动图")
-            animated = wanted
+                log(f"[GIF] 已按选择过滤：跳过 {skipped} 个未选中的条目")
+            downloadable = wanted
+        else:
+            downloadable = convertible
+        # 选中清单里动图/视频各自计数，用于日志与「批量转码可能很慢」的提示
+        n_gif = sum(1 for i in downloadable if kinds.get(i) == 'gif')
+        n_video = sum(1 for i in downloadable if kinds.get(i) == 'video')
         extra_args = None
-        if len(animated) < len(entries):
+        if len(downloadable) < len(entries):
             extra_args = ['--playlist-items',
-                          ','.join(str(i) for i in animated)]
+                          ','.join(str(i) for i in downloadable)]
             if log:
-                log(f"[GIF] 共 {len(entries)} 个条目，其中动图 {len(animated)} 个，"
-                    f"已跳过 {len(entries) - len(animated)} 个普通视频")
+                log(f"[GIF] 共 {len(entries)} 个条目，将下载 {len(downloadable)} 个"
+                    f"（动图 {n_gif} 个、视频 {n_video} 个）")
         elif log:
-            log(f"[GIF] 共 {len(entries)} 个条目，全部为动图")
+            log(f"[GIF] 共 {len(entries)} 个条目，全部下载"
+                f"（动图 {n_gif} 个、视频 {n_video} 个）")
+        if log and n_video:
+            log(f"[GIF] 注意：其中 {n_video} 个为普通视频，转 GIF 可能体积较大、耗时较长")
 
         # 中间 MP4 下载到独立临时目录：成功随目录清理（输出目录只留 .gif），
         # 失败时移入输出目录保留便于排查
@@ -482,7 +519,7 @@ class Functions:
 
     @staticmethod
     def fetch_gif_items(url, log=None):
-        """列出链接里的动图条目（动图页选择用，不下载媒体）。
+        """列出链接里的动图与普通视频条目（动图页选择用，不下载媒体）。
 
         返回::
 
@@ -490,16 +527,23 @@ class Functions:
               'title': 推文文本（顶层优先，回退首条条目）,
               'channel': 作者,
               'items': [
-                  {'index': 原始条目序号(1-based), 'url': 条目链接,
-                   'title': 条目标题, 'duration': 时长, 'cover_url': 封面},
+                  {'index': 原始条目序号(1-based), 'kind': 'gif' | 'video',
+                   'url': 条目链接, 'title': 条目标题, 'duration': 时长,
+                   'width'/'height': 分辨率(仅视频有), 'cover_url': 封面},
                   ...
               ],
             }
 
-        只列动图：按 `_looks_like_animated` 与 `download_and_convert_gif` 同一口径
-        过滤，**index 保留原始条目列表的次序**——下载时它以 `--playlist-items`
-        回传，序号必须与 yt-dlp 看到的条目列表一致，不能是筛选后的下标。
-        链接无动图时返回空 items（由页面提示，不抛错——与「解析失败」是两码事）。
+        **排序：动图在前、视频在后**（各自保持原始条目次序）。页面把列表顺序直接
+        当作网格顺序，因此动图永远排在连续的前段、视频排在后段——用户勾选动图
+        的顺序与视觉一致。`index` 仍是**原始条目序号**，不受排序影响。
+
+        分类走 `_entry_kind`，与 `download_and_convert_gif` 同一口径；`None` 档的
+        条目不入列表。**index 保留原始条目列表的次序**——下载
+        时它以 `--playlist-items` 回传，序号必须与 yt-dlp 看到的条目列表一致，
+        不能是筛选/排序后的下标。
+        链接既无动图也无视频时返回空 items（由页面提示，不抛错——与「解析失败」
+        是两码事）。
         """
         Functions._check_ytdlp()
         info = _run_ytdlp_json(url)
@@ -510,21 +554,30 @@ class Functions:
         channel = ((info.get('channel', '') or info.get('uploader', ''))
                    or top.get('channel', '') or top.get('uploader', ''))
 
-        items = []
+        gifs, videos = [], []
         for i, entry in enumerate(entries or [info]):
-            if not _looks_like_animated(entry):
+            kind = _entry_kind(entry)
+            if kind is None:
                 continue
             thumbs = _thumbnails_for(entry)
-            items.append({
+            item = {
                 'index': i + 1,
+                'kind': kind,
                 'url': entry.get('url') or entry.get('webpage_url') or '',
                 'title': entry.get('title') or '',
                 'duration': entry.get('duration') or 0,
                 'cover_url': ((thumbs[0]['url'] if thumbs else '')
                               or entry.get('thumbnail', '')),
-            })
+            }
+            (gifs if kind == 'gif' else videos).append(item)
+
+        items = gifs + videos
+        # 视频的显示编号按**视频出现顺序**从 1 开始（与动图各自独立计数）
+        for n, item in enumerate(videos, 1):
+            item['video_no'] = n
         if log:
-            log(f"动图条目解析完成: {title}, 共 {len(items)} 个动图")
+            log(f"条目解析完成: {title}, 共 {len(gifs)} 个动图、"
+                f"{len(videos)} 个视频")
         return {'title': title, 'channel': channel, 'items': items}
 
     @staticmethod

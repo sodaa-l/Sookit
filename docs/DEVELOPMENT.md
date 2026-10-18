@@ -20,7 +20,7 @@ src/sookit/        代码包 (标准 src 布局)
     │
     ├─ pages/          UI 页面层 (7 个页面)
     │   ├─ base.py     PageBase 基类 — 拖放、run_queued_task、自动关机
-    │   └─ ...         youtube_page (视频嗅探, 类名保留 YouTubePage 但已全站点通用) 等
+    │   └─ ...         youtube_page (视频嗅探, 类名保留 YouTubePage 但已全站点通用) 等；gif_page (X 动图/视频 → GIF，决策 44)
     │
     ├─ core/           业务逻辑层
     │   ├─ functions.py     Functions 类 — 功能中枢 + 少量仍在用的聚合入口（非兼容层）
@@ -129,7 +129,7 @@ flowchart TB
 
 ### 页面 (`pages/`)
 
-所有页面继承 `PageBase(QWidget)`，通过 `run_queued_task()` 加入任务队列。7 个页面：视频嗅探（youtube_page，嗅探/下载/封面/占位符与提示文案均已通用化，仅类名保留 YouTubePage）、直播监控（monitor_page，定位仍是 YouTube 轮询）、字幕烧录、音频覆盖、音频提取、任务队列、设置。
+所有页面继承 `PageBase(QWidget)`，通过 `run_queued_task()` 加入任务队列。7 个页面（另加 X 动图下载 gif_page）：视频嗅探（youtube_page，嗅探/下载/封面/占位符与提示文案均已通用化，仅类名保留 YouTubePage）、直播监控（monitor_page，定位仍是 YouTube 轮询）、字幕烧录、音频覆盖、音频提取、任务队列、设置。
 
 ### 自定义组件 (`widgets/`)
 
@@ -192,6 +192,7 @@ flowchart TB
 | 41 | 死代码清理：未使用 import / 零引用函数 / 门面再导出（2026-10-17） | **`core/functions.py` 不是兼容层**，只是「`Functions` 类 + 少量仍在用的聚合入口」，新增代码直接从源模块 import；删死代码的判定＝「本文件不用 + 无人从这里 import 且真用」，Qt 框架回调（dragEnterEvent/dropEvent/changeEvent/heightForWidth）不得按零引用删 | [41-dead-code-cleanup.md](decisions/41-dead-code-cleanup.md) |
 | 42 | yt-dlp 来源优先级反转为「内置优先」（2026-10-17） | 来源解析 **tools > PATH**（原 PATH > tools）：内置 `tools/yt-dlp/yt-dlp.exe` 存在就优先用它，仅在无内置版时回退 PATH。只有「两者都有」这一态的行为变化——此时走内置、可代更新、自动挂 `--js-runtimes deno`；PATH-only / tools-only / 皆无 三态不变。不加强制用 PATH 的开关 | [42-ytdlp-builtin-priority.md](decisions/42-ytdlp-builtin-priority.md) |
 | 43 | 封面圆角裁剪按控件 rect + 抗锯齿（2026-10-18） | 自绘封面的圆角裁剪路径**按控件 `rect` 建**（`QRectF(rect)`），不得按 `KeepAspectRatioByExpanding` 缩放后的 pixmap 建（x/y 为负 → 圆角落在控件外被切成直角）；`RoundedCoverWidget.paintEvent` 必须开 `Antialiasing`。动图页与队列页任务卡共用该控件，一处修复两页生效 | [43-cover-rounded-corner-clip.md](decisions/43-cover-rounded-corner-clip.md) |
+| 44 | 动图页把普通视频也列进列表（2026-10-19） | 条目分类统一走 `_entry_kind`（gif / video / None，判视频只认「有明确时长」，图片不入列表）；`fetch_gif_items` 返回 `kind` + `video_no`，**排序在数据层完成**（`gifs + videos`，动图必在前），`index` 仍是原始条目序号；视频显示「视频 N」、**默认不勾选**（勾选口径在 `GifItemCard` 里按 kind 决定，`_build_cards` 不得再统一 `set_checked(True)`）；「全选」只作用动图、「全不选」清空全部；点「下载」时若有视频先弹 `qfw.MessageBox` 确认（取消＝整单不入队），内核 `download_and_convert_gif` 不再拦视频、只过滤图片。视频沿用页面质量档，输出文件名与显示名无关 | [44-gif-page-video-items.md](decisions/44-gif-page-video-items.md) |
 
 ## AI 编码约定
 
@@ -382,4 +383,5 @@ mkdir -p dist/Sookit/tools && cp -r tools/aria2c tools/ffmpeg tools/yt-dlp dist/
 | QThread.run 内操作 QPixmap 崩溃/不可靠 | QPixmap/QGui 类仅主线程可用 | 工作线程内用 QImage 判断解码，主线程再转 QPixmap |
 | B 站短时重复请求 412 / x.com SSL 间歇被重置 | 站点风控 / 直连干扰 | 间隔数秒重试即可，非代码问题 |
 | GIF 日志里的 `✓`/`✗` 在 GBK 控制台抛 UnicodeEncodeError | 两字符不在 GBK 字符集，`print`/`logging` 按 cp936 编码 | 日志统一用纯中文/ASCII，不用符号标记；注意本机 `PYTHONUTF8=1` 会掩盖此问题，须在未设该变量的环境下验证（`≤`/`→`/`×` 等在 GBK 内可用） |
+| 动图页视频条目「全选」把视频也选上 | 勾选口径散落两处：`GifItemCard._checked` 与 `_build_cards` 里的 `set_checked(True)` | 默认勾选只在 `GifItemCard` 里按 `kind` 决定（动图 True / 视频 False），`_build_cards` 不得再统一置 True；「全选」作用域由 `_gif_indexes()` 收窄到动图（决策 44） |
 | `if not pixmap:` 判断恒为假（分支静默死掉） | PyQt6 的 `QPixmap` 未定义 `__bool__`：`bool(QPixmap())` 与 `bool(QPixmap(2,2))` 均为 True，空图也是"真" | 判空统一用 `isNull()`（全项目 11 处已如此）。`youtube_page._on_sniff_error` 的嗅探失败 InfoBar 曾因此从未弹出过，2026-10-16 已把提示移出该分支（决策 40 追加段） |

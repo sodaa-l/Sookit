@@ -1,16 +1,24 @@
 """
 X (Twitter) 动图下载 页面
 
-输入 X 动图链接 → 点「解析」列出推文里的动图（卡片网格，可勾选）→
+输入 X 推文链接 → 点「解析」列出推文里的动图与普通视频（卡片网格，可勾选）→
 下载选中项并转成 GIF。
 
+条目类型（2026-10-19，见 docs/decisions/44-gif-page-video-items.md）：
+- 动图显示「动图 N」、默认勾选，N 为原始条目序号；
+- 普通视频显示「视频 1/2/...」（按视频出现顺序独立编号）、默认不勾选，
+  勾选后点「下载」会先弹确认框，确认后才入队；
+- 列表顺序固定为「动图在前、视频在后」，同一类型内保持原始条目次序。
+输出 GIF 的文件名仍取 yt-dlp 下载到的 mp4 标题，与显示名无关。
+
 版式（2026-10-13 重构）：标题/说明 → 参数卡（链接·输出目录·编码质量）→
-选择区操作行（计数·全选·下载）→ 展示区。展示区是「空态占位 / 卡片网格」
+选择区操作行（计数·全选动图·下载）→ 展示区。展示区是「空态占位 / 卡片网格」
 二选一的堆叠槽位，也是页面唯一的伸缩项，故解析前后整页零位移。
 
 质量可选四档预设（core/gif_utils.GifQuality），或「自定义…」——参数填在
 浮层（_CustomParamsView）里，不插进页面布局，否则展开时会把卡片展示区挤没；
-确认后质量行显示参数摘要与「调整参数」文字按钮（仅该档出现），点它可重开浮层。
+确认后质量行显示参数摘要与「调整参数」按钮（仅该档出现），点它可重开浮层。
+视频条目沿用页面所选质量档，不特殊强制「最佳质量」。
 
 解析只读元数据（yt-dlp -J），不下载媒体；条目序号（1-based，原始条目列表次序）
 在下载时由 `download_and_convert_gif(..., selected_indexes=[...])`（关键字专用形参，
@@ -197,9 +205,11 @@ class GifItemCard(QWidget):
     无卡片底色、16:9 圆角(8)封面、封面下文字。选中不再画主题色描边（原绿框），
     改为右上角主题色圆底白色对勾；悬停时封面轻微变暗。
 
-    不显示时长：条目能进列表的前提就是 `_looks_like_animated` 判定
-    `duration in (None, 0)`（yt-dlp 不解码 animated_gif 的时长），
-    所以「有时长才显示」的标签永远不可达，2026-10-11 复核后移除。
+    不显示时长：条目能进列表的前提是 `_entry_kind` 判定为动图或视频，
+    动图 `duration in (None, 0)`（yt-dlp 不解码 animated_gif 的时长），
+    所以「有时长才显示」的标签对动图永远不可达，2026-10-11 复核后移除；
+    2026-10-19 起视频条目也进列表，但时长属于视频的常规信息、与「动图能否
+    显示时长」是两件事，仍不在此处显示（见决策 44）。
 
     卡片必须 setFixedSize：AdaptiveFlowLayout 只用 sizeHint().height() 定高，
     且会按 setWidgetMinimumWidth/MaximumWidth 覆写宽度（见 DEVELOPMENT.md 决策 30）。
@@ -216,7 +226,10 @@ class GifItemCard(QWidget):
     def __init__(self, item: dict, parent=None):
         super().__init__(parent)
         self.item = item
-        self._checked = True        # 与页面口径一致：解析后默认全选
+        self.kind = item.get('kind', 'gif')     # 'gif' | 'video'（决策 44）
+        # 默认勾选口径：动图全选（原口径不变），视频默认不选——视频转 GIF
+        # 体积大、耗时长，必须是用户显式选择的动作。
+        self._checked = self.kind != 'video'
         self._hovered = False
         self.setCursor(Qt.CursorShape.PointingHandCursor)
 
@@ -225,7 +238,13 @@ class GifItemCard(QWidget):
         # 封面是子控件，默认会吞掉点击；设穿透后点击落在卡片上统一处理勾选
         self.cover.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
 
-        self.title = QLabel(f"动图 {item['index']}")
+        # 显示名：动图沿用「动图 N」（N 为原始条目序号）；视频按视频出现顺序
+        # 显示「视频 1/2/...」（video_no 由 functions.fetch_gif_items 给出），
+        # 这样同一条推文里动图、视频各自从 1 开始编号，视觉上更自然。
+        if self.kind == 'video':
+            self.title = QLabel(f"视频 {item.get('video_no') or item['index']}")
+        else:
+            self.title = QLabel(f"动图 {item['index']}")
         self.title.setFont(self._TITLE_FONT)
         self.title.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
 
@@ -414,7 +433,7 @@ class GifPage(PageBase):
 
         layout.addWidget(qfw.TitleLabel("X (Twitter) 动图下载"))
         layout.addWidget(self.create_caption_label(
-            "粘贴 X 动图链接，解析后勾选要下载的动图，自动转为 GIF"))
+            "粘贴 X 链接，解析后勾选要下载的动图（视频默认不选），自动转为 GIF"))
 
         # 检查 yt-dlp 可用性（PATH 全局或内置 tools/ 均可）
         if not is_ytdlp_available():
@@ -435,7 +454,7 @@ class GifPage(PageBase):
 
         self.url_input = qfw.LineEdit()
         self.url_input.setPlaceholderText(
-            "粘贴 X/Twitter 动图链接，如 https://x.com/xxx/status/123")
+            "粘贴 X/Twitter 推文链接，如 https://x.com/xxx/status/123")
         self.url_input.setClearButtonEnabled(True)
         self.url_input.returnPressed.connect(self._start_parse)
         self.parse_btn = qfw.PrimaryPushButton("解析")
@@ -464,11 +483,11 @@ class GifPage(PageBase):
         self.quality_combo.setCurrentIndex(self._DEFAULT_QUALITY_INDEX)
         self.quality_combo.setMinimumWidth(180)
         self.quality_combo.currentIndexChanged.connect(self._on_quality_changed)
-        # 自定义参数摘要 + 重开浮层的文字按钮（仅「自定义…」档出现）。
+        # 自定义参数摘要 + 重开浮层的按钮（仅「自定义…」档出现）。
         # 本行必须装在**定高容器**里：按需显隐会让行高在 27↔32px 之间跳，
         # 把下面的卡片区推动几像素。
         self.custom_summary = qfw.CaptionLabel("")
-        self.custom_edit_btn = qfw.TransparentPushButton("调整参数")
+        self.custom_edit_btn = qfw.PushButton("调整参数")
         self.custom_edit_btn.setToolTip("打开自定义编码参数")
         self.custom_edit_btn.clicked.connect(lambda: self._open_custom_flyout())
         quality_row = QWidget()
@@ -487,15 +506,16 @@ class GifPage(PageBase):
 
         layout.addWidget(card)
 
-        # ---- 选择区操作行（计数 + 全选 + 下载）----
+        # ---- 选择区操作行（计数 + 全选动图 + 下载）----
         # 全选键从链接栏移到这里（与「选中」语义放一起）；本行始终存在，
         # 卡片区是页面唯一的伸缩项（下方 view_stack），故解析前后位置不变。
+        # 文案随作用域切换：「全选动图」/「全不选」（决策 44）。
         action_row = QHBoxLayout()
         action_row.setSpacing(8)
         self.selection_hint = self.create_caption_label("")
         action_row.addWidget(self.selection_hint)
         action_row.addStretch(1)
-        self.reselect_btn = qfw.PushButton("全选")
+        self.reselect_btn = qfw.PushButton("全选动图")
         self.reselect_btn.setFixedWidth(96)
         self.reselect_btn.setEnabled(False)     # 解析出卡片后才可用
         self.reselect_btn.clicked.connect(self._toggle_all)
@@ -572,12 +592,12 @@ class GifPage(PageBase):
         icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
         outer.addWidget(icon)
 
-        tip = qfw.BodyLabel("还没有解析动图")
+        tip = qfw.BodyLabel("还没有解析条目")
         tip.setAlignment(Qt.AlignmentFlag.AlignCenter)
         outer.addWidget(tip)
 
         # 与上一行同为 BodyLabel（字号一致）
-        hint = qfw.BodyLabel("请粘贴 X 动图链接并解析")
+        hint = qfw.BodyLabel("请粘贴 X 链接并解析")
         hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
         outer.addWidget(hint)
 
@@ -603,7 +623,7 @@ class GifPage(PageBase):
     def _open_custom_flyout(self):
         """在质量下拉上弹「自定义参数」浮层。
 
-        两个入口：下拉里选「自定义…」，以及质量行的「调整参数」文字按钮——浮层点
+        两个入口：下拉里选「自定义…」，以及质量行的「调整参数」按钮——浮层点
         空白处即关（= 确定），没有这个按钮就只能反复切档位回来才能重开。
         """
         if self._custom_flyout is not None and self._custom_flyout.isVisible():
@@ -648,7 +668,7 @@ class GifPage(PageBase):
                      content=f"{err}，已保持原档位", duration=4000)
 
     def _update_custom_summary(self):
-        """刷新质量行右侧的摘要与「调整参数」文字按钮（两者仅自定义档出现）。
+        """刷新质量行右侧的摘要与「调整参数」按钮（两者仅自定义档出现）。
 
         显隐都发生在定高容器里（见 `__init__` 的 quality_row），故不改变行高。
         """
@@ -668,7 +688,7 @@ class GifPage(PageBase):
         url = self.url_input.text().strip()
         if not url:
             show_infobar(self, "warning", title="提示",
-                         content="请输入动图链接", duration=3000)
+                         content="请输入链接", duration=3000)
             return
         if not re.search(r'(?:x\.com|twitter\.com)/.+/status/\d+', url):
             show_infobar(self, "warning", title="提示",
@@ -684,9 +704,9 @@ class GifPage(PageBase):
         self._parsed_url = None
         self._parsing_url = clean_url   # 解析期间用户可能改输入框，序号归属以它为准
         self.parse_btn.setEnabled(False)
-        self.log("正在解析动图列表（读取标题/封面，不下载媒体）...")
+        self.log("正在解析条目列表（读取标题/封面，不下载媒体）...")
         show_infobar(self, "info", title="正在解析",
-                     content="正在读取推文里的动图列表", duration=3000)
+                     content="正在读取推文里的动图/视频列表", duration=3000)
 
         worker = GenericWorker(Functions.fetch_gif_items, args=(clean_url,))
         worker.done.connect(lambda data, s=seq: self._on_parse_done(s, data))
@@ -726,21 +746,35 @@ class GifPage(PageBase):
         items = data.get('items') or []
         self._last_title = data.get('title') or ''
         self._last_channel = data.get('channel') or ''
+        n_gif, n_video = self._count_items(items)
         if not items:
-            self.log("该链接没有动图（推文只含普通视频或图片）")
-            self.selection_hint.setText("该链接没有动图")
+            self.log("该链接没有动图或视频（推文只含图片）")
+            self.selection_hint.setText("该链接没有动图或视频")
             self._update_dl_button()
             # 系统通知（决策 40 扩展）：0 条对用户是「没拿到想要的结果」，单独提示
             notify_result_notice("未找到动图", self._last_title or self._parsing_url,
-                                 "该链接没有动图（推文只含普通视频或图片）")
+                                 "该链接没有动图或视频（推文只含图片）")
             return
         self._parsed_url = self._parsing_url
-        self.log(f"解析到 {len(items)} 个动图，默认全部勾选")
+        # 列表顺序由 fetch_gif_items 保证「动图在前、视频在后」（决策 44）
+        if n_video:
+            self.log(f"解析到 {n_gif} 个动图、{n_video} 个视频；"
+                     f"动图默认勾选，视频需手动勾选")
+        else:
+            self.log(f"解析到 {n_gif} 个动图，默认全部勾选")
         self._build_cards(items)
         self._start_cover_load(seq)
         # 系统通知（决策 40 扩展）：主窗口不在焦点时告知解析结果
+        summary = (f"共解析到 {n_gif} 个动图、{n_video} 个视频" if n_video
+                   else f"共解析到 {n_gif} 个动图")
         notify_result_notice("解析成功", self._last_title or self._parsing_url,
-                             f"共解析到 {len(items)} 个动图")
+                             summary)
+
+    @staticmethod
+    def _count_items(items):
+        """解析结果的动图/视频计数（决策 44）：返回 (n_gif, n_video)。"""
+        n_video = sum(1 for i in items if i.get('kind') == 'video')
+        return len(items) - n_video, n_video
 
     def _on_parse_error(self, seq: int, msg: str):
         if seq != self._parse_seq:
@@ -767,7 +801,8 @@ class GifPage(PageBase):
         self._items = items
         for item in items:
             card = GifItemCard(item)
-            card.set_checked(True)   # 默认全部勾选
+            # 默认勾选口径在卡片里按 kind 决定：动图勾选、视频不勾选（决策 44），
+            # 这里不能再统一 set_checked(True) 否则会把视频也选上
             card.toggled.connect(self._update_dl_button)
             self._cards[item['index']] = card
             self.items_flow.addWidget(card)
@@ -804,13 +839,29 @@ class GifPage(PageBase):
         if card is not None:
             card.cover.setText("封面加载失败")
 
+    def _gif_indexes(self):
+        """「全选动图」的作用域：有动图时只到动图，纯视频链接才退回全部条目。"""
+        return [i for i, c in self._cards.items() if c.kind != 'video'] \
+            or list(self._cards)
+
     def _toggle_all(self):
-        """「全选/全不选」：全勾选时取消全部，否则全勾选。"""
-        total = len(self._cards)
-        self._set_all_checked(not (total and len(self._selected_indexes()) == total))
+        """「全选动图/全不选」，口径见决策 44：
+
+        - 「全选动图」只勾动图，**不碰视频**（视频必须由用户手动勾选并确认，全选不得
+          悄悄把视频带上）；
+        - 「全不选」清空全部（含用户手动勾上的视频），否则按钮会变成“点不干净”。
+        """
+        scope = self._gif_indexes()
+        all_on = bool(scope) and all(self._cards[i].is_checked() for i in scope)
+        self._set_all_checked(not all_on)
 
     def _set_all_checked(self, checked: bool):
+        # 勾选时跳过视频：视频只能手动勾（决策 44）。纯视频链接没有动图可选，
+        # 此时作用域退回全部条目，按钮文案也退回「全选」，仍然可用。
+        has_gif = any(c.kind != 'video' for c in self._cards.values())
         for card in self._cards.values():
+            if checked and has_gif and card.kind == 'video':
+                continue
             card.set_checked(checked)
         self._update_dl_button()
 
@@ -823,10 +874,32 @@ class GifPage(PageBase):
         total = len(self._cards)
         self.dl_btn.setEnabled(n > 0)
         self.reselect_btn.setEnabled(total > 0)
-        # 按钮文案表示"点下去会发生什么"：全勾选时是「全不选」，否则是「全选」
-        self.reselect_btn.setText("全不选" if n == total and total else "全选")
+        # 按钮文案表示"点下去会发生什么"：作用域内全勾选时是「全不选」，否则「全选动图」
+        # （纯视频链接没有动图可选、作用域退回全部条目，此时仍用「全选」）。
+        scope = self._gif_indexes()
+        all_on = bool(scope) and all(self._cards[i].is_checked() for i in scope)
+        if all_on:
+            self.reselect_btn.setText("全不选")
+        elif any(c.kind != 'video' for c in self._cards.values()):
+            self.reselect_btn.setText("全选动图")
+        else:
+            self.reselect_btn.setText("全选")
         if total:
-            self.selection_hint.setText(f"共 {total} 个动图 · 已选 {n} 个")
+            n_gif, n_video = self._count_kinds()
+            if n_gif and n_video:
+                head = f"共 {n_gif} 个动图、{n_video} 个视频"
+            elif n_video:
+                head = f"共 {n_video} 个视频"
+            else:
+                head = f"共 {n_gif} 个动图"
+            self.selection_hint.setText(f"{head} · 已选 {n} 个")
+
+    def _count_kinds(self, indexes=None):
+        """统计卡片按类型计数（决策 44）。indexes 为空则统计全部卡片。"""
+        cards = self._cards if indexes is None else {
+            i: self._cards[i] for i in indexes if i in self._cards}
+        n_gif = sum(1 for c in cards.values() if c.kind != 'video')
+        return n_gif, len(cards) - n_gif
 
     # -------- 入队 --------
 
@@ -834,7 +907,7 @@ class GifPage(PageBase):
         url = self.url_input.text().strip()
         if not url:
             show_infobar(self, "warning", title="提示",
-                         content="请输入动图链接", duration=3000)
+                         content="请输入链接", duration=3000)
             return
         if not re.search(r'(?:x\.com|twitter\.com)/.+/status/\d+', url):
             show_infobar(self, "warning", title="提示",
@@ -843,7 +916,7 @@ class GifPage(PageBase):
             return
         if not self._cards:
             show_infobar(self, "warning", title="提示",
-                         content="请先解析链接并选择要下载的动图", duration=3000)
+                         content="请先解析链接并选择要下载的条目", duration=3000)
             return
         if _strip_media_index(url) != self._parsed_url:
             # 条目序号来自上一次解析，链接已换 → 序号对不上，必须重解析
@@ -854,8 +927,31 @@ class GifPage(PageBase):
         selected_indexes = self._selected_indexes()
         if not selected_indexes:
             show_infobar(self, "warning", title="提示",
-                         content="请至少勾选一个动图", duration=3000)
+                         content="请至少勾选一个动图或视频", duration=3000)
             return
+
+        # 视频转 GIF 的确认（决策 44）：视频默认不勾选，是用户显式勾上的，但视频
+        # 转 GIF 体积大、耗时长（尤其 4K 长视频），下载前最后一次确认。取消则整单
+        # 返回、不入队，由用户自行取消勾选后再点下载。
+        n_gif, n_video = self._count_kinds(selected_indexes)
+        if n_video:
+            detail = (f"其中 {n_video} 个为普通视频" if n_gif
+                      else f"选中的 {n_video} 个均为普通视频")
+            # 文案手动预折行：qfw MessageBox 宽度取未折行文本的 sizeHint，
+            # 不预折行会撑得极宽（实测 ~700px，见 youtube_page 同类弹窗）
+            box = qfw.MessageBox(
+                "视频将转为 GIF",
+                f"共选中 {len(selected_indexes)} 个条目，{detail}。\n"
+                "\n"
+                "视频转 GIF 会明显增大体积并耗时较长，\n"
+                "分辨率越高、时长越长越耗时。\n"
+                "\n"
+                "仍要转为 GIF，还是返回取消勾选视频？",
+                self.window())
+            box.yesButton.setText("仍要转 GIF")
+            box.cancelButton.setText("返回修改")
+            if not box.exec():
+                return
 
         is_custom = self.quality_combo.currentText() == _CUSTOM_ITEM
         quality = GifQuality.CUSTOM if is_custom else \
@@ -919,7 +1015,7 @@ class GifPage(PageBase):
             metadata=metadata,
         )
         show_infobar(self, "info", title="任务已加入队列",
-                     content=f"共 {len(selected_indexes)} 个动图，"
+                     content=f"共 {len(selected_indexes)} 个条目，"
                              f"下载完成后自动转码为 GIF",
                      duration=3000)
 
