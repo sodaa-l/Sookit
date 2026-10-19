@@ -193,6 +193,7 @@ flowchart TB
 | 42 | yt-dlp 来源优先级反转为「内置优先」（2026-10-17） | 来源解析 **tools > PATH**（原 PATH > tools）：内置 `tools/yt-dlp/yt-dlp.exe` 存在就优先用它，仅在无内置版时回退 PATH。只有「两者都有」这一态的行为变化——此时走内置、可代更新、自动挂 `--js-runtimes deno`；PATH-only / tools-only / 皆无 三态不变。不加强制用 PATH 的开关 | [42-ytdlp-builtin-priority.md](decisions/42-ytdlp-builtin-priority.md) |
 | 43 | 封面圆角裁剪按控件 rect + 抗锯齿（2026-10-18） | 自绘封面的圆角裁剪路径**按控件 `rect` 建**（`QRectF(rect)`），不得按 `KeepAspectRatioByExpanding` 缩放后的 pixmap 建（x/y 为负 → 圆角落在控件外被切成直角）；`RoundedCoverWidget.paintEvent` 必须开 `Antialiasing`。动图页与队列页任务卡共用该控件，一处修复两页生效 | [43-cover-rounded-corner-clip.md](decisions/43-cover-rounded-corner-clip.md) |
 | 44 | 动图页把普通视频也列进列表（2026-10-19） | 条目分类统一走 `_entry_kind`（gif / video / None，判视频只认「有明确时长」，图片不入列表）；`fetch_gif_items` 返回 `kind` + `video_no`，**排序在数据层完成**（`gifs + videos`，动图必在前），`index` 仍是原始条目序号；视频显示「视频 N」、**默认不勾选**（勾选口径在 `GifItemCard` 里按 kind 决定，`_build_cards` 不得再统一 `set_checked(True)`）；「全选」只作用动图、「全不选」清空全部；点「下载」时若有视频先弹 `qfw.MessageBox` 确认（取消＝整单不入队），内核 `download_and_convert_gif` 不再拦视频、只过滤图片。视频沿用页面质量档，输出文件名与显示名无关 | [44-gif-page-video-items.md](decisions/44-gif-page-video-items.md) |
+| 45 | aria2c 原生进度行 ETA/速度格式纠正 + 缺失即清空（2026-10-19） | aria2c 原生行 ETA 是**带单位时长**（`19s`/`1m42s`/`3m`，不是 `mm:ss`）、`DL:` 后**无 `/s`**——旧正则两条都对不上（497 行命中 0）；解析后 ETA 统一归一 `mm:ss`（小时级 `h:mm:ss`，`0s` 视为未知）；`_on_progress` 的 ETA **缺失即清空**，不沿用旧值（否则界面僵在假时间上） | [45-aria2c-eta-format.md](decisions/45-aria2c-eta-format.md) |
 
 ## AI 编码约定
 

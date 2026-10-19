@@ -426,7 +426,9 @@ class TaskQueueManager(QObject):
         
         task.progress = progress_data.get("progress", task.progress)
         task.speed = progress_data.get("speed", task.speed)
-        task.eta = progress_data.get("eta", task.eta)
+        # ETA 不做「缺字段沿用旧值」：新一行没解析出 ETA 就说明此刻确实未知
+        # （如 yt-dlp 的 `ETA Unknown`），沿用旧值会让界面僵在一个不再成立的假时间上（见决策 45）
+        task.eta = progress_data.get("eta", "")
         self.task_updated.emit(task)
     
     def _on_log(self, task_id: str, msg: str):
@@ -663,9 +665,10 @@ class ProgressParser:
         解析 yt-dlp 输出
         原生下载器: [download]   5.2% of   50.21MiB at  2.50MiB/s ETA 00:19
         aria2c:     [aria2c] Downloaded 5.2% of 50.21MiB at 2.50MiB/s ETA 00:19
-        aria2c 原生: [#a1b2c3 0.1MiB/50.2MiB(5%) CN:2 DL:1.2MiB/s ETA:00:19]
+        aria2c 原生: [#a1b2c3 0.1MiB/50.2MiB(5%) CN:2 DL:1.2MiB ETA:19s]
         HLS 分片:   [download]  14.1% of ~   1.12GiB at 4.42MiB/s ETA 03:52 (frag 142/1004)
         返回: {"progress": 5.2, "speed": "1.2MiB/s", "eta": "00:19"}
+        ETA 一律归一成 `mm:ss`（aria2c 的 `19s`/`1m42s` 会换算，见决策 45）。
         """
         # 匹配进度百分比（兼容 yt-dlp 原生 [download] / aria2c 包装 [aria2c] 等前缀格式）
         progress_match = re.search(
@@ -704,17 +707,42 @@ class ProgressParser:
             r'\[\#[0-9a-fA-F]+[^\n]*?\((\d+(?:\.\d+)?)%\)', line)
         if aria2c_match:
             result = {"progress": float(aria2c_match.group(1))}
-            # aria2c 原生速度格式: DL:1.2MiB/s
-            speed_match = re.search(r'DL:\s*(\d+\.?\d*\w+/s)', line)
+            # aria2c 原生速度格式: DL:1.2MiB（无 `/s` 后缀，与 yt-dlp 的 `at 1.2MiB/s` 不同）
+            speed_match = re.search(r'DL:\s*(\d+(?:\.\d+)?[KMG]?i?B)', line)
             if speed_match:
-                result["speed"] = speed_match.group(1)
-            # aria2c 原生 ETA 格式: ETA:00:19
-            eta_match = re.search(r'ETA:\s*(\d+:\d+)', line)
+                result["speed"] = f"{speed_match.group(1)}/s"
+            # aria2c 原生 ETA 格式: ETA:19s / ETA:1m42s / ETA:3m / ETA:1h2m3s（不是 `mm:ss`）
+            eta_match = re.search(r'ETA:\s*((?:\d+h)?(?:\d+m)?(?:\d+s)?)', line)
             if eta_match:
-                result["eta"] = eta_match.group(1)
+                eta = ProgressParser._aria2c_eta_to_mmss(eta_match.group(1))
+                if eta:
+                    result["eta"] = eta
             return result
 
         return None
+
+    @staticmethod
+    def _aria2c_eta_to_mmss(token: str) -> str:
+        """把 aria2c 的 ETA token（`19s` / `1m42s` / `3m` / `1h2m3s`）换算成 `mm:ss`。
+
+        空 token 或全为 0（aria2c 卡在 `DL:0B` 时给的占位）视为未知，返回空串。
+        小时级超出 `mm:ss` 表意，改用 `h:mm:ss`。
+        """
+        if not token:
+            return ""
+        h = re.search(r'(\d+)h', token)
+        m = re.search(r'(\d+)m', token)
+        s = re.search(r'(\d+)s', token)
+        total = (int(h.group(1)) * 3600 if h else 0) + \
+                (int(m.group(1)) * 60 if m else 0) + \
+                (int(s.group(1)) if s else 0)
+        if total <= 0:
+            return ""
+        hours, rem = divmod(total, 3600)
+        minutes, seconds = divmod(rem, 60)
+        if hours:
+            return f"{hours}:{minutes:02d}:{seconds:02d}"
+        return f"{minutes:02d}:{seconds:02d}"
     
     @staticmethod
     def parse_ffmpeg_output(line: str, total_duration: float = None) -> dict:
