@@ -5,8 +5,8 @@ core/sniff_options.py
 
 把 `Functions.sniff_youtube` 产出的格式列表归并成「用户能直接理解并点选」的档位：
 
-- 视频档：按 height 去重，最多 5 档；最高分辨率那一档改标题为「最佳画质」
-- 音频档：最佳音质；存在更小的独立音频流时再给一档
+- 视频档：按 height 去重，最多 5 档；档位名只标分辨率与帧率
+- 音频档：每个独立音轨一档，同码率的 drc/非 drc 变体归并，档位名就是码率
 
 每个档位都编译成**具体的 yt-dlp 选择器**（用嗅探到的 format_id 精确拼接），
 因此行内副标题（编码/容器/大小估算）与实际下载到的流一致；同时按容器族挑
@@ -208,6 +208,40 @@ def _video_option(formats, height):
     }
 
 
+def _audio_tracks(formats):
+    """独立音轨去重后按码率降序返回（默认视图的音频档来源）。
+
+    YouTube 同一码率常有多个变体：`140` 与 `140-drc`、`251` 与 `251-drc`、
+    甚至 mp4a/opus 双编码同码率。逐条平铺会把列表塞满重复项，所以按
+    「码率取整到 kbps」归并，同码率里优先非 drc（动态范围压缩版音质更差）、
+    再优先更大的文件。
+
+    这里**不做码率阈值筛选**：曾按「最高码率 - 2」筛第二档，导致 129.5kbps
+    的 mp4a 因为高于阈值被整批丢掉、第二档回落到 65kbps（用户实际遇到的
+    问题）。音频档本来就少，全列出更好选。
+    """
+    tracks = [f for f in formats if f.get('type') == FormatType.AUDIO_ONLY]
+    groups = {}
+    for fmt in tracks:
+        abr = fmt.get('abr') or 0
+        if abr <= 0:
+            # 码率未知的独立音轨（少见）：单独成档，别丢弃
+            groups[('unk', fmt.get('format_id'))] = [fmt]
+            continue
+        groups.setdefault(int(round(abr)), []).append(fmt)
+
+    picked = []
+    for key, group in groups.items():
+        if isinstance(key, tuple):        # 码率未知组
+            picked.extend(group)
+            continue
+        best = max(group, key=lambda f: ('drc' not in str(f.get('format_id') or ''),
+                                         f.get('filesize') or 0))
+        picked.append(best)
+    picked.sort(key=lambda f: (f.get('abr') or 0, f.get('filesize') or 0), reverse=True)
+    return picked
+
+
 def _audio_option(fmt, title, fallback_subtitle):
     if fmt is None:
         return None
@@ -250,33 +284,18 @@ def build_view_options(formats):
         option = _video_option(formats, height)
         if option:
             video_options.append(option)
-    if video_options:
-        # 「最佳画质」= 最高档本身，不另用 bestvideo+bestaudio/best 交给 yt-dlp 撞运气：
-        # yt-dlp 可能配出跨编码族组合（如 av01-mp4 + opus）→ 只能兜底合 mkv，
-        # 而决策 38 的 mkv 风险弹窗只服务表格视图的人工勾选，默认视图不该出现
-        best = video_options[0]
-        resolution = best['title']
-        best['id'] = 'best'
-        best['title'] = '最佳画质'
-        best['subtitle'] = _join_meta([resolution, best['subtitle']])
+    # 视频档一律标分辨率（最高档也不叫「最佳画质」）：档位名只描述这一行是什么，
+    # 让用户横向比较；「哪个最好」由排序（高分辨率在前）+ 默认预选首行表达即可。
 
     # ---- 音频档 ----
     # 只在确实有独立音频流时给出：只有成品格式的站点上 bestaudio 会退化成整个视频
     # 文件，「仅下载音频」就成了假承诺
     audio_options = []
-    best_audio = _pick_audio(formats)
-    if best_audio is not None:
-        audio_options.append(_audio_option(best_audio, '仅下载音频 · 最佳音质',
-                                           '只保留声音，转换为音频文件'))
-        smaller = [f for f in formats
-                   if f.get('type') == FormatType.AUDIO_ONLY
-                   and (f.get('abr') or 0) > 0
-                   and (f.get('abr') or 0) < (best_audio.get('abr') or 0) - 2]
-        if smaller:
-            # 要小文件但别太小：取更小那批里码率最高的一档
-            low = max(smaller, key=lambda f: f.get('abr') or 0)
-            abr = int(round(low.get('abr') or 0))
-            audio_options.append(_audio_option(low, f'仅下载音频 · {abr}kbps',
-                                               '只保留声音，文件更小'))
+    for fmt in _audio_tracks(formats):
+        abr = int(round(fmt.get('abr') or 0))
+        # 档位名就是码率，不写「最佳音质」：用户要的是「这条多大、多好」，
+        # 而不是替用户下结论；同码率下不同编码各自可见，方便挑容器。
+        title = f'{abr}kbps' if abr else (fmt.get('acodec') or '音频')
+        audio_options.append(_audio_option(fmt, title, '只保留声音，转换为音频文件'))
 
     return {'video': video_options, 'audio': audio_options}

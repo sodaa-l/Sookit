@@ -36,7 +36,7 @@
 
 ```
 ┌──────────────────────────────────────────────┐
-│ 最佳画质                                  ⬤  │  ← 副标题：2160p 60fps · vp9 + opus · webm · 约 1.0GB
+│ 2160p 60fps                               ⬤  │  ← 副标题：vp9 + opus · webm · 约 1.0GB
 ├──────────────────────────────────────────────┤
 │ 1080p 60fps                               ○  │
 ├──────────────────────────────────────────────┤
@@ -44,15 +44,28 @@
 └──────────────────────────────────────────────┘
     音频
 ┌──────────────────────────────────────────────┐
-│ 仅下载音频 · 最佳音质                      ○  │
+│ 129kbps                                    ○  │  ← 副标题：mp4a · m4a · 约 89.3MB
 └──────────────────────────────────────────────┘
 ```
+
+**档位名一律只描述「这一行是什么」，不用「最佳画质/最佳音质」这种评价性文案**：
+评价性文案让各档无法横向比较（「最佳」到底是多少？），也让用户没法在
+「画质稍差但小一半」之间做取舍。哪个更好交给**排序**（高分辨率/高码率在前）
+和**默认预选首行**表达。
+
+**行宽上限 440px（`OPTION_ROW_MAX_WIDTH` / `OptionRow.MAX_WIDTH`）**：行是
+「清单项」不是表格单元格，铺满整栏会在宽窗口下把单选圈推到很远、中间留出
+大片空白。行用 `Expanding + setMaximumWidth`，剩余宽度由末尾 `stretch` 吸收。
+注意**不要**给 `insertWidget` 传 `alignment=AlignLeft`：`OptionRow` 是自绘控件，
+默认 `sizeHint` 无效 `(-1,-1)`，带对齐会被收缩成 0 宽而完全看不见——所以
+`OptionRow` 必须实现按内容估算的 `sizeHint()`（`MIN_WIDTH=320`～`MAX_WIDTH=440`）。
 
 **与表格视图的视觉区分**（这是刻意的）：无表头、无网格线、无多选框。语义是
 「**选一个**」而非「勾多个」，所以反馈控件是**单选圈**。
 
 `src/sookit/widgets/option_row.py` 的 `OptionRow(QWidget)` 自绘整行：
-- 类常量 `ROW_HEIGHT=68`、`RADIUS=8`、`PADDING=14`、`CIRCLE_D=18`；
+- 类常量 `ROW_HEIGHT=68`、`RADIUS=8`、`PADDING=14`、`CIRCLE_D=18`、
+  `MIN_WIDTH=320`、`MAX_WIDTH=440`；
 - 选中：主题色 alpha 28 填充 + 1.4px 主题色描边 + 右侧实心圆 + 白对勾；
 - 未选：白 alpha 190（暗色 18）填充 + 1.2px 空心圆；
 - `setAttribute(WA_Hover)` + `enterEvent/leaveEvent` 切 hover 底色；
@@ -72,19 +85,22 @@
 option 是 `{'id', 'kind', 'title', 'subtitle', 'spec'}`：
 
 - **视频档**：按 `height` 去重（同一高度只出一行，该高度内 `max` by `(fps, filesize)`），
-  取前 `MAX_VIDEO_ROWS = 5` 个高度，从高到低。
-  - 「最佳画质」**不是**独立的 `bestvideo+bestaudio/best` 档，而是把**最高分辨率那一档
-    改写标题**（`id='best'`、`title='最佳画质'`、副标题前置原分辨率）。
-  - 原因：`bestvideo+bestaudio` 由 yt-dlp 自由配对，可能配出**跨编码族**组合
-    （实测形态：av01-mp4 视频 + opus 音频）→ 只能兜底合 mkv。而决策 38 的 mkv 风险
-    弹窗只服务于表格视图的人工勾选，默认视图不该出现这种后果。改写成「最高档」
-    后，`spec` 是嗅探到的**精确 format_id 拼接**，落点确定。
+  取前 `MAX_VIDEO_ROWS = 5` 个高度，从高到低。**最高档也不叫「最佳画质」**，
+  一律标分辨率和帧率（`720p` / `1080p 60fps`）。
+  - 不设独立的 `bestvideo+bestaudio/best` 档：该选择器由 yt-dlp 自由配对，可能配出
+    **跨编码族**组合（实测形态：av01-mp4 视频 + opus 音频）→ 只能兜底合 mkv。而决策 38
+    的 mkv 风险弹窗只服务于表格视图的人工勾选，默认视图不该出现这种后果。每档的
+    `spec` 都是嗅探到的**精确 format_id 拼接**，落点确定。
 - **音频档**：仅当存在**独立音频流**（`type == 音频流`）时才给。
   - 只有成品格式的站点（如 archive.org 的 `2|avi`）上，`bestaudio` 会退化成整个
     视频文件——「仅下载音频」就成了假承诺，所以此时 audio 列表为空。
-  - 第一档「仅下载音频 · 最佳音质」；第二档仅在存在
-    `abr > 0 且 abr < best_abr - 2` 的更小音轨时给，取这批里码率最高的，
-    标题 `仅下载音频 · {int(round(abr))}kbps`。
+  - 音频档由 `_audio_tracks(formats)` 归并：按 `int(round(abr))` 分组，**同码率只出一档**
+    （yt-dlp 常给同一码率的 drc 与非 drc 两个变体，逐条平铺会塞满重复项），同组优先
+    非 drc 变体、再比 filesize；`abr <= 0` 的用 `format_id` 单独成档、不丢弃；
+    最后按码率降序排。标题 `f'{abr}kbps'`（无码率时退回 `acodec`）。
+  - **不做码率阈值筛选**，全部独立音轨都要能选到。第一版曾筛
+    `abr < best_abr - 2` 取次高，实测把 129.5kbps 的 mp4a 整批吃掉
+    （它高于 128.6-2），用户能选的最低只剩 65kbps。
 - 视频与音频在 UI 侧**全局互斥单选**（`_select_option` 遍历所有行，只有一个 `True`）：
   一次下载只产出一样东西。
 
@@ -179,7 +195,7 @@ finally:
 | `core/functions.py` | `sniff_youtube` 的 format dict 新增 `height`/`fps`/`abr` |
 | `core/sniff_options.py` | **新建**：档位归并 + 容器族判定（纯函数） |
 | `widgets/option_row.py` | **新建**：`OptionRow` 自绘单选行控件 |
-| `pages/youtube_page.py` | 右面板加 SegmentedWidget + 两视图容器；新增 `_on_view_changed`/`_apply_view`/`_clear_default_view`/`_section_label`/`_populate_default_view`/`_select_option`/`do_download_default`；四个复位点；初始化恢复偏好 |
+| `pages/youtube_page.py` | 右面板加 SegmentedWidget + 两视图容器；新增 `_on_view_changed`/`_apply_view`/`_clear_default_view`/`_section_label`/`_populate_default_view`/`_select_option`/`do_download_default`；四个复位点；初始化恢复偏好；`OPTION_ROW_MAX_WIDTH=440`；`option_scroll.enableTransparentBackground()`；空态文案 `setWordWrap(True)`；两个下载按钮统一 240×32 居中 |
 
 ## 风险
 
@@ -195,8 +211,10 @@ finally:
 
 1. `compileall` 全部改动文件通过。
 2. `build_view_options` 离屏断言（7 条伪造格式，覆盖 YouTube 全形态）：
-   视频 5 档（最佳画质/1080p60/720p/480p/360p）+ 音频 2 档，
-   `最佳画质` 副标题 `2160p 60fps · vp9 + opus · webm · 约 1.0GB`、`spec='313+251'`。
+   视频 5 档（2160p60/1080p60/720p/480p/360p）+ 音频 2 档，
+   最高档副标题 `2160p 60fps · vp9 + opus · webm · 约 1.0GB`、`spec='313+251'`。
+   音频归并另用 10 条含 drc 变体的真实形态数据验证：10 条 → 4 档
+   （129kbps/128kbps/65kbps/48kbps），无重复项、无遗漏。
 3. 边界形态：`muxed-only`（archive.org 式）→ video 仅 1 档、audio 为空；
    `audio-only` → video 为空、audio 仅 1 档；`sparse`（无 filesize/fps）不崩。
 4. 容器推断矩阵实测：
@@ -205,6 +223,15 @@ finally:
 5. 真实 Windows 平台渲染截图（**不能用 `QT_QPA_PLATFORM=offscreen`**：找不到字体
    目录会让中文全部变方块）确认：默认视图档位/选中态/空态、表格视图无回归。
 6. `_start_download` 复用性确认：接受 `313+251` 这样的精确选择器，无需改动。
+7. **右栏不挤压左栏**：实测 `page.minimumSizeHint().width()` 加入默认视图后未上升
+   （空态文案 `setWordWrap(True)` 使其 `minimumSizeHint` 从 322 降到 42）；窗口从
+   1005 逐级缩到 740，`QSplitter` 左栏恒为 412px，封面区不受影响。这是首版漏掉
+   换行后真实出现过的回归：右面板最小宽度被撑大 → 窄窗口下 Qt 只能压左栏。
+8. **两个视图的下载按钮同尺寸**：默认视图与表格视图均为 240×32、水平居中
+   （首版默认视图按钮是 `setFixedHeight(40)` + 撑满整栏的 487×40，明显偏大）。
+9. **无灰底**：`option_scroll` 调用 `enableTransparentBackground()` 后
+   `styleSheet` 为 `QScrollArea{border: none; background: transparent}`，
+   与队列页/GIF 页/设置页一致（`qfw.ScrollArea` 默认是不透明面板色）。
 
 ## 相关决策
 

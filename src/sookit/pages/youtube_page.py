@@ -88,6 +88,11 @@ def _find_fallback_product(cache_dir, name):
 
 class YouTubePage(PageBase):
     """视频嗅探与下载——封面和格式左右分栏布局"""
+
+    # 默认视图档位行的最大宽度（决策 47）。行是「清单项」不是表格单元格，
+    # 铺满整栏会在宽窗口下把单选圈推到很远、中间留出大片空白。
+    OPTION_ROW_MAX_WIDTH = 400
+
     def __init__(self, parent=None):
         super().__init__(parent)
 
@@ -235,21 +240,28 @@ class YouTubePage(PageBase):
         self.option_layout.setSpacing(6)
         self.option_layout.addStretch(1)
         self.option_scroll.setWidget(self.option_content)
+        # 与队列页/GIF 页一致：qfw.ScrollArea 默认是不透明面板色，不置透明会露出灰底
+        self.option_scroll.enableTransparentBackground()
         set_smooth_scroll_params(self.option_scroll)
 
-        # 空态占位：默认视图是进入页面的落点，嗅探前只有一片空白会更像「坏了」
+        # 空态占位：默认视图是进入页面的落点，嗅探前只有一片空白会更像「坏了」。
+        # 必须允许换行：否则这一整句会让右面板最小宽度涨到 322px，窗口变窄时
+        # Qt 只能去压左面板（封面区被挤扁）——这正是「封面区域被压缩」的根因。
         self.option_empty_hint = qfw.BodyLabel("粘贴视频链接并点击「嗅探」，这里会列出可选画质")
+        self.option_empty_hint.setWordWrap(True)
         self.option_empty_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.option_empty_hint.setStyleSheet("color: #9a9a9a; background: transparent;")
         default_layout.addWidget(self.option_empty_hint, stretch=1)
         default_layout.addWidget(self.option_scroll, stretch=1)
         self.option_scroll.setVisible(False)   # 有档位后才显示列表
 
+        # 与表格视图的下载按钮同尺寸同位置（240×默认高，水平居中）
         self.default_download_btn = qfw.PrimaryPushButton("▶ 下载")
-        self.default_download_btn.setFixedHeight(40)
+        self.default_download_btn.setFixedWidth(240)
         self.default_download_btn.setEnabled(False)  # 嗅探出档位后才可点
         self.default_download_btn.clicked.connect(self.do_download_default)
-        default_layout.addWidget(self.default_download_btn)
+        default_layout.addWidget(self.default_download_btn,
+                                 alignment=Qt.AlignmentFlag.AlignCenter)
 
         # ---- 表格视图：原格式表格 + 合并下载 ----
         self.table_view = QWidget()
@@ -997,11 +1009,15 @@ class YouTubePage(PageBase):
             insert_at += 1
             for opt in opts:
                 row = OptionRow(opt['title'], opt['subtitle'])
+                # 限宽：档位行是「一份清单」不是表格，铺满整栏会让窗口变宽时
+                # 行越拉越长、副标题与单选圈之间留出大片空白。行本身保持
+                # Expanding + 最大宽，左侧自然对齐，剩余空间留给末尾 stretch。
+                row.setMaximumWidth(self.OPTION_ROW_MAX_WIDTH)
                 row.clicked.connect(lambda o=opt: self._select_option(o))
                 self._option_rows.append((row, opt))
                 self.option_layout.insertWidget(insert_at, row)
                 insert_at += 1
-        # 预选「最佳画质」：与表格视图预勾最佳项的口径一致，用户想换再点
+        # 预选最高画质档：与表格视图预勾最佳项的口径一致，用户想换再点
         if options['video']:
             self._select_option(options['video'][0])
         elif options['audio']:

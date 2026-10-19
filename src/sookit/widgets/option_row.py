@@ -23,6 +23,10 @@ class OptionRow(QWidget):
     RADIUS = 8
     PADDING = 14
     CIRCLE_D = 18
+    # 档位行的理想宽度上限。行是「清单项」不是表格单元格：铺满整栏会把
+    # 单选圈推得很远、中间留出大片空白；再窄又会把副标题省略掉。
+    MAX_WIDTH = 400
+    MIN_WIDTH = 320
 
     def __init__(self, title, subtitle='', right_text='', parent=None):
         super().__init__(parent)
@@ -42,6 +46,26 @@ class OptionRow(QWidget):
     # ---- 状态 ----
     def is_selected(self):
         return self._selected
+
+    def sizeHint(self):
+        """按内容算首选宽度。
+
+        自绘控件默认 sizeHint 是无效值 (-1,-1)，父布局在
+        `addWidget(row, alignment=AlignLeft)` 时会把它收缩成 0 宽度而看不见。
+        这里按「标题/副标题较长者 + 右侧说明 + 单选圈 + 两侧留白」给出建议宽度。
+        """
+        from PyQt6.QtCore import QSize
+
+        title_font = QFont("Microsoft YaHei", 11)
+        title_font.setWeight(QFont.Weight.DemiBold)
+        sub_font = QFont("Microsoft YaHei", 9)
+        text_w = max(QFontMetrics(title_font).horizontalAdvance(self._title),
+                     QFontMetrics(sub_font).horizontalAdvance(self._subtitle))
+        right_w = 0
+        if self._right:
+            right_w = QFontMetrics(sub_font).horizontalAdvance(self._right) + 10
+        width = self.PADDING * 2 + text_w + 24 + right_w + self.CIRCLE_D
+        return QSize(max(min(width, self.MAX_WIDTH), self.MIN_WIDTH), self.ROW_HEIGHT)
 
     def set_selected(self, selected):
         selected = bool(selected)
