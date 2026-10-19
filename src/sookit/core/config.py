@@ -57,11 +57,38 @@ def save_config(config):
 
 # ---------- 下载配置 ----------
 
+# 并发分片数的合法档位（决策 46）。设置页下拉只给这几档，配置层也按同一口径
+# 归一，保证「UI 显示的 = 实际生效的」——否则 UI 把旧值 10 显示成 8、下载却仍用
+# 10，用户看到的行为和设置对不上。
+FRAGMENT_TIERS = (1, 2, 4, 8, 16)
+FRAGMENT_DEFAULT = 8
+
+
+def normalize_fragments(value):
+    """把任意并发分片数归一到 FRAGMENT_TIERS 之一。
+
+    规则：≤1 → 1；其余**向下取档**（不超过用户原设定，绝不静默抬高带宽占用）；
+    超出上限 → 16；非整数/脏值 → 默认 8。
+    """
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return FRAGMENT_DEFAULT
+    if n <= 1:
+        return 1
+    for tier in reversed(FRAGMENT_TIERS):
+        if n >= tier:
+            return tier
+    return 1
+
+
 def load_download_config():
     """加载下载配置"""
     config = load_config()
     download_config = config.get('download', {})
     return {
+        'concurrent_fragments': normalize_fragments(
+            download_config.get('concurrent_fragments', FRAGMENT_DEFAULT)),
         'use_aria2c': download_config.get('use_aria2c', True),
         'aria2c_connections': download_config.get('aria2c_connections', 16),
     }

@@ -283,6 +283,7 @@ class Functions:
     @staticmethod
     def download_and_convert_gif(url, output_dir, quality, custom_params=None,
                                  use_aria2c=True, aria2c_connections=16,
+                                 concurrent_fragments=8,
                                  log=None, on_process_created=None,
                                  on_progress=None, *, selected_indexes=None):
         """下载 X 动图并转成 GIF（组合任务：yt-dlp 下载 MP4 → ffmpeg 转码 GIF）。
@@ -295,6 +296,8 @@ class Functions:
             quality: GifQuality 四档之一（custom_params 非空时被忽略）
             custom_params: GifCustomParams（自定义档参数），None 表示预设档
             use_aria2c / aria2c_connections: 传给 yt-dlp 的下载器选项
+            concurrent_fragments: 分片并发数（`-N`），透传给 `download_youtube`；
+                动图/视频常是 HLS 或 DASH 分片流，同样受益（见决策 46）
             log / on_process_created / on_progress: Sookit 任务约定回调
                 （TaskWorker GIF 分支固定传入这三个 kwargs）
             selected_indexes: **关键字专用**（任务队列经 kwargs 通道传入，见
@@ -382,6 +385,7 @@ class Functions:
             downloaded = Functions.download_youtube(
                 clean_url, "b[ext=mp4]/b", tmpdir, remote_components=False,
                 use_aria2c=use_aria2c, aria2c_connections=aria2c_connections,
+                concurrent_fragments=concurrent_fragments,
                 log=log, on_process_created=on_process_created,
                 extra_args=extra_args)
             mp4s = [p for p in (downloaded or []) if p and os.path.isfile(p)]
@@ -582,11 +586,17 @@ class Functions:
 
     @staticmethod
     def download_youtube(url, format_spec, output_dir, remote_components,
+                        concurrent_fragments=8,
                         use_aria2c=True, aria2c_connections=16,
                         log=None, process_ref=None, on_process_created=None,
                         workspace=None, extra_args=None):
         """下载视频/动图到 output_dir（workspace 非空时先下到 workspace）。
 
+        concurrent_fragments: HLS/DASH 分片流的并发分片数（yt-dlp
+            `-N/--concurrent-fragments`）。HLS 走 yt-dlp 内建 hlsnative 下载器，
+            aria2c 不参与（其 SUPPORTED_PROTOCOLS 不含 m3u8_native），所以分片流
+            的提速只能靠这个参数；aria2c 的 `-x/-s` 只对单文件 HTTP 分段生效。
+            见 DEVELOPMENT.md 决策 46。
         extra_args: 额外的 yt-dlp 参数（如 `--playlist-items 1,2` 只挑部分条目），
             在 URL 之前追加；默认 None 不追加（保持既有下载任务行为不变）。
         """
@@ -611,6 +621,12 @@ class Functions:
         # 这里（TLS EOF 且重试必现）。本 App 的格式由用户从嗅探表显式勾选，探测那点"自动
         # 跳过不可用格式"的收益用不上。详见 DEVELOPMENT.md 决策 36。
         cmd.append('--no-check-formats')
+        # HLS/DASH 分片流并发下载（决策 46）。aria2c 的 SUPPORTED_PROTOCOLS 不含
+        # m3u8_native，HLS 恒由 yt-dlp 内建 hlsnative 下载器负责，`--downloader`
+        # 对它无效，因此分片流提速只能靠 -N。1 是 yt-dlp 自身的默认值（顺序下载），
+        # 显式传等于没传，故只在 > 1 时追加，保持「设成 1 = 关掉并发」的直观语义。
+        if concurrent_fragments and concurrent_fragments > 1:
+            cmd.extend(['-N', str(concurrent_fragments)])
         if extra_args:
             cmd.extend(extra_args)
         cmd.append(url)

@@ -341,11 +341,12 @@ class MonitorPage(PageBase):
 
         # 加载下载配置
         download_config = load_download_config()
+        concurrent_fragments = download_config['concurrent_fragments']
         use_aria2c = download_config['use_aria2c']
         aria2c_connections = download_config['aria2c_connections']
 
         worker = MonitorWorker(task_id, url, out_dir, interval, remote,
-                              use_aria2c, aria2c_connections)
+                              concurrent_fragments, use_aria2c, aria2c_connections)
         worker.log_signal.connect(lambda msg: self.log(msg))
         worker.status_signal.connect(self._update_task_status)
         worker.done_signal.connect(self._on_monitor_done)
@@ -415,6 +416,7 @@ class MonitorPage(PageBase):
             title=title,
             func=Functions.download_youtube,
             args=(url, format_spec, out_dir, config.get('remote', False),
+                  config.get('concurrent_fragments', 8),
                   config.get('use_aria2c', True),
                   config.get('aria2c_connections', 16)),
             metadata=metadata,
@@ -535,6 +537,7 @@ class MonitorPage(PageBase):
         download_config = load_download_config()
         worker = MonitorWorker(
             tid, info['url'], info['out_dir'], interval, remote,
+            download_config['concurrent_fragments'],
             download_config['use_aria2c'],
             download_config['aria2c_connections'])
         worker.log_signal.connect(lambda msg: self.log(msg))

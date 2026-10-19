@@ -150,6 +150,23 @@ class SettingsPage(QWidget):
         layout.addWidget(qfw.SubtitleLabel("下载设置"))
         layout.addSpacing(12)
 
+        # 并发分片数（决策 46）：HLS/DASH 分片流的并发下载数（yt-dlp `-N`）。
+        # HLS 恒由 yt-dlp 内建 hlsnative 下载器负责（aria2c 不支持 m3u8_native），
+        # 所以这张卡片与 aria2c 是否可用无关，不参与下面的灰化。
+        self.fragments_card = qfw.CardWidget(self)
+        self.fragments_card.setMinimumHeight(70)
+        fragments_lay = QHBoxLayout(self.fragments_card)
+        fragments_lay.setContentsMargins(15, 12, 15, 12)
+        fragments_lay.addWidget(qfw.BodyLabel("yt-dlp 并发分片数"))
+        fragments_lay.addStretch()
+        self.fragments_combo = qfw.ComboBox()
+        # 阶梯档位（1=顺序下载，其余按 2 的幂），默认 8。不用 1~16 连续档，
+        # 是因为并发数没有「7 比 6 好」这种精细需求，档位少更易选。
+        self.fragments_combo.addItems(['1', '2', '4', '8', '16'])
+        self.fragments_combo.setCurrentText('8')
+        fragments_lay.addWidget(self.fragments_combo)
+        layout.addWidget(self.fragments_card)
+
         # aria2c 开关
         self.aria2c_switch_card = qfw.CardWidget(self)
         self.aria2c_switch_card.setMinimumHeight(70)
@@ -264,6 +281,7 @@ class SettingsPage(QWidget):
         self.color_menu.triggered.connect(self._on_color_changed)
         self.yt_btn.clicked.connect(lambda: self._update_ytdlp())
         # 下载设置信号连接
+        self.fragments_combo.currentIndexChanged.connect(self._on_download_setting_changed)
         self.aria2c_switch.checkedChanged.connect(self._on_download_setting_changed)
         self.connections_combo.currentIndexChanged.connect(self._on_download_setting_changed)
         # 开机自启信号连接
@@ -297,6 +315,7 @@ class SettingsPage(QWidget):
     def _on_download_setting_changed(self):
         """下载设置改变时保存配置"""
         download_config = {
+            'concurrent_fragments': int(self.fragments_combo.currentText()),
             'use_aria2c': self.aria2c_switch.isChecked(),
             'aria2c_connections': int(self.connections_combo.currentText()),
         }
@@ -432,6 +451,9 @@ class SettingsPage(QWidget):
     def _load_download_config(self):
         """加载下载配置到 UI"""
         config = load_download_config()
+        # load_download_config() 已把并发分片数归一成合法档位（决策 46），
+        # 这里直接按字符串选中即可，无需要再兜底。
+        self.fragments_combo.setCurrentText(str(config['concurrent_fragments']))
         self.aria2c_switch.setChecked(config['use_aria2c'])
         self.connections_combo.setCurrentText(str(config['aria2c_connections']))
     

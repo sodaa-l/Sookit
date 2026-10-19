@@ -1030,7 +1030,8 @@ class GifPage(PageBase):
             func=Functions.download_and_convert_gif,
             args=(url, out_dir, quality, custom_params,
                   download_config['use_aria2c'],
-                  download_config['aria2c_connections']),
+                  download_config['aria2c_connections'],
+                  download_config['concurrent_fragments']),
             # 选中序号是关键字专用形参，走 kwargs 通道（args 只放位置参数）
             kwargs={'selected_indexes': selected_indexes},
             task_type=TaskType.GIF,
