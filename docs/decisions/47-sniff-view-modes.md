@@ -22,30 +22,34 @@
 
 | 视图 | 定位 | 交互 |
 |---|---|---|
-| **默认视图**（新，默认落点） | 给「我只想要这个视频」的用户 | 单列平铺档位，点一行 → 点「▶ 下载」 |
+| **默认视图**（新，默认落点） | 给「我只想要这个视频」的用户 | 卡片平铺档位（最多两列，窄了一列），点一张 → 点「▶ 下载」 |
 | **表格视图**（原表格） | 给「我要指定编码/容器」的用户 | 原样：5 列全格式表 + 互斥勾选 + 「▶ 下载并合并选中格式」 |
 
 视图偏好存 `general.sniff_view`（`load_sniff_view()` / `save_sniff_view()`，决策 47
 在 `core/config.py` 里新增的一对函数，与 `general` 段既有 `close_action` /
 `task_complete_action` 同款写法）。非法值读时回退 `default`、写时直接忽略。
 
-### 1. 默认视图的形态：单列全宽行，不是下拉
+### 1. 默认视图的形态：卡片平铺（最多两列），不是下拉
 
 **否决下拉框**（初版方案）：下拉收起后用户看不到有哪些画质，等于把「选择成本」
-换成了「发现成本」；且下拉的留白在小窗口里很难看。改为**单列平铺**，每行 68px：
+换成了「发现成本」；且下拉的留白在小窗口里很难看。改为**平铺卡片**，每张 68px 高：
+
+**否决「单列全宽行」**（第二版方案）：单列铺满整栏时，右面板右侧会留出大片空白
+（1180px 窗口下每行右侧空掉三分之一），视觉上像没做完。改为**一排放两张**；
+窗口窄到放不下两张时**自动退回单列**，不会把卡片压到看不清副标题。
 
 ```
-┌──────────────────────────────────────────────┐
-│ 2160p 60fps                               ⬤  │  ← 副标题：vp9 + opus · webm · 约 1.0GB
-├──────────────────────────────────────────────┤
-│ 1080p 60fps                               ○  │
-├──────────────────────────────────────────────┤
-│ 720p                                      ○  │
-└──────────────────────────────────────────────┘
-    音频
-┌──────────────────────────────────────────────┐
-│ 129kbps                                    ○  │  ← 副标题：mp4a · m4a · 约 89.3MB
-└──────────────────────────────────────────────┘
+ 视频画质
+┌───────────────────┐ ┌───────────────────┐
+│ 2160p 60fps     ⬤ │ │ 1080p 60fps     ○ │  ← 副标题：vp9+opus · webm · 约1.0GB
+└───────────────────┘ └───────────────────┘
+┌───────────────────┐ ┌───────────────────┐
+│ 720p            ○ │ │ 480p            ○ │
+└───────────────────┘ └───────────────────┘
+ 音频
+┌───────────────────┐ ┌───────────────────┐
+│ 129kbps         ○ │ │ 65kbps          ○ │  ← 副标题：mp4a · m4a · 约89.3MB
+└───────────────────┘ └───────────────────┘
 ```
 
 **档位名一律只描述「这一行是什么」，不用「最佳画质/最佳音质」这种评价性文案**：
@@ -53,28 +57,80 @@
 「画质稍差但小一半」之间做取舍。哪个更好交给**排序**（高分辨率/高码率在前）
 和**默认预选首行**表达。
 
-**行宽上限 440px（`OPTION_ROW_MAX_WIDTH` / `OptionRow.MAX_WIDTH`）**：行是
+**列数上限 2（`OptionFlowLayout.MAX_COLUMNS`）**，判据是可用宽度：
+
+```
+可用宽 < min_card_width * 2 + horizontal_spacing  → 1 列
+否则                                              → 2 列
+```
+
+`min_card_width` = `OPTION_CARD_MIN_WIDTH = 215`：两列门槛降到 `215*2+10 = 440px`，
+这样用户常见的 976px 窗口（右面板约 452px 可用宽）也能稳定排两列。这个值不能再
+小——再小副标题就压到 8pt 也放不下。
+
+**不直接用 `qfw.AdaptiveFlowLayout`**：它的列数只由固定的 `widgetMinimumWidth`
+决定，表达不了「最多两列」——宽窗口下会排成三列、四列。`OptionFlowLayout`
+按可用宽度先算列数（夹在 1~2），再反算出父类算法需要的 minWidth 喂给
+`setWidgetMinimumWidth()`：
+
+```
+cardsPerRow = (available + space) // (minWidth + space)
+→ minWidth = (available - (columns-1)*space) // columns   (columns == 2)
+→ minWidth = available                                    (columns == 1)
+```
+
+**卡片宽度由布局强制分配**：`AdaptiveFlowLayout._doLayout` 里
+`targetSize = QSize(cardWidth, item.sizeHint().height())`，`cardWidth` 由
+`available / columns` 算出，**忽略 widget 自身 `sizeHint().width()`**。
+所以 `OptionRow.MAX_WIDTH` 只能通过 `flow.setWidgetMaximumWidth()` 生效，
+`row.setMaximumWidth()` 仅在极宽窗口下兜底。
+
+**行宽上限 400px（`OPTION_ROW_MAX_WIDTH` / `OptionRow.MAX_WIDTH`）**：卡片是
 「清单项」不是表格单元格，铺满整栏会在宽窗口下把单选圈推到很远、中间留出
-大片空白。行用 `Expanding + setMaximumWidth`，剩余宽度由末尾 `stretch` 吸收。
-注意**不要**给 `insertWidget` 传 `alignment=AlignLeft`：`OptionRow` 是自绘控件，
-默认 `sizeHint` 无效 `(-1,-1)`，带对齐会被收缩成 0 宽而完全看不见——所以
-`OptionRow` 必须实现按内容估算的 `sizeHint()`（`MIN_WIDTH=320`～`MAX_WIDTH=440`）。
+大片空白。注意**不要**给 `insertWidget` 传 `alignment=AlignLeft`：`OptionRow` 是
+自绘控件，默认 `sizeHint` 无效 `(-1,-1)`，带对齐会被收缩成 0 宽而完全看不见——
+所以 `OptionRow` 必须实现按内容估算的 `sizeHint()`（`MIN_WIDTH=320`～`MAX_WIDTH=400`）。
+
+**两列时副标题先压紧写法、再降字号，不要省略号**（`OptionRow._fit_subtitle`）：
+两列卡片在 976px 窗口下只有 221px 宽、文字区约 165px，而
+`av01+opus · webm · 约409.2MB` 在 9pt 需要 181px。若直接交给 `elidedText`，
+截掉的正好是文件大小这类关键信息。
+
+写法只由**文字区宽度**（`text_w`）分档决定，**不逐行按内容长度各自决定**——
+同一网格里卡片等宽，若有的行 `a · b` 有的行 `a·b`，看起来像没对齐。三档：
+
+| 档 | `text_w` 门槛 | 写法 | 最宽用例实测 |
+| --- | --- | --- | --- |
+| 宽松 | `>= 181` | `vp9+opus · webm · 约1.0GB` | 181 |
+| 压紧 | `>= 167` | `vp9+opus·webm·约1.0GB` | 167 |
+| 最紧 | `< 167` | `vp9+opus·webm·1.0GB`（省「约」） | 155 |
+
+门槛即 `OptionRow.SUBTITLE_VARIANT_MIN_WIDTH = (181, 167)`，数值来自实测。
+定好写法后仍放不下才降字号（`SUBTITLE_PT_SIZES = (9, 8)`）。
+两列 976px 窗口落在最紧档（165 < 167）→ 统一 `vp9+opus·webm·1.0GB`。
 
 **与表格视图的视觉区分**（这是刻意的）：无表头、无网格线、无多选框。语义是
 「**选一个**」而非「勾多个」，所以反馈控件是**单选圈**。
 
 `src/sookit/widgets/option_row.py` 的 `OptionRow(QWidget)` 自绘整行：
-- 类常量 `ROW_HEIGHT=68`、`RADIUS=8`、`PADDING=14`、`CIRCLE_D=18`、
-  `MIN_WIDTH=320`、`MAX_WIDTH=440`；
+- 类常量 `ROW_HEIGHT=68`、`RADIUS=8`、`PADDING=12`、`CIRCLE_D=18`、
+  `MIN_WIDTH=320`、`MAX_WIDTH=400`、`SUBTITLE_PT_SIZES=(9, 8)`、
+  `SUBTITLE_VARIANT_MIN_WIDTH=(181, 167)`；
 - 选中：主题色 alpha 28 填充 + 1.4px 主题色描边 + 右侧实心圆 + 白对勾；
 - 未选：白 alpha 190（暗色 18）填充 + 1.2px 空心圆；
 - `setAttribute(WA_Hover)` + `enterEvent/leaveEvent` 切 hover 底色；
 - `qconfig.themeChangedFinished` → `update()`，跟随主题；
 - 整行可点（`mouseReleaseEvent` 左键且命中 `rect()` 才 `clicked.emit()`）。
 
+`src/sookit/widgets/option_grid.py` 的 `OptionFlowLayout(AdaptiveFlowLayout)`：
+`MAX_COLUMNS=2`、`columns_for_width(width)`、重写 `_doLayout(rect, move)`。
+
 **坑**：`QFontMetrics.elidedText` 的 width 参数必须是 `int`，传 float 直接
 `TypeError: argument 3 has unexpected type 'float'`（本控件里用
 `text_w = max(int(text_right - text_left), 20)`）。
+
+**坑**：`OptionFlowLayout` 的宿主 `holder` 必须 `sizePolicy().setHeightForWidth(True)`，
+否则流式布局算出的多行高度不会传导给 `QVBoxLayout`，卡片会重叠。
 
 ### 2. 档位归并：`core/sniff_options.py`（纯函数，无 Qt）
 
@@ -194,8 +250,9 @@ finally:
 | `core/config.py` | 新增 `SNIFF_VIEW_DEFAULT`/`SNIFF_VIEW_TABLE` + `load_sniff_view()`/`save_sniff_view()` |
 | `core/functions.py` | `sniff_youtube` 的 format dict 新增 `height`/`fps`/`abr` |
 | `core/sniff_options.py` | **新建**：档位归并 + 容器族判定（纯函数） |
-| `widgets/option_row.py` | **新建**：`OptionRow` 自绘单选行控件 |
-| `pages/youtube_page.py` | 右面板加 SegmentedWidget + 两视图容器；新增 `_on_view_changed`/`_apply_view`/`_clear_default_view`/`_section_label`/`_populate_default_view`/`_select_option`/`do_download_default`；四个复位点；初始化恢复偏好；`OPTION_ROW_MAX_WIDTH=440`；`option_scroll.enableTransparentBackground()`；空态文案 `setWordWrap(True)`；两个下载按钮统一 240×32 居中 |
+| `widgets/option_row.py` | **新建**：`OptionRow` 自绘单选行控件（`_fit_subtitle` 按宽度压紧写法/降字号） |
+| `widgets/option_grid.py` | **新建**：`OptionFlowLayout` 一至两列自适应网格（`MAX_COLUMNS=2`） |
+| `pages/youtube_page.py` | 右面板加 SegmentedWidget + 两视图容器；新增 `_on_view_changed`/`_apply_view`/`_clear_default_view`/`_section_label`/`_populate_default_view`/`_select_option`/`do_download_default`；四个复位点；初始化恢复偏好；`OPTION_ROW_MAX_WIDTH=400`、`OPTION_CARD_MIN_WIDTH=215`、`_make_option_grid()`；`_option_flows` 状态与复位；`option_scroll.enableTransparentBackground()`；空态文案 `setWordWrap(True)`；两个下载按钮统一 240×32 居中 |
 
 ## 风险
 
@@ -232,6 +289,15 @@ finally:
 9. **无灰底**：`option_scroll` 调用 `enableTransparentBackground()` 后
    `styleSheet` 为 `QScrollArea{border: none; background: transparent}`，
    与队列页/GIF 页/设置页一致（`qfw.ScrollArea` 默认是不透明面板色）。
+10. **两列 / 单列自适应**：976px 窗口下 `OptionFlowLayout` 稳定排 2 列
+    （右栏可用宽 452px ≥ `215*2+10`），卡片 221×68；窗口降到 900px 时退回 1 列、
+    卡片撑满 376px；1180px 宽窗口仍是 2 列（不会排第 3 列）。卡片宽度由布局
+    `available/columns` 强制分配，`row.setMaximumWidth(400)` 只在极宽窗口兜底。
+11. **两列时副标题完整不省略、且同屏写法一致**：976px 窗口下卡片 221px、文字区
+    165px，`av01+opus · webm · 约409.2MB` 宽松写法需 181px → 按宽度落到最紧档
+    `av01+opus·webm·409.2MB`（约 155px），9pt 即完整显示；实测所有档位副标题均无
+    `…`（改前 9pt 固定字号会截成 `约409.0…`，且同一屏里有的行带空格有的不带，
+    看起来像没对齐）。
 
 ## 相关决策
 

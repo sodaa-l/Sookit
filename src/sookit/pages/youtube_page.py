@@ -34,6 +34,7 @@ from sookit.widgets.cover_image import CoverImageWidget
 from sookit.widgets.combo_box import StaticComboBox
 from sookit.widgets.infobar import show_infobar
 from sookit.widgets.notifier import notify_result_notice
+from sookit.widgets.option_grid import OptionFlowLayout
 from sookit.widgets.option_row import OptionRow
 from sookit.pages.base import PageBase
 from sookit.core.task_queue import TaskType
@@ -89,9 +90,11 @@ def _find_fallback_product(cache_dir, name):
 class YouTubePage(PageBase):
     """视频嗅探与下载——封面和格式左右分栏布局"""
 
-    # 默认视图档位行的最大宽度（决策 47）。行是「清单项」不是表格单元格，
-    # 铺满整栏会在宽窗口下把单选圈推到很远、中间留出大片空白。
+    # 默认视图档位卡片的宽度约束（决策 47）。卡片是「清单项」不是表格单元格：
+    # 铺满整栏会在宽窗口下把单选圈推到很远、中间留出大片空白。窄了退回单列，
+    # 宽了最多两列（右栏再宽也不排第三列，避免一行里塞四五张卡片）。
     OPTION_ROW_MAX_WIDTH = 400
+    OPTION_CARD_MIN_WIDTH = 215
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -120,6 +123,7 @@ class YouTubePage(PageBase):
         # 默认视图（决策 47）状态：档位列表、档位行控件、当前选中档位
         self._view_options = {'video': [], 'audio': []}
         self._option_rows = []
+        self._option_flows = []
         self._selected_option = None
         self._restoring_view = False
 
@@ -975,6 +979,7 @@ class YouTubePage(PageBase):
         """清空档位区并复位选择状态"""
         self._view_options = {'video': [], 'audio': []}
         self._option_rows = []   # [(OptionRow, option), ...] 保持与布局一致的顺序
+        self._option_flows = []  # [OptionFlowLayout, ...] 每个分区一个网格
         self._selected_option = None
         while self.option_layout.count() > 1:  # 末尾保留 stretch
             item = self.option_layout.takeAt(0)
@@ -990,8 +995,23 @@ class YouTubePage(PageBase):
         label.setStyleSheet("color: #6b6b6b; font-weight: 600; background: transparent;")
         return label
 
+    def _make_option_grid(self):
+        """一个分区的卡片网格：自适应一列/两列（决策 47）"""
+        holder = QWidget()
+        holder.setStyleSheet("QWidget { background: transparent; }")
+        flow = OptionFlowLayout(min_card_width=self.OPTION_CARD_MIN_WIDTH, parent=holder)
+        flow.setHorizontalSpacing(10)
+        flow.setVerticalSpacing(8)
+        flow.setWidgetMaximumWidth(self.OPTION_ROW_MAX_WIDTH)
+        # 流式布局按宽度决定几列，高度只能由 heightForWidth 算 → holder 必须开启
+        policy = holder.sizePolicy()
+        policy.setHeightForWidth(True)
+        holder.setSizePolicy(policy)
+        self._option_flows.append(flow)
+        return holder, flow
+
     def _populate_default_view(self, formats):
-        """按嗅探结果生成「视频画质 / 音频」两组档位行"""
+        """按嗅探结果生成「视频画质 / 音频」两组档位卡片"""
         self._clear_default_view()
         options = build_view_options(formats)
         self._view_options = options
@@ -1007,16 +1027,16 @@ class YouTubePage(PageBase):
                 continue
             self.option_layout.insertWidget(insert_at, self._section_label(title))
             insert_at += 1
+            holder, flow = self._make_option_grid()
             for opt in opts:
                 row = OptionRow(opt['title'], opt['subtitle'])
-                # 限宽：档位行是「一份清单」不是表格，铺满整栏会让窗口变宽时
-                # 行越拉越长、副标题与单选圈之间留出大片空白。行本身保持
-                # Expanding + 最大宽，左侧自然对齐，剩余空间留给末尾 stretch。
+                # 卡片宽度由网格统一分配，这里的上限只用于极宽窗口兜底
                 row.setMaximumWidth(self.OPTION_ROW_MAX_WIDTH)
                 row.clicked.connect(lambda o=opt: self._select_option(o))
                 self._option_rows.append((row, opt))
-                self.option_layout.insertWidget(insert_at, row)
-                insert_at += 1
+                flow.addWidget(row)
+            self.option_layout.insertWidget(insert_at, holder)
+            insert_at += 1
         # 预选最高画质档：与表格视图预勾最佳项的口径一致，用户想换再点
         if options['video']:
             self._select_option(options['video'][0])

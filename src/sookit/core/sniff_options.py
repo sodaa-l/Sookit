@@ -36,10 +36,16 @@ _MP4_AUDIO_EXTS = ('m4a', 'mp4')
 
 
 def _size_text(filesize):
-    return f"约 {format_filesize(filesize)}" if filesize else ''
+    """大小估算，紧凑写法（两列时卡片只有 ~235px 宽，省一个空格就少一次省略）"""
+    return f"约{format_filesize(filesize)}" if filesize else ''
 
 
 def _join_meta(parts):
+    """副标题拼装：`编码 · 容器 · 大小`。
+
+    分隔符两侧留空格可读性好；两列窄卡片放不下时由 OptionRow 按宽度自动
+    降字号（9pt -> 8pt），而不是打省略号把大小截掉。
+    """
     return ' · '.join(p for p in parts if p)
 
 
@@ -194,7 +200,9 @@ def _video_option(formats, height):
                                     _size_text(fmt.get('filesize'))]),
             'spec': fmt['format_id'],
         }
-    codec = f"{vcodec} + {audio_fmt.get('acodec') or '音频'}"
+    # 编码对用紧凑写法（不加号两侧空格）：两列卡片只有 ~235px 宽，
+    # 副标题要在一行里放下「编码 + 容器 + 大小」
+    codec = f"{vcodec}+{audio_fmt.get('acodec') or '音频'}"
     size = (fmt.get('filesize') or 0) + (audio_fmt.get('filesize') or 0)
     # 展示合并后的真实容器：同族 → webm/mp4；跨族（该高度没有同族音轨可配）→ mkv
     merged_ext = _merged_ext(fmt.get('vcodec'), audio_fmt.get('acodec'),
