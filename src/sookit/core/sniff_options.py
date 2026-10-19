@@ -36,8 +36,10 @@ _MP4_AUDIO_EXTS = ('m4a', 'mp4')
 
 
 def _size_text(filesize):
-    """大小估算，紧凑写法（两列时卡片只有 ~235px 宽，省一个空格就少一次省略）"""
-    return f"约{format_filesize(filesize)}" if filesize else ''
+    """大小估算。`约` 与数字间留一个空格：`约 1.0GB` 比 `约1.0GB` 好读，
+    窄卡片放不下时由 OptionRow 按宽度压紧写法（而非逐行省略）。
+    """
+    return f"约 {format_filesize(filesize)}" if filesize else ''
 
 
 def _join_meta(parts):

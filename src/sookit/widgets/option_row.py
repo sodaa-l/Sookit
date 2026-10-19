@@ -30,10 +30,10 @@ class OptionRow(QWidget):
     # 副标题字号候选（从大到小）。两列窄卡片里先压紧写法，仍放不下才降字号，
     # 而不是直接省略号——省略号会把文件大小截掉。
     SUBTITLE_PT_SIZES = (9, 8)
-    # 副标题写法的两档宽度门槛（文字区宽度，决定用多紧凑的写法）：
-    # 大于等于第一个值用宽松写法，小于则压掉分隔符空格，再小则连「约」也省掉。
-    # 数值来自实测：宽松写法最宽用例 181px、压紧 167px、再省「约」155px。
-    SUBTITLE_VARIANT_MIN_WIDTH = (181, 167)
+    # 副标题起点写法的分档门槛（文字区宽度）：该写法最宽用例能放下才用。
+    # 数值是实测——9pt 宽松写法最宽 185px、9pt 压紧写法最宽 156px。
+    # 低于 156px 时直接进 8pt 档。
+    SUBTITLE_VARIANT_MIN_WIDTH = (185, 156)
 
     def __init__(self, title, subtitle='', right_text='', parent=None):
         super().__init__(parent)
@@ -77,40 +77,49 @@ class OptionRow(QWidget):
     def _fit_subtitle(self, text_w):
         """按可用宽度选副标题的「写法 + 字号」，返回 (文字, 字体, 度量)。
 
-        写法只由 text_w 决定（不由各行内容长度决定）：同一网格里卡片等宽，
-        若有的行「a · b」有的行「a·b」，看起来像没对齐。分三档，越窄越紧：
+        先按 `text_w` 定**起点写法**（这一步只看宽度，不看本行内容，保证同网格
+        里分隔符写法一致）；起点写法仍放不下（本行副标题特别长）才继续往更紧
+        的候选走一步，最多退到省「约」。
+        `约` 与数字之间的空格始终保留（更好读），只有极窄时才退到省「约」。
 
-        - `vp9+opus · webm · 约1.0GB`（宽松，最宽用例约 181px）
-        - `vp9+opus·webm·约1.0GB`（压掉分隔符两侧空格，约 167px）
-        - `vp9+opus·webm·1.0GB`（再省「约」，约 155px）
-
-        定好写法后仍放不下才降字号（9pt→8pt）。两列窄卡片（卡宽 ~221px、
-        文字区 ~165px）恰好落在第三档。**不要直接交给 elidedText**：省略号
-        截掉的正好是文件大小，而那正是选档位时最想看的数字。
+        **不要直接交给 elidedText**：省略号截掉的正好是文件大小，而那正是
+        选档位时最想看的数字。
         """
         if not self._subtitle:
-            size = self.SUBTITLE_PT_SIZES[0]
-            font = QFont("Microsoft YaHei", size)
+            font = QFont("Microsoft YaHei", self.SUBTITLE_PT_SIZES[0])
             return '', font, QFontMetrics(font)
-        text = self._subtitle_variant(text_w)
-        for size in self.SUBTITLE_PT_SIZES:
+        candidates = self._subtitle_candidates()
+        for text, size in candidates[self._subtitle_level(text_w):]:
             font = QFont("Microsoft YaHei", size)
             fm = QFontMetrics(font)
             if fm.horizontalAdvance(text) <= text_w:
                 return text, font, fm
-        size = self.SUBTITLE_PT_SIZES[-1]
+        text, size = candidates[-1]
         font = QFont("Microsoft YaHei", size)
         return text, font, QFontMetrics(font)
 
-    def _subtitle_variant(self, text_w):
-        """按 text_w 落在哪一档，返回对应的副标题写法"""
-        loose, tight = self.SUBTITLE_VARIANT_MIN_WIDTH
-        if text_w >= loose:
-            return self._subtitle
-        compact = self._subtitle.replace(' · ', '·')
-        if text_w >= tight:
-            return compact
-        return compact.replace('约', '')
+    def _subtitle_level(self, text_w):
+        """按 text_w 落在哪一档，返回起点写法下标
+
+        门槛是「该写法最宽用例能放下」的实测宽度：9pt 宽松 185px、9pt 压紧 156px。
+        低于 156px 直接进 8pt 压紧档，再放不下才走最后一档。
+        """
+        level = 0
+        for limit in self.SUBTITLE_VARIANT_MIN_WIDTH:
+            if text_w < limit:
+                level += 1
+        return min(level, len(self._subtitle_candidates()) - 1)
+
+    def _subtitle_candidates(self):
+        """副标题候选写法，由宽到紧：[(文字, 字号), ...]
+
+        只由宽度决定的起点档是前两项；后两项是「本行太长」时的兜底。
+        """
+        loose = self._subtitle
+        compact = loose.replace(' · ', '·')
+        tight = compact.replace('约 ', '').replace('约', '')
+        big, small = self.SUBTITLE_PT_SIZES[0], self.SUBTITLE_PT_SIZES[-1]
+        return [(loose, big), (compact, big), (compact, small), (tight, small)]
 
     def set_selected(self, selected):
         selected = bool(selected)
