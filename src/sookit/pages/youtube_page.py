@@ -8,7 +8,7 @@ import urllib.request
 from urllib.parse import urlparse
 
 from PyQt6.QtWidgets import (
-    QVBoxLayout, QHBoxLayout, QSplitter, QWidget,
+    QVBoxLayout, QHBoxLayout, QSplitter, QWidget, QFrame,
     QTableWidgetItem, QHeaderView, QAbstractItemView
 )
 from PyQt6.QtCore import Qt, QThread, QTimer, QByteArray, pyqtSignal
@@ -22,10 +22,19 @@ from sookit.core.functions import (
     Functions, FormatType, is_ytdlp_available, extract_youtube_id, format_duration, build_thumbnails,
     load_download_config, DEFAULT_OUTPUT_DIR
 )
+from sookit.core.config import (
+    load_sniff_view, save_sniff_view, SNIFF_VIEW_DEFAULT, SNIFF_VIEW_TABLE
+)
+from sookit.core.sniff_options import (
+    build_view_options, is_standard_pair,
+    WEBM_VIDEO_CODECS, WEBM_AUDIO_CODECS, MP4_VIDEO_CODECS, MP4_AUDIO_CODECS,
+)
+from sookit.core.utils import set_smooth_scroll_params
 from sookit.widgets.cover_image import CoverImageWidget
 from sookit.widgets.combo_box import StaticComboBox
 from sookit.widgets.infobar import show_infobar
 from sookit.widgets.notifier import notify_result_notice
+from sookit.widgets.option_row import OptionRow
 from sookit.pages.base import PageBase
 from sookit.core.task_queue import TaskType
 from sookit.core.ffmpeg_utils import run_ytdlp
@@ -103,6 +112,11 @@ class YouTubePage(PageBase):
         self._fallback_tried_urls = set()   # 已尝试过兜底的 URL（同 URL 会话内只试一次，防循环）
         self._ytdlp_warning_bar = None  # 「未找到 yt-dlp」常驻 infobar，装好后关闭
         self._format_updating = False  # 格式表填充/互斥反勾期间守卫，防止 itemChanged 递归误触发
+        # 默认视图（决策 47）状态：档位列表、档位行控件、当前选中档位
+        self._view_options = {'video': [], 'audio': []}
+        self._option_rows = []
+        self._selected_option = None
+        self._restoring_view = False
 
         # ---- 主布局 ----
         layout = QVBoxLayout(self)
@@ -191,11 +205,57 @@ class YouTubePage(PageBase):
         download_dir_row.addWidget(browse_btn)
         left_layout.addLayout(download_dir_row)
 
-        # ====== 右面板：格式表格 + 下载控制 ======
+        # ====== 右面板：视图切换 + 默认视图 / 表格视图（决策 47） ======
         right_panel = QWidget()
         right_layout = QVBoxLayout(right_panel)
         right_layout.setContentsMargins(8, 4, 4, 4)
-        right_layout.setSpacing(6)
+        right_layout.setSpacing(8)
+
+        # 视图切换：默认视图（选分辨率直接下载）/ 表格视图（逐格式勾选，原交互）
+        self.view_segment = qfw.SegmentedWidget()
+        self.view_segment.addItem('default', '默认视图')
+        self.view_segment.addItem('table', '表格视图')
+        self.view_segment.currentItemChanged.connect(self._on_view_changed)
+        right_layout.addWidget(self.view_segment, alignment=Qt.AlignmentFlag.AlignLeft)
+
+        # ---- 默认视图：单列平铺档位 + 一键下载 ----
+        self.default_view = QWidget()
+        default_layout = QVBoxLayout(self.default_view)
+        default_layout.setContentsMargins(0, 0, 0, 0)
+        default_layout.setSpacing(8)
+
+        self.option_scroll = qfw.ScrollArea()
+        self.option_scroll.setWidgetResizable(True)
+        self.option_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.option_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.option_content = QWidget()
+        self.option_content.setStyleSheet("QWidget { background: transparent; }")
+        self.option_layout = QVBoxLayout(self.option_content)
+        self.option_layout.setContentsMargins(0, 0, 6, 0)
+        self.option_layout.setSpacing(6)
+        self.option_layout.addStretch(1)
+        self.option_scroll.setWidget(self.option_content)
+        set_smooth_scroll_params(self.option_scroll)
+
+        # 空态占位：默认视图是进入页面的落点，嗅探前只有一片空白会更像「坏了」
+        self.option_empty_hint = qfw.BodyLabel("粘贴视频链接并点击「嗅探」，这里会列出可选画质")
+        self.option_empty_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.option_empty_hint.setStyleSheet("color: #9a9a9a; background: transparent;")
+        default_layout.addWidget(self.option_empty_hint, stretch=1)
+        default_layout.addWidget(self.option_scroll, stretch=1)
+        self.option_scroll.setVisible(False)   # 有档位后才显示列表
+
+        self.default_download_btn = qfw.PrimaryPushButton("▶ 下载")
+        self.default_download_btn.setFixedHeight(40)
+        self.default_download_btn.setEnabled(False)  # 嗅探出档位后才可点
+        self.default_download_btn.clicked.connect(self.do_download_default)
+        default_layout.addWidget(self.default_download_btn)
+
+        # ---- 表格视图：原格式表格 + 合并下载 ----
+        self.table_view = QWidget()
+        table_layout = QVBoxLayout(self.table_view)
+        table_layout.setContentsMargins(0, 0, 0, 0)
+        table_layout.setSpacing(6)
 
         # 格式表格 —— 自定义子类，resize 时按比例分配列宽
         class _FormatTable(qfw.TableWidget):
@@ -224,14 +284,18 @@ class YouTubePage(PageBase):
         self._fix_format_table_columns()
         # 同类型互斥勾选：勾选某项时自动取消同类型其他已勾项（"其他"类型不限）
         self.format_table.itemChanged.connect(self._on_format_item_changed)
-        right_layout.addWidget(self.format_table, stretch=1)
+        table_layout.addWidget(self.format_table, stretch=1)
 
         # 下载按钮
         self.download_btn = qfw.PrimaryPushButton("▶ 下载并合并选中格式")
         self.download_btn.setFixedWidth(240)
         self.download_btn.setEnabled(False)  # 嗅探完毕且有可用格式后才可点击
         self.download_btn.clicked.connect(self.do_download)
-        right_layout.addWidget(self.download_btn, alignment=Qt.AlignmentFlag.AlignCenter)
+        table_layout.addWidget(self.download_btn, alignment=Qt.AlignmentFlag.AlignCenter)
+
+        right_layout.addWidget(self.default_view, stretch=1)
+        right_layout.addWidget(self.table_view, stretch=1)
+        self.table_view.setVisible(False)
 
         # 组装 splitter
         splitter.addWidget(left_panel)
@@ -247,6 +311,31 @@ class YouTubePage(PageBase):
         # 监听队列下载失败，弹常显错误提示（需手动关闭）
         from sookit.core.task_queue import TaskQueueManager
         TaskQueueManager.instance().task_failed.connect(self._on_queue_task_failed)
+
+        # 恢复上次使用的视图（决策 47）；恢复过程不落盘（currentItemChanged 会触发
+        # _on_view_changed，其内部只在用户交互时保存，见该方法说明）
+        self._restoring_view = True
+        try:
+            saved_view = load_sniff_view()
+            self.view_segment.setCurrentItem(saved_view)
+            self._apply_view(saved_view)
+        finally:
+            self._restoring_view = False
+
+    # -------- 视图切换（决策 47）--------
+    def _on_view_changed(self, key):
+        """SegmentedWidget 切换回调：切视图并记住偏好"""
+        if key not in (SNIFF_VIEW_DEFAULT, SNIFF_VIEW_TABLE):
+            return
+        self._apply_view(key)
+        if not getattr(self, '_restoring_view', False):
+            save_sniff_view(key)
+
+    def _apply_view(self, key):
+        """按视图 key 显示对应面板（不落盘，供初始化恢复复用）"""
+        is_default = key == SNIFF_VIEW_DEFAULT
+        self.default_view.setVisible(is_default)
+        self.table_view.setVisible(not is_default)
 
     def refresh_ytdlp_status(self):
         """yt-dlp 装好后重新检测：若已可用则关闭「未找到 yt-dlp」提示"""
@@ -283,7 +372,9 @@ class YouTubePage(PageBase):
         self.stop_sniff_btn.setVisible(True)
         self.format_table.setRowCount(0)
         self._formats_data = []
+        self._clear_default_view()  # 上一部视频的档位不能留给新的
         self.download_btn.setEnabled(False)  # 新嗅探开始，重置按钮可用性
+        self.default_download_btn.setEnabled(False)
         self._sniff_timed_out = False
         # 新一轮嗅探：递增代际并捕获本轮序号，上一轮（含用户已停止但仍在途）的结果一律作废
         self._sniff_seq += 1
@@ -389,6 +480,8 @@ class YouTubePage(PageBase):
         if not fmts:
             self._formats_data = []
             self.format_table.setRowCount(0)
+            self._clear_default_view()
+            self.default_download_btn.setEnabled(False)
             self.log("该视频暂无可用下载格式，但仍可下载封面")
             show_infobar(self, "info", title="提示",
                          content="暂无可用下载格式，但仍可下载封面", duration=4000)
@@ -441,6 +534,9 @@ class YouTubePage(PageBase):
 
         # 填充完成后强制恢复列宽（Fixed 模式，防止勾选框撑宽"选择"列）
         self._fix_format_table_columns()
+
+        # 默认视图档位（决策 47）：与表格同一份嗅探结果，各自渲染
+        self._populate_default_view(sorted_fmts)
 
         self.download_btn.setEnabled(True)
         self.log(f"嗅探完成，共 {len(fmts)} 个格式")
@@ -498,6 +594,9 @@ class YouTubePage(PageBase):
         if self._sniff_timed_out:
             return
         self.log(f"嗅探失败: {err_msg}")
+        # 嗅探失败没有可信格式，默认视图档位一并清空（表格同上）
+        self._clear_default_view()
+        self.default_download_btn.setEnabled(False)
         # 系统通知（决策 40 扩展）：失败时无条件通知（页面内 InfoBar 只在部分分支出现）
         notify_result_notice("嗅探失败", self._last_sniff_url, err_msg)
         # video_id 可能已在 do_sniff 中设置
@@ -859,6 +958,71 @@ class YouTubePage(PageBase):
             show_infobar(self, "error", title="封面下载失败",
                          content="请检查网络连接或链接是否有效")
 
+    # -------- 默认视图：档位填充 / 选择 / 下载（决策 47）--------
+    def _clear_default_view(self):
+        """清空档位区并复位选择状态"""
+        self._view_options = {'video': [], 'audio': []}
+        self._option_rows = []   # [(OptionRow, option), ...] 保持与布局一致的顺序
+        self._selected_option = None
+        while self.option_layout.count() > 1:  # 末尾保留 stretch
+            item = self.option_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+        # 回到空态：列表收起、占位提示接管
+        self.option_scroll.setVisible(False)
+        self.option_empty_hint.setVisible(True)
+
+    def _section_label(self, text):
+        label = qfw.CaptionLabel(text)
+        label.setStyleSheet("color: #6b6b6b; font-weight: 600; background: transparent;")
+        return label
+
+    def _populate_default_view(self, formats):
+        """按嗅探结果生成「视频画质 / 音频」两组档位行"""
+        self._clear_default_view()
+        options = build_view_options(formats)
+        self._view_options = options
+        if not options['video'] and not options['audio']:
+            self.default_download_btn.setEnabled(False)
+            return
+        # 有档位了：收起空态占位，露出列表
+        self.option_empty_hint.setVisible(False)
+        self.option_scroll.setVisible(True)
+        insert_at = 0
+        for title, opts in (("视频画质", options['video']), ("音频", options['audio'])):
+            if not opts:
+                continue
+            self.option_layout.insertWidget(insert_at, self._section_label(title))
+            insert_at += 1
+            for opt in opts:
+                row = OptionRow(opt['title'], opt['subtitle'])
+                row.clicked.connect(lambda o=opt: self._select_option(o))
+                self._option_rows.append((row, opt))
+                self.option_layout.insertWidget(insert_at, row)
+                insert_at += 1
+        # 预选「最佳画质」：与表格视图预勾最佳项的口径一致，用户想换再点
+        if options['video']:
+            self._select_option(options['video'][0])
+        elif options['audio']:
+            self._select_option(options['audio'][0])
+        self.default_download_btn.setEnabled(True)
+
+    def _select_option(self, option):
+        """全局互斥单选：视频档与音频档共用一个选中项"""
+        self._selected_option = option
+        for row, opt in self._option_rows:
+            row.set_selected(opt is option)
+
+    def do_download_default(self):
+        """默认视图下载：直接用当前档位的 yt-dlp 选择器发起任务"""
+        option = self._selected_option
+        if not option:
+            show_infobar(self, "warning", title="提示", content="请先选择一个画质或音质",
+                         duration=3000)
+            return
+        self._start_download(option['spec'])
+
     # -------- 固定表格列宽 --------
     def _fix_format_table_columns(self):
         """Fixed 模式 + 按比例分配填满，每次 resize 自动重算"""
@@ -927,15 +1091,12 @@ class YouTubePage(PageBase):
         # '+' 拼接交 yt-dlp：视频流+音频流自动用 ffmpeg 合并为一个有声视频
         self._start_download('+'.join(f['format_id'] for f in checked_fmts))
 
-    # 合并落点判定用编码族表（决策 38）。编码字符串取嗅探结果的 codec 主名
-    # （'vp09.00.10.08' → 'vp09'，见 Functions.sniff_youtube）。
-    # av01 双族：YouTube 的 av1 流 ext 有 webm/mp4 两种，配 opus 合 webm、
-    # 配 mp4a 合 mp4 均为标准组合。
-    _WEBM_VIDEO_CODECS = frozenset({'vp8', 'vp9', 'vp09', 'av01', 'av1'})
-    _WEBM_AUDIO_CODECS = frozenset({'opus', 'vorbis'})
-    _MP4_VIDEO_CODECS = frozenset({'avc1', 'h264', 'h265', 'hev1', 'hevc', 'dvh1', 'dva1',
-                                   'av01', 'av1'})
-    _MP4_AUDIO_CODECS = frozenset({'mp4a', 'aac', 'm4a'})
+    # 合并落点判定用编码族表（决策 38）已抽到 core/sniff_options.py，
+    # 与默认视图的容器推断共用一份口径（原类属性保留为别名，避免外部引用断掉）
+    _WEBM_VIDEO_CODECS = WEBM_VIDEO_CODECS
+    _WEBM_AUDIO_CODECS = WEBM_AUDIO_CODECS
+    _MP4_VIDEO_CODECS = MP4_VIDEO_CODECS
+    _MP4_AUDIO_CODECS = MP4_AUDIO_CODECS
 
     @classmethod
     def _predict_mkv_merge(cls, fmts):
@@ -950,13 +1111,7 @@ class YouTubePage(PageBase):
         audios = [f for f in fmts if f.get('type') == FormatType.AUDIO_ONLY]
         if len(fmts) != 2 or len(videos) != 1 or len(audios) != 1:
             return False
-        v = (videos[0].get('vcodec') or '').strip().lower()
-        a = (audios[0].get('acodec') or '').strip().lower()
-        if not v or not a:
-            return False
-        webm_ok = v in cls._WEBM_VIDEO_CODECS and a in cls._WEBM_AUDIO_CODECS
-        mp4_ok = v in cls._MP4_VIDEO_CODECS and a in cls._MP4_AUDIO_CODECS
-        return not (webm_ok or mp4_ok)
+        return not is_standard_pair(videos[0].get('vcodec'), audios[0].get('acodec'))
 
     def _start_download(self, format_spec):
         url = self.url_input.text().strip()

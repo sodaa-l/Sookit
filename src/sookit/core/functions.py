@@ -502,6 +502,11 @@ class Functions:
                 'acodec': acodec.split('.')[0] if acodec != 'none' else '',
                 'size_str': size_str,
                 'filesize': filesize,
+                # 结构化字段（决策 47）：默认视图按分辨率/帧率/码率归并档位，不再解析
+                # quality 文本。height 为 0 表示未知（如 HLS 成片、storyboard）
+                'height': height,
+                'fps': int(f.get('fps') or 0),
+                'abr': int(f.get('abr') or tbr) if fmt_type == '音频流' else 0,
             })
 
         # YouTube：用视频 ID 构建固定档位列表（现状行为不变）

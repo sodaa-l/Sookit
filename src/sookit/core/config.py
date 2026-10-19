@@ -155,6 +155,31 @@ def save_toast_notification_enabled(enabled: bool):
     save_config(config)
 
 
+# ---------- 嗅探页视图偏好（决策 47） ----------
+
+SNIFF_VIEW_DEFAULT = 'default'   # 默认视图：直接选分辨率/音质下载
+SNIFF_VIEW_TABLE = 'table'       # 表格视图：逐格式勾选（原交互）
+
+
+def load_sniff_view():
+    """加载嗅探页上次使用的视图: 'default' | 'table'（默认「默认视图」）"""
+    config = load_config()
+    general = config.get('general', {})
+    view = general.get('sniff_view', SNIFF_VIEW_DEFAULT)
+    return view if view in (SNIFF_VIEW_DEFAULT, SNIFF_VIEW_TABLE) else SNIFF_VIEW_DEFAULT
+
+
+def save_sniff_view(view: str):
+    """保存嗅探页视图偏好（非法值不落盘，避免污染配置）"""
+    if view not in (SNIFF_VIEW_DEFAULT, SNIFF_VIEW_TABLE):
+        return
+    config = load_config()
+    if 'general' not in config:
+        config['general'] = {}
+    config['general']['sniff_view'] = view
+    save_config(config)
+
+
 # ---------- 主题颜色管理 ----------
 
 THEME_COLORS = {

@@ -30,6 +30,7 @@ src/sookit/        代码包 (标准 src 布局)
     │   ├─ ytdlp_utils.py   yt-dlp/Deno 集中管理：版本检查、下载、独立下载器调起
     │   ├─ app_update.py    Sookit 自身自动更新 (原 core/updater.py，2026-09-05 更名避免与顶层 updater.py 混淆)
     │   ├─ youtube_utils.py 元数据提取 + 缩略图构建/通用规范化 (HTTP 降级方案)
+    │   ├─ sniff_options.py 嗅探页默认视图档位归并 + 容器族判定 (纯函数，决策 47)
     │   ├─ config.py        配置管理 (JSON 缓存 + 线程锁)
     │   ├─ utils.py         滚动条样式等杂项
     │   └─ gif_utils.py     MP4→GIF 自动参数决策转码 (移植自外部脚本，依赖 numpy+Pillow)
@@ -39,6 +40,7 @@ src/sookit/        代码包 (标准 src 布局)
         ├─ combo_box.py     StaticComboBox (单项静态化下拉框)
         ├─ elided_label.py  ElidedLabel (多行省略标签, 1~2 行自适应)
         ├─ infobar.py       show_infobar() 统一提示 (自动分级换行)
+        ├─ option_row.py    OptionRow 单选档位行 (嗅探页默认视图, 决策 47)
         └─ task_card.py     任务卡片 (2 种类型 + 工厂函数 + 封面三级加载)
 
 运行时数据 (不在项目根，见 paths.py)：
@@ -96,6 +98,7 @@ flowchart TB
 | `ytdlp_utils.py` | yt-dlp/Deno 版本检查、下载 (aria2c+urllib 双通道)、独立下载器调起 | `download_ytdlp()`, `download_deno()`, `get_*_version()`, `check_ytdlp_deno_update_needed()`, `check_path_ytdlp_update()`, `check_tools_ytdlp_update()`, `launch_ytdlp_updater()` |
 | `app_update.py` | **Sookit 自身自动更新** (原 core/updater.py，注意与顶层 updater.exe 入口区分) | `check_latest_version()`, `download_installer()`, `is_newer()` |
 | `youtube_utils.py` | YouTube ID 提取、缩略图构建（硬编码 5 档 + 通用规范化）、HTTP 元数据获取 | `extract_youtube_id()`, `build_thumbnails()`, `normalize_thumbnails()`, `fetch_youtube_metadata()` |
+| `sniff_options.py` | 嗅探页默认视图的档位归并 + 合并容器族判定（纯函数、无 Qt，决策 47） | `build_view_options()`, `is_standard_pair()` |
 | `task_queue.py` | 任务队列单例。进度、workspace 生命周期、active_workspaces registry、JSON 持久化 | `TaskQueueManager`, `Task`, `TaskStatus`, `TaskType`, `_generate_ulid()` |
 | `workers.py` | 后台线程: Worker(通用) / TaskWorker(队列, 含 workspace/进程树清理) / MonitorWorker(直播轮询) | `TaskWorker`, `MonitorWorker`, `_kill_process_tree()` |
 | `config.py` | JSON 配置文件读写 + 缓存 + 线程锁。主题色、开机自启、下载配置 | `load_config()`, `save_config()`, `load_download_config()` |
@@ -141,6 +144,7 @@ flowchart TB
 | `task_card.py` | 任务卡片（2 种类型 + 工厂函数 + 封面三级加载） |
 | `infobar.py` | `show_infobar()` 统一提示（见 InfoBar 提示规范） |
 | `notifier.py` | Windows 系统通知封装（windows-toasts，决策 40）：惰性 Toaster 单例 + WinRT 回调线程转主线程信号桥；覆盖任务完成/失败、嗅探/解析结果（`notify_result_notice`）、更新类事件 |
+| `option_row.py` | `OptionRow`：嗅探页默认视图的单选档位行（自绘圆角卡片 + 单选圈，68px，整行可点；决策 47）。注意 `QFontMetrics.elidedText` 的宽度参数必须 `int` |
 
 ## 决策索引
 
@@ -195,6 +199,7 @@ flowchart TB
 | 44 | 动图页把普通视频也列进列表（2026-10-19） | 条目分类统一走 `_entry_kind`（gif / video / None，判视频只认「有明确时长」，图片不入列表）；`fetch_gif_items` 返回 `kind` + `video_no`，**排序在数据层完成**（`gifs + videos`，动图必在前），`index` 仍是原始条目序号；视频显示「视频 N」、**默认不勾选**（勾选口径在 `GifItemCard` 里按 kind 决定，`_build_cards` 不得再统一 `set_checked(True)`）；「全选」只作用动图、「全不选」清空全部；点「下载」时若有视频先弹 `qfw.MessageBox` 确认（取消＝整单不入队），内核 `download_and_convert_gif` 不再拦视频、只过滤图片。视频沿用页面质量档，输出文件名与显示名无关 | [44-gif-page-video-items.md](decisions/44-gif-page-video-items.md) |
 | 45 | aria2c 原生进度行 ETA/速度格式纠正 + 缺失即清空（2026-10-19） | aria2c 原生行 ETA 是**带单位时长**（`19s`/`1m42s`/`3m`，不是 `mm:ss`）、`DL:` 后**无 `/s`**——旧正则两条都对不上（497 行命中 0）；解析后 ETA 统一归一 `mm:ss`（小时级 `h:mm:ss`，`0s` 视为未知）；`_on_progress` 的 ETA **缺失即清空**，不沿用旧值（否则界面僵在假时间上） | [45-aria2c-eta-format.md](decisions/45-aria2c-eta-format.md) |
 | 46 | 恢复「并发分片数」设置，默认 8（2026-10-19） | **HLS/DASH 分片流的并发只能靠 yt-dlp `-N`**：aria2c 的 `SUPPORTED_PROTOCOLS` 不含 `m3u8_native`，HLS 恒走 `HlsFD`，`--downloader/--downloader-args`（含「连接数」`-x/-s`）对它完全无效。形参 `concurrent_fragments` 固定紧跟 `remote_components`（位置参数，所有调用点须同步）；`> 1` 才追加 `-N`（1=不并发，0/None 同）；设置卡片文案「yt-dlp 并发分片数」、档位 **1/2/4/8/16**、默认 8，**不进 aria2c 灰化列表**。旧值归一下沉到 `config.normalize_fragments`（**不能在设置页归一**，否则 UI 显示 8 而下载仍用 10），规则**向下取档**不静默抬高带宽；`FRAGMENT_TIERS`/`FRAGMENT_DEFAULT` 与下拉档位须同步；动图页也透传 | [46-concurrent-fragments.md](decisions/46-concurrent-fragments.md) |
+| 47 | 嗅探页双视图：默认视图（选分辨率即下载）+ 表格视图（2026-10-20） | 右面板顶部 `SegmentedWidget` 切「默认视图 / 表格视图」，偏好存 `general.sniff_view`（`load_sniff_view`/`save_sniff_view`）；默认视图是**单列全宽平铺行**（68px、圆角卡片 + 单选圈，**不用下拉**、无表头/网格线/多选框），视频档按 `height` 去重取前 5 档、「最佳画质」= **最高档改写标题**（不用 `bestvideo+bestaudio`，避免 yt-dlp 配出跨族组合只能落 mkv）；音频档仅在存在独立音频流时给（否则 `bestaudio` 退化成整个视频）；`spec` 必须是**精确 format_id 拼接**（`313+251`）而非通配选择器，副标题才与实际流一致；音轨先挑与视频 ext 同容器族、再挑编码同标准族；容器族判定改为「每编码→可用容器集合取交集」（**修订决策 38 口径**：`av01+opus` 合 webm 属标准组合，不再误报 mkv），编码族表上提到 `core/sniff_options.py` 与 `_predict_mkv_merge` **同源**，未知编码不猜容器（副标题省略）；`setCurrentItem` 会发 `currentItemChanged`，初始化恢复须用 `_restoring_view` 守卫防误落盘；`QFontMetrics.elidedText` 宽度参数必须 `int` | [47-sniff-view-modes.md](decisions/47-sniff-view-modes.md) |
 
 ## AI 编码约定
 
