@@ -27,18 +27,22 @@ class OptionRow(QWidget):
     # 单选圈推得很远、中间留出大片空白；再窄又会把副标题省略掉。
     MAX_WIDTH = 400
     MIN_WIDTH = 320
-    # 副标题字号候选（从大到小）。两列窄卡片里先压紧写法，仍放不下才降字号，
-    # 而不是直接省略号——省略号会把文件大小截掉。
+    # 副标题字号候选（从大到小）。两列窄卡片里先丢编码、再压紧写法，仍放不下
+    # 才降字号，而不是直接省略号——省略号会把文件大小截掉。
     SUBTITLE_PT_SIZES = (9, 8)
-    # 副标题起点写法的分档门槛（文字区宽度）：该写法最宽用例能放下才用。
-    # 数值是实测——9pt 宽松写法最宽 185px、9pt 压紧写法最宽 156px。
-    # 低于 156px 时直接进 8pt 档。
-    SUBTITLE_VARIANT_MIN_WIDTH = (185, 156)
+    # 副标题带编码版本的宽度门槛（文字区宽度）：够宽才显示编码。数值是实测——
+    # 9pt 宽松写法带编码最宽约 186px（`vp9+opus · webm · 约 1008.0MB`），
+    # 去掉编码后最宽只要 118px（`webm · 约 1008.0MB`）。
+    # 门槛取 190 而非实测的 186，是留 4px 余量：卡在 186 时同一屏里最长的行
+    # 只要差 1px 就会单独掉到「去编码」档，看起来像各行没对齐。
+    SUBTITLE_FULL_MIN_WIDTH = 190
 
-    def __init__(self, title, subtitle='', right_text='', parent=None):
+    def __init__(self, title, subtitle='', short_subtitle='', right_text='', parent=None):
         super().__init__(parent)
         self._title = title
         self._subtitle = subtitle
+        # 去掉编码段（`vp9+opus`）的短版副标题，只留容器和大小；窄卡片时优先用它
+        self._short_subtitle = short_subtitle or subtitle
         self._right = right_text
         self._selected = False
         self._hover = False
@@ -77,9 +81,12 @@ class OptionRow(QWidget):
     def _fit_subtitle(self, text_w):
         """按可用宽度选副标题的「写法 + 字号」，返回 (文字, 字体, 度量)。
 
-        先按 `text_w` 定**起点写法**（这一步只看宽度，不看本行内容，保证同网格
-        里分隔符写法一致）；起点写法仍放不下（本行副标题特别长）才继续往更紧
-        的候选走一步，最多退到省「约」。
+        宽度不够时**第一步是丢掉编码段**（`vp9+opus`），只留容器和大小，
+        分隔符照旧留空格——这是用户实测后的要求：窗口窄下去时宁可少显示一项
+        信息，也不要把整行文字挤成一团。全部候选仍放不下才压紧分隔符、再降字号。
+
+        起点写法只看 `text_w`、不看本行内容，保证同网格里各行写法一致；
+        个别副标题特别长时再往更紧的候选走一步兜底。
         `约` 与数字之间的空格始终保留（更好读），只有极窄时才退到省「约」。
 
         **不要直接交给 elidedText**：省略号截掉的正好是文件大小，而那正是
@@ -101,25 +108,24 @@ class OptionRow(QWidget):
     def _subtitle_level(self, text_w):
         """按 text_w 落在哪一档，返回起点写法下标
 
-        门槛是「该写法最宽用例能放下」的实测宽度：9pt 宽松 185px、9pt 压紧 156px。
-        低于 156px 直接进 8pt 压紧档，再放不下才走最后一档。
+        门槛是「该写法最宽用例能放下」的实测宽度：带编码的 9pt 宽松写法最宽
+        186px（门槛取 190，留 4px 余量防同屏掉档）；放不下就跳到「去编码版」
+        起点，而不是先压紧分隔符。
         """
-        level = 0
-        for limit in self.SUBTITLE_VARIANT_MIN_WIDTH:
-            if text_w < limit:
-                level += 1
-        return min(level, len(self._subtitle_candidates()) - 1)
+        return 0 if text_w >= self.SUBTITLE_FULL_MIN_WIDTH else 1
 
     def _subtitle_candidates(self):
         """副标题候选写法，由宽到紧：[(文字, 字号), ...]
 
-        只由宽度决定的起点档是前两项；后两项是「本行太长」时的兜底。
+        第 1 项带编码，后 4 项都把编码段去掉（只留容器 + 大小）；第 2 项是
+        起点档的正常写法，后 3 项只在某一行的文字仍放不下时才用到。
         """
-        loose = self._subtitle
-        compact = loose.replace(' · ', '·')
+        full = self._subtitle
+        short = self._short_subtitle
+        compact = short.replace(' · ', '·')
         tight = compact.replace('约 ', '').replace('约', '')
         big, small = self.SUBTITLE_PT_SIZES[0], self.SUBTITLE_PT_SIZES[-1]
-        return [(loose, big), (compact, big), (compact, small), (tight, small)]
+        return [(full, big), (short, big), (compact, big), (compact, small), (tight, small)]
 
     def set_selected(self, selected):
         selected = bool(selected)

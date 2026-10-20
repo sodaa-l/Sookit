@@ -7,6 +7,7 @@ core/sniff_options.py
 
 - 视频档：按 height 去重，最多 5 档；档位名只标分辨率与帧率
 - 音频档：每个独立音轨一档，同码率的 drc/非 drc 变体归并，档位名就是码率
+- 每个档位都同时给出完整副标题和「去编码」短副标题，窄卡片时由 UI 择优
 
 每个档位都编译成**具体的 yt-dlp 选择器**（用嗅探到的 format_id 精确拼接），
 因此行内副标题（编码/容器/大小估算）与实际下载到的流一致；同时按容器族挑
@@ -45,8 +46,9 @@ def _size_text(filesize):
 def _join_meta(parts):
     """副标题拼装：`编码 · 容器 · 大小`。
 
-    分隔符两侧留空格可读性好；两列窄卡片放不下时由 OptionRow 按宽度自动
-    降字号（9pt -> 8pt），而不是打省略号把大小截掉。
+    分隔符两侧留空格可读性好。卡片窄时由 OptionRow 先丢掉编码段（用各档位
+    自己给的 `short_subtitle`），再压紧分隔符、降字号，而不是打省略号把
+    大小截掉。
     """
     return ' · '.join(p for p in parts if p)
 
@@ -188,6 +190,7 @@ def _video_option(formats, height):
             'kind': 'video',
             'title': title,
             'subtitle': _join_meta([codec, fmt.get('ext'), _size_text(fmt.get('filesize'))]),
+            'short_subtitle': _join_meta([fmt.get('ext'), _size_text(fmt.get('filesize'))]),
             'spec': fmt['format_id'],
         }
 
@@ -200,6 +203,8 @@ def _video_option(formats, height):
             'title': title,
             'subtitle': _join_meta([vcodec, fmt.get('ext'), '无音频流',
                                     _size_text(fmt.get('filesize'))]),
+            'short_subtitle': _join_meta([fmt.get('ext'), '无音频流',
+                                          _size_text(fmt.get('filesize'))]),
             'spec': fmt['format_id'],
         }
     # 编码对用紧凑写法（不加号两侧空格）：两列卡片只有 ~235px 宽，
@@ -214,6 +219,8 @@ def _video_option(formats, height):
         'kind': 'video',
         'title': title,
         'subtitle': _join_meta([codec, merged_ext, _size_text(size)]),
+        # 卡片窄时丢掉的正是这一段编码对，只留容器 + 大小（决策 47）
+        'short_subtitle': _join_meta([merged_ext, _size_text(size)]),
         'spec': f"{fmt['format_id']}+{audio_fmt['format_id']}",
     }
 
@@ -257,11 +264,13 @@ def _audio_option(fmt, title, fallback_subtitle):
         return None
     codec = fmt.get('acodec') or fmt.get('vcodec') or ''
     subtitle = _join_meta([codec, fmt.get('ext'), _size_text(fmt.get('filesize'))])
+    short = _join_meta([fmt.get('ext'), _size_text(fmt.get('filesize'))])
     return {
         'id': f"a_{fmt['format_id']}",
         'kind': 'audio',
         'title': title,
         'subtitle': subtitle or fallback_subtitle,
+        'short_subtitle': short or fallback_subtitle,
         'spec': fmt['format_id'],
     }
 
@@ -276,7 +285,10 @@ def build_view_options(formats):
     每个 option::
 
         {'id': str, 'kind': 'video'|'audio', 'title': str,
-         'subtitle': str, 'spec': str}
+         'subtitle': str, 'short_subtitle': str, 'spec': str}
+
+    `short_subtitle` 是去掉编码段（`vp9+opus`）的副标题，只留容器与大小；
+    卡片变窄时 `OptionRow` 优先用它，窗口再窄也不会把大小挤成省略号（决策 47）。
 
     video 与 audio 在 UI 侧全局互斥（一次只下一样东西）。某组没有可用格式时
     该组为空列表（纯音频站点没有视频档；只有成品格式的站点没有独立音频档）。

@@ -90,11 +90,10 @@ def _find_fallback_product(cache_dir, name):
 class YouTubePage(PageBase):
     """视频嗅探与下载——封面和格式左右分栏布局"""
 
-    # 默认视图档位卡片的宽度约束（决策 47）。卡片是「清单项」不是表格单元格：
-    # 铺满整栏会在宽窗口下把单选圈推到很远、中间留出大片空白。窄了退回单列，
-    # 宽了最多两列（右栏再宽也不排第三列，避免一行里塞四五张卡片）。
+    # 默认视图档位卡片的宽度上限（决策 47）。卡片是「清单项」不是表格单元格：
+    # 铺满整栏会在宽窗口下把单选圈推到很远、中间留出大片空白。列数固定两列
+    # （见 OptionFlowLayout），卡片跟着窗口一起变窄，不再退回单列。
     OPTION_ROW_MAX_WIDTH = 400
-    OPTION_CARD_MIN_WIDTH = 215
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -996,10 +995,10 @@ class YouTubePage(PageBase):
         return label
 
     def _make_option_grid(self):
-        """一个分区的卡片网格：自适应一列/两列（决策 47）"""
+        """一个分区的卡片网格：固定两列，卡片随窗口变窄（决策 47）"""
         holder = QWidget()
         holder.setStyleSheet("QWidget { background: transparent; }")
-        flow = OptionFlowLayout(min_card_width=self.OPTION_CARD_MIN_WIDTH, parent=holder)
+        flow = OptionFlowLayout(parent=holder)
         flow.setHorizontalSpacing(10)
         flow.setVerticalSpacing(8)
         flow.setWidgetMaximumWidth(self.OPTION_ROW_MAX_WIDTH)
@@ -1029,7 +1028,7 @@ class YouTubePage(PageBase):
             insert_at += 1
             holder, flow = self._make_option_grid()
             for opt in opts:
-                row = OptionRow(opt['title'], opt['subtitle'])
+                row = OptionRow(opt['title'], opt['subtitle'], opt['short_subtitle'])
                 # 卡片宽度由网格统一分配，这里的上限只用于极宽窗口兜底
                 row.setMaximumWidth(self.OPTION_ROW_MAX_WIDTH)
                 row.clicked.connect(lambda o=opt: self._select_option(o))

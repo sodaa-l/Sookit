@@ -29,14 +29,19 @@
 在 `core/config.py` 里新增的一对函数，与 `general` 段既有 `close_action` /
 `task_complete_action` 同款写法）。非法值读时回退 `default`、写时直接忽略。
 
-### 1. 默认视图的形态：卡片平铺（最多两列），不是下拉
+### 1. 默认视图的形态：卡片平铺（固定两列），不是下拉
 
 **否决下拉框**（初版方案）：下拉收起后用户看不到有哪些画质，等于把「选择成本」
 换成了「发现成本」；且下拉的留白在小窗口里很难看。改为**平铺卡片**，每张 68px 高：
 
 **否决「单列全宽行」**（第二版方案）：单列铺满整栏时，右面板右侧会留出大片空白
-（1180px 窗口下每行右侧空掉三分之一），视觉上像没做完。改为**一排放两张**；
-窗口窄到放不下两张时**自动退回单列**，不会把卡片压到看不清副标题。
+（1180px 窗口下每行右侧空掉三分之一），视觉上像没做完。改为**一排放两张**。
+
+窗口变窄时**不退回单列**：窗口本身有最小宽度（`main_window.setMinimumSize(966, 644)`），
+右面板可用宽始终在 450px 上下，根本窄不到「一列才放得下」的程度——单列回退既不
+会生效、又白增分支。窄下去由卡片自己丢信息（副标题先丢编码段，见后文），
+保住容器和大小。这与「否决单列全宽行」并不矛盾：宽窗口不会变成一行一张，
+窄窗口也不会。
 
 ```
  视频画质
@@ -57,26 +62,24 @@
 「画质稍差但小一半」之间做取舍。哪个更好交给**排序**（高分辨率/高码率在前）
 和**默认预选首行**表达。
 
-**列数上限 2（`OptionFlowLayout.MAX_COLUMNS`）**，判据是可用宽度：
+**固定两列，不做单列回退**（`OptionFlowLayout.MAX_COLUMNS = 2`）：
 
 ```
-可用宽 < min_card_width * 2 + horizontal_spacing  → 1 列
-否则                                              → 2 列
+minWidth = (available - (MAX_COLUMNS-1)*space) // MAX_COLUMNS
 ```
 
-`min_card_width` = `OPTION_CARD_MIN_WIDTH = 215`：两列门槛降到 `215*2+10 = 440px`，
-这样用户常见的 976px 窗口（右面板约 452px 可用宽）也能稳定排两列。这个值不能再
-小——再小副标题就压到 8pt 也放不下。
+窗口本身有最小宽度（主窗口 `setMinimumSize(966, 644)`），右面板可用宽始终在
+450px 上下，根本窄不到「一列才放得下」的程度——设个单列回退既从不生效、又白增
+分支。所以列数直接钉死 2 列：卡片宽度跟着可用宽度一起变，窄下去由卡片自己
+丢信息（见下节副标题策略），而不是掉回一列。
 
 **不直接用 `qfw.AdaptiveFlowLayout`**：它的列数只由固定的 `widgetMinimumWidth`
-决定，表达不了「最多两列」——宽窗口下会排成三列、四列。`OptionFlowLayout`
-按可用宽度先算列数（夹在 1~2），再反算出父类算法需要的 minWidth 喂给
-`setWidgetMinimumWidth()`：
+决定，表达不了「固定两列」——宽窗口下会排成三列、四列。`OptionFlowLayout`
+按可用宽度反算出父类算法需要的 minWidth 喂给 `setWidgetMinimumWidth()`：
 
 ```
 cardsPerRow = (available + space) // (minWidth + space)
-→ minWidth = (available - (columns-1)*space) // columns   (columns == 2)
-→ minWidth = available                                    (columns == 1)
+→ minWidth = (available - (MAX_COLUMNS-1)*space) // MAX_COLUMNS
 ```
 
 **卡片宽度由布局强制分配**：`AdaptiveFlowLayout._doLayout` 里
@@ -85,39 +88,55 @@ cardsPerRow = (available + space) // (minWidth + space)
 所以 `OptionRow.MAX_WIDTH` 只能通过 `flow.setWidgetMaximumWidth()` 生效，
 `row.setMaximumWidth()` 仅在极宽窗口下兜底。
 
-**行宽上限 400px（`OPTION_ROW_MAX_WIDTH` / `OptionRow.MAX_WIDTH`）**：卡片是
+**卡片宽上限 400px（`OPTION_ROW_MAX_WIDTH` / `OptionRow.MAX_WIDTH`）**：卡片是
 「清单项」不是表格单元格，铺满整栏会在宽窗口下把单选圈推到很远、中间留出
 大片空白。注意**不要**给 `insertWidget` 传 `alignment=AlignLeft`：`OptionRow` 是
 自绘控件，默认 `sizeHint` 无效 `(-1,-1)`，带对齐会被收缩成 0 宽而完全看不见——
 所以 `OptionRow` 必须实现按内容估算的 `sizeHint()`（`MIN_WIDTH=320`～`MAX_WIDTH=400`）。
 
-**两列时副标题先压紧写法、再降字号，不要省略号**（`OptionRow._fit_subtitle`）：
-两列卡片在 976px 窗口下文字区约 188px，而最长的 `av01+opus · webm · 约 295.3MB`
-在 9pt 需要 185px——刚好放得下。再窄就得压紧。若直接交给 `elidedText`，
-截掉的正好是文件大小这类关键信息。
+**副标题：窄了先丢编码段，不是先压紧、更不是省略号**（`OptionRow._fit_subtitle`）：
 
-**`约` 与数字之间始终留一个空格**（`约 1.0GB` 而非 `约1.0GB`，更好读）；只有
-卡片窄到最后一档时才连「约」一起省掉。
+窗口窄下去时按这个顺序让文字适应，**越靠前越优先牺牲**：
 
-档位只由**文字区宽度**（`text_w`）落在哪一档决定，**不逐行按内容长度各自决定**——
-同一网格里卡片等宽，若有的行 `a · b` 有的行 `a·b`，看起来像没对齐。
-起点档由宽度给出，起点写法若本行仍放不下，才继续往更紧的写法退一步：
-
-| 档 | `text_w` 门槛 | 写法 | 最宽用例实测 |
+| 顺序 | 做法 | 例子 | 最宽用例实测 |
 | --- | --- | --- | --- |
-| 0 宽松 9pt | `>= 185` | `vp9+opus · webm · 约 1.0GB` | 185 |
-| 1 压紧 9pt | `>= 156` | `vp9+opus·webm·约 1.0GB` | 156 |
-| 2 压紧 8pt | （起点档兜底） | `vp9+opus·webm·约 1.0GB`（8pt） | 156 |
-| 3 最紧 8pt | （再兜底） | `vp9+opus·webm·1.0GB`（省「约」） | 142 |
+| 0（宽） | 带编码，分隔符留空格 | `vp9+opus · webm · 约 1.0GB` | 186 |
+| 1 | **丢掉编码段**，只留容器 + 大小，分隔符照旧留空格 | `webm · 约 1.0GB` | 118 |
+| 2 | 压紧分隔符 | `webm·约 1.0GB` | 87 |
+| 3 | 降 8pt | `webm·约 1.0GB`（8pt） | 80 |
+| 4（最紧） | 省「约」+ 8pt | `webm·1.0GB`（8pt） | — |
 
-门槛 `OptionRow.SUBTITLE_VARIANT_MIN_WIDTH = (185, 156)`，数值即「该写法最宽用例」
-的实测宽度（用例取 `av01+opus · webm · 约 409.2MB` 这类三项全长的副标题）。
-976px 两列窗口 `text_w≈167` 落在第 1 档（压紧 9pt）：实测 7 行全部 9pt、
-`need` 最大 166px，`约 ` 空格保留、无 `…`。窗口再窄才进 8pt。
+第 1 档的门槛 `OptionRow.SUBTITLE_FULL_MIN_WIDTH = 190`：带编码写法最宽 186px，
+门槛取 190 是留 4px 余量——**低于门槛直接跳到「去编码」起点**（而不是先压紧
+分隔符）。这是用户实测后的取舍：窗口窄时宁可少显示一项信息（编码），也不要
+把整行文字挤成一团；容器和大小是选档位时真正要看的。留余量的原因：卡在 186
+时同一屏里最长的行只要差 1px 就会单独掉到「去编码」档，看起来像各行没对齐。
+
+各档位的短副标题由生成器预先生成（`sniff_options` 里每个 option 带
+`subtitle` 和 `short_subtitle` 两份），UI 只按宽度择优，不做字符串裁剪。
+
+起点档只由**文字区宽度**（`text_w`）落在哪一档决定，**不逐行按内容长度各自
+决定**——同一网格里卡片等宽，若有的行 `a · b` 有的行 `a·b`，看起来像没对齐。
+起点写法若本行仍放不下，才继续往更紧的写法退一步。
+
+实测（**真实 `FluentWindow`** + `YouTubePage`，`addSubInterface` 后取卡片宽——
+注意窗口宽不等于页面宽，左侧导航栏占约 49px，直接影响卡片宽度）：
+
+| 窗口宽 | 页面宽 | 卡片 | `text_w` | 档位 | 副标题 |
+| --- | --- | --- | --- | --- | --- |
+| 1131（默认） | 1082 | 271 | 214 | 0 | `vp9+opus · webm · 约 1008.0MB` 9pt，need=186 |
+| 1005 | 956 | 235 | 178 | 1 | `webm · 约 1008.0MB` 9pt，need=118 |
+| 976 | 927 | 221 | 164 | 1 | 同上 |
+| 966（最小） | 917 | 216 | 159 | 1 | 同上 |
+| 900 | 851 | 183 | 126 | 1 | 同上 |
+
+即只有默认窗口尺寸（1131px）能显示编码段；用户习惯把窗口缩到 1000px 上下时
+全部落「去编码」档，写法一致。门槛取 190 是留余量（带编码最宽 186px），
+避免 `text_w` 恰好卡在 186 上下时同一屏里最长的行单独掉档。
 
 预算公式（`OptionRow` 与卡片宽度的关系）：
 `text_w = card - 2 - 2*PADDING - CIRCLE_D - 12`（`PADDING=12`、`CIRCLE_D=18`），
-即 `card 242 → 188`、`card 221 → 167`、`card 250 → 196`、`card 400 → 344`。
+即 `card 271 → 214`、`card 235 → 178`、`card 221 → 164`、`card 400 → 344`。
 **注意这里按整行宽度算，不再单独占右侧一列放字节数**——两列时那一列会被省成省略号。
 
 **与表格视图的视觉区分**（这是刻意的）：无表头、无网格线、无多选框。语义是
@@ -126,7 +145,9 @@ cardsPerRow = (available + space) // (minWidth + space)
 `src/sookit/widgets/option_row.py` 的 `OptionRow(QWidget)` 自绘整行：
 - 类常量 `ROW_HEIGHT=68`、`RADIUS=8`、`PADDING=12`、`CIRCLE_D=18`、
   `MIN_WIDTH=320`、`MAX_WIDTH=400`、`SUBTITLE_PT_SIZES=(9, 8)`、
-  `SUBTITLE_VARIANT_MIN_WIDTH=(185, 156)`；
+  `SUBTITLE_FULL_MIN_WIDTH=190`；
+- 构造参数 `(title, subtitle, short_subtitle, right_text)`：`short_subtitle` 是
+  去掉编码段的短版，由 `sniff_options` 预先生成；
 - 选中：主题色 alpha 28 填充 + 1.4px 主题色描边 + 右侧实心圆 + 白对勾；
 - 未选：白 alpha 190（暗色 18）填充 + 1.2px 空心圆；
 - `setAttribute(WA_Hover)` + `enterEvent/leaveEvent` 切 hover 底色；
@@ -134,7 +155,7 @@ cardsPerRow = (available + space) // (minWidth + space)
 - 整行可点（`mouseReleaseEvent` 左键且命中 `rect()` 才 `clicked.emit()`）。
 
 `src/sookit/widgets/option_grid.py` 的 `OptionFlowLayout(AdaptiveFlowLayout)`：
-`MAX_COLUMNS=2`、`columns_for_width(width)`、重写 `_doLayout(rect, move)`。
+`MAX_COLUMNS=2`、重写 `_doLayout(rect, move)` 把列数钉死在 2 列。
 
 **坑**：`QFontMetrics.elidedText` 的 width 参数必须是 `int`，传 float 直接
 `TypeError: argument 3 has unexpected type 'float'`（本控件里用
@@ -260,10 +281,10 @@ finally:
 |---|---|
 | `core/config.py` | 新增 `SNIFF_VIEW_DEFAULT`/`SNIFF_VIEW_TABLE` + `load_sniff_view()`/`save_sniff_view()` |
 | `core/functions.py` | `sniff_youtube` 的 format dict 新增 `height`/`fps`/`abr` |
-| `core/sniff_options.py` | **新建**：档位归并 + 容器族判定（纯函数） |
-| `widgets/option_row.py` | **新建**：`OptionRow` 自绘单选行控件（`_fit_subtitle` 按宽度压紧写法/降字号） |
-| `widgets/option_grid.py` | **新建**：`OptionFlowLayout` 一至两列自适应网格（`MAX_COLUMNS=2`） |
-| `pages/youtube_page.py` | 右面板加 SegmentedWidget + 两视图容器；新增 `_on_view_changed`/`_apply_view`/`_clear_default_view`/`_section_label`/`_populate_default_view`/`_select_option`/`do_download_default`；四个复位点；初始化恢复偏好；`OPTION_ROW_MAX_WIDTH=400`、`OPTION_CARD_MIN_WIDTH=215`、`_make_option_grid()`；`_option_flows` 状态与复位；`option_scroll.enableTransparentBackground()`；空态文案 `setWordWrap(True)`；两个下载按钮统一 240×32 居中 |
+| `core/sniff_options.py` | **新建**：档位归并 + 容器族判定（纯函数）；每个 option 带 `subtitle` 与 `short_subtitle`（去编码版） |
+| `widgets/option_row.py` | **新建**：`OptionRow` 自绘单选行控件（`_fit_subtitle` 按宽度丢编码/压紧/降字号） |
+| `widgets/option_grid.py` | **新建**：`OptionFlowLayout` 固定两列网格（`MAX_COLUMNS=2`，不退回单列） |
+| `pages/youtube_page.py` | 右面板加 SegmentedWidget + 两视图容器；新增 `_on_view_changed`/`_apply_view`/`_clear_default_view`/`_section_label`/`_populate_default_view`/`_select_option`/`do_download_default`；四个复位点；初始化恢复偏好；`OPTION_ROW_MAX_WIDTH=400`、`_make_option_grid()`；`_option_flows` 状态与复位；`option_scroll.enableTransparentBackground()`；空态文案 `setWordWrap(True)`；两个下载按钮统一 240×32 居中 |
 
 ## 风险
 
@@ -300,15 +321,24 @@ finally:
 9. **无灰底**：`option_scroll` 调用 `enableTransparentBackground()` 后
    `styleSheet` 为 `QScrollArea{border: none; background: transparent}`，
    与队列页/GIF 页/设置页一致（`qfw.ScrollArea` 默认是不透明面板色）。
-10. **两列 / 单列自适应**：976px 窗口下 `OptionFlowLayout` 稳定排 2 列
-    （右栏可用宽 452px ≥ `215*2+10`），卡片 221×68；窗口降到 900px 时退回 1 列、
-    卡片撑满 376px；1180px 宽窗口仍是 2 列（不会排第 3 列）。卡片宽度由布局
-    `available/columns` 强制分配，`row.setMaximumWidth(400)` 只在极宽窗口兜底。
-11. **两列时副标题完整不省略、且同屏写法一致**：976px 窗口下卡片 221px、
-    文字区 167px，按宽度落在「压紧 9pt」档，7 行实测 `need` 最大 166px、
-    全部 9pt 完整显示、`约 ` 空格保留、无 `…`（改前 9pt 固定宽松写法会截成
-    `约409.0…`，且同一屏里有的行带空格有的不带，看起来像没对齐）。
-    窗口收窄时按 `text_w` 逐档压紧/降字号，仍不会出现省略号。
+10. **固定两列，窄窗口也不退回单列**：976px 窗口下卡片 242×68（右栏可用宽
+    494px）；窗口从 1005 逐级缩到 700，`OptionFlowLayout` 始终排 2 列
+    （实测 `cols=[2,2]` 全程不变），卡片跟着变窄 242→127。主窗口
+    `setMinimumSize(966, 644)` 限制了最小宽度，实际窄不到「一列才放得下」。
+    卡片宽度由布局 `available/columns` 强制分配，`row.setMaximumWidth(400)`
+    只在极宽窗口兜底；`minimumSizeHint` 仍为 709px（与 master 一致，未上升）。
+11. **副标题按宽度逐级降级、从不出现省略号**（真实 `FluentWindow` 实测）：
+    默认窗口 1131px → 卡片 271px、文字区 214px → 第 0 档带编码 9pt
+    （`vp9+opus · webm · 约 1008.0MB`，need=186）；1005px → 178px、
+    976px → 164px、最小窗口 966px → 159px、900px → 126px，全部落到第 1 档
+    **丢掉编码段**（`webm · 约 1008.0MB`，need=118）；再窄到文字区 81px 才落到
+    8pt 压紧档（`webm·1008.0MB`）。全程「约」后有空格、无 `…`。这是用户实测
+    后的要求：宁可少显示编码，也不要把整行挤成一团。
+    门槛取 `SUBTITLE_FULL_MIN_WIDTH=190`（带编码最宽 186px + 4px 余量）：
+    卡在 186 时同一屏里最长的行差 1px 就会单独掉档，看起来像各行没对齐。
+12. **两种卡片副标题同屏写法一致**：起点档只由 `text_w` 决定，不逐行按内容长度
+    决定，所以同一网格里各行的分隔符写法统一（改前会出现有的 `a · b` 有的
+    `a·b`，看起来像没对齐）。
 
 ## 相关决策
 

@@ -1,14 +1,16 @@
 # coding:utf-8
 """
 widgets/option_grid.py
-档位卡片的自适应列布局（设计决策 47 补充）。
+档位卡片的双列布局（设计决策 47）。
 
-默认视图的档位卡片按「一排放两个」平铺：单列时右面板右侧会留出大片空白，
-两列能把这块空间用起来；窗口窄到放不下两列时自动退回单列。
+默认视图的档位卡片按「一排放两个」平铺：单列时右面板右侧会留出大片空白。
+窗口再窄也**不退回单列**——窗口本身有最小宽度，实际根本窄不到「一列才放得下」
+的程度，设个单列回退反而永远不生效、白增分支。窄下去时由卡片自己丢信息
+（`OptionRow` 按宽度把副标题里的编码段去掉），保住容器和大小。
 
 不直接用 `qfw.AdaptiveFlowLayout`：它的列数只由固定的 `widgetMinimumWidth`
-决定，无法表达「最多两列」——宽窗口下会排成三列、四列。这里按可用宽度直接
-算列数并夹在 1~2，再反算出父类算法需要的 minWidth。
+决定，无法表达「固定两列」——宽窗口下会排成三列、四列。这里按可用宽度反算出
+恰好只允许两列的 minWidth 再交给父类算法。
 """
 from PyQt6.QtCore import QRect
 
@@ -16,37 +18,22 @@ from qfluentwidgets.components.layout import AdaptiveFlowLayout
 
 
 class OptionFlowLayout(AdaptiveFlowLayout):
-    """最多两列的流式布局：放得下就两列，窄了自动退回单列。"""
+    """固定两列的流式布局：卡片宽度由可用宽度对半分，窗口再窄也不变一列。"""
 
     MAX_COLUMNS = 2
 
-    def __init__(self, min_card_width=215, parent=None):
+    def __init__(self, parent=None):
         super().__init__(parent)
-        # 单列时的最小卡片宽：再窄副标题就省略得没法看了
-        self._minCardWidth = min_card_width
         self.setContentsMargins(0, 0, 0, 0)
 
-    def columns_for_width(self, width):
-        """按容器可用宽度算列数（1 或 2）"""
-        margin = self.contentsMargins()
-        available = width - margin.left() - margin.right()
-        space = self.horizontalSpacing()
-        if available < self._minCardWidth * self.MAX_COLUMNS + space:
-            return 1
-        return self.MAX_COLUMNS
-
     def _doLayout(self, rect: QRect, move: bool):
-        # 把列数上限喂给父类算法：父类用
-        #   cardsPerRow = (available + space) // (minWidth + space)
-        # 反算出一个恰好只允许 columns 列的 minWidth。
-        columns = self.columns_for_width(rect.width())
+        # 父类算法是 cardsPerRow = (available + space) // (minWidth + space)。
+        # 把 minWidth 设成「两列刚好放得下」的值，列数就被钉死在 2 列：卡片
+        # 跟着窗口一起变窄，而不是掉回单列（决策 47）。
         space = self.horizontalSpacing()
         margin = self.contentsMargins()
-        available = rect.width() - margin.left() - margin.right()
-        if columns <= 1:
-            min_width = max(self._minCardWidth, available)
-        else:
-            min_width = max(self._minCardWidth,
-                            (available - (columns - 1) * space) // columns)
+        available = max(rect.width() - margin.left() - margin.right(), 1)
+        min_width = max(
+            (available - (self.MAX_COLUMNS - 1) * space) // self.MAX_COLUMNS, 1)
         self.setWidgetMinimumWidth(min_width)
         return super()._doLayout(rect, move)
