@@ -14,7 +14,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QThread, QTimer, QByteArray, pyqtSignal
 
 from sookit.core.workers import GenericWorker
-from PyQt6.QtGui import QFont, QPixmap, QImage
+from PyQt6.QtGui import QFont, QPixmap, QImage, QColor, QPainter
 
 import qfluentwidgets as qfw
 
@@ -85,6 +85,35 @@ def _find_fallback_product(cache_dir, name):
         if not QImage(p).isNull():
             return p
     return None
+
+
+class _TableEdgeRule(QWidget):
+    """格式表格自绘的 1px 边线（决策 56），竖向/横向都靠控件的长宽决定。
+
+    qfw 表格的右/下边线只能靠 `setBorderVisible(True)` 那条外框补（决策 55），而外框
+    是贴着控件四周画的：这张表为了滚动条贴窗口右缘（决策 49、54）铺满了整宽，列宽又
+    只分到「可用宽度 - RIGHT_RESERVE」，外框一开就会把右侧留给滚动条的 24px 一起圈进
+    框里 —— 右边线落在窗口边上而不是列尾，底边也被迫闭合。所以外框整条关掉，右竖线
+    改由本控件画在「列尾」；有数据时底边不画任何东西，表格右下保持开口。
+
+    另外两段空表专用的边线（0 行时 qfw 自己画不出来）：
+    - 左边线平时由行号列（纵向表头）各格的 left border 连成，0 行时纵向表头宽度为 0，
+      那条线整段消失；
+    - 底边线本来就无来源，空表补上让框闭合；一有数据就撤掉，恢复右下开口。
+    都见 `_sync_edge_rules()`。
+
+    颜色/粗细与 qfw 表头格线同一口径（亮 `rgba(0,0,0,15)`、暗 `rgba(255,255,255,21)`），
+    边线压在表头和数据行上，所以必须不挡鼠标。
+    """
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        # 主题切换后重绘，配色读 qfw.isDarkTheme()（与 option_row/task_card 同一做法）
+        qfw.qconfig.themeChangedFinished.connect(self.update)
+
+    def paintEvent(self, event):
+        color = QColor(255, 255, 255, 21) if qfw.isDarkTheme() else QColor(0, 0, 0, 15)
+        QPainter(self).fillRect(self.rect(), color)
 
 
 class YouTubePage(PageBase):
@@ -309,6 +338,19 @@ class YouTubePage(PageBase):
             def resizeEvent(self, event):
                 super().resizeEvent(event)
                 self._distribute_columns()
+            def updateGeometries(self):
+                # 行号列（纵向表头）的宽度、滚动条的显隐都会改变 viewport 宽度，但 Qt
+                # 不会为这些变化发 resizeEvent —— 只靠 resizeEvent 重算，列宽和右竖线
+                # 会停在「表格还没填数据」时算出的值上（决策 56 补记：填完数据后竖线
+                # 偏左 33px）。updateGeometries 是 QTableView 在几何重算后必调的口子。
+                super().updateGeometries()
+                if getattr(self, '_geometry_syncing', False):
+                    return
+                self._geometry_syncing = True
+                try:
+                    self._distribute_columns()
+                finally:
+                    self._geometry_syncing = False
             def _distribute_columns(self):
                 total = sum(self.COL_FACTORS)
                 avail = max(self.viewport().width() - self.RIGHT_RESERVE,
@@ -320,20 +362,63 @@ class YouTubePage(PageBase):
                 for i, f in enumerate(self.COL_FACTORS):
                     w = max(int(avail * f / total), self.COL_MIN)
                     self.setColumnWidth(i, w)
+                self._sync_edge_rules()
+            def _sync_edge_rules(self):
+                """把右侧 1px 竖线贴到「列尾」；空表时再补上左边线和底边线（决策 56）"""
+                # 列宽是 viewport 内坐标，竖线是表格子控件：要补上行号列（纵向表头）宽度
+                content_end = (self.verticalHeader().width()
+                               + sum(self.columnWidth(i) for i in range(self.columnCount())))
+                # 兜底：窗口极窄时 COL_MIN 托底可能让列宽总和顶到 viewport 边缘，
+                # 竖线不许压到滚动条（控件右侧 13px 是滚动条的地盘）
+                x = min(content_end, max(self.width() - 14, 0))
+                self._place_edge_rule(self._edge_rule('_right_rule'), x, 0, 1, self.height())
+                # 0 行时纵向表头宽度是 0 → 左边线整段消失，补一条；一旦有行号列，
+                # 那条线由表头格子的 left border 画，再叠一条会把 15/255 的透明度加深
+                if self.verticalHeader().width() > 0:
+                    self._hide_edge_rule('_left_rule')
+                else:
+                    self._place_edge_rule(self._edge_rule('_left_rule'),
+                                          0, 0, 1, self.height())
+                # 底边线同样没有来源（外框已关、数据行不画边框）：空表时补一条让框闭合，
+                # 有数据时撤掉 —— 「右下开口」只在有数据时才成立（用户要的是空表是个完整的框）
+                if self.rowCount() > 0:
+                    self._hide_edge_rule('_bottom_rule')
+                else:
+                    self._place_edge_rule(self._edge_rule('_bottom_rule'),
+                                          0, self.height() - 1, x, 1)
+            def _edge_rule(self, attr):
+                """按属性名取/建一条边线子控件（同一张表上同时存在右、左、底三条）"""
+                rule = getattr(self, attr, None)
+                if rule is None:
+                    rule = _TableEdgeRule(self)
+                    setattr(self, attr, rule)
+                return rule
+            def _hide_edge_rule(self, attr):
+                rule = getattr(self, attr, None)
+                if rule is not None:
+                    rule.hide()
+            def _place_edge_rule(self, rule, x, y, w, h):
+                # 只在位置真的变了时改几何：updateGeometries 每次滚动/重算都会调进来，
+                # 无脑 setGeometry 会白白触发一次子控件重排
+                if (rule.x(), rule.y(), rule.width(), rule.height()) != (x, y, w, h):
+                    rule.setGeometry(x, y, w, h)
+                # 窗口已经显示之后再动态 new 的子控件默认是隐藏的，得显式 show
+                if not rule.isVisible():
+                    rule.show()
+                rule.raise_()
         self.format_table = _FormatTable()
         self.format_table.setColumnCount(5)
         self.format_table.setHorizontalHeaderLabels(["选择", "类型", "质量", "编码", "语言"])
         self.format_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.format_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.format_table.setAlternatingRowColors(True)
-        # 四边闭合的圆角外框（决策 55）：qfw 默认 `QTableView{border: none}`，
-        # 平时只有表头格子自带的 1px 边线，横向连成上边、行号列连成左边，而最后一列表头
-        # 显式 `border-right: none`、数据行 `border: 0`，于是右边和下边没有线，看着像
-        # 只画了一半。setBorderVisible(True) 会命中 qfw 自带的
-        # `QTableView[isBorderVisible=true] { border: 1px solid rgba(0,0,0,15) }` 规则，
-        # 补齐整圈。代价是 viewport 少 2px 宽、1px 高，由 _distribute_columns() 吸收。
-        self.format_table.setBorderVisible(True)
-        self.format_table.setBorderRadius(8)  # 与默认视图档位卡片的圆角一致
+        # 右下开口 + 右边线落在列尾（决策 56）：qfw 默认 `QTableView{border: none}`，
+        # 表头格子自带的 1px 边线横向连成上边、行号列各格的 left border 连成左边；右/下
+        # 两段原本靠 setBorderVisible(True) 的整条外框补（决策 55），但外框贴着控件四周
+        # 画，会把右侧留给滚动条的 24px 留白一起圈进去、底边也随之闭合。这里显式关掉外框：
+        # 右边线由 _TableEdgeRule 画在列尾；底边只在空表时补（那时是个完整的框），
+        # 一有数据就撤掉、恢复右下开口（位置都在 _distribute_columns 里同步）。
+        self.format_table.setBorderVisible(False)
         self.format_table.setMinimumHeight(150)
         self._fix_format_table_columns()
         # 同类型互斥勾选：勾选某项时自动取消同类型其他已勾项（"其他"类型不限）

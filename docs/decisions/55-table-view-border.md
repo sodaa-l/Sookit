@@ -1,5 +1,11 @@
 # 决策 55. 嗅探页表格补一圈细边框（`setBorderVisible`），四边闭合（2026-10-20）
 
+> ⚠️ **本决策已被决策 56 部分取代（2026-10-21）**：用户要求「表格视图取消下闭合、右边线落在列尾」，
+> 现在 `setBorderVisible(False)`、`setBorderRadius(8)` 已删除，改成右下开口 + `_TableEdgeRule`
+> 自绘右竖线（空表时同一条线还负责补左边线）。本文的**根因分析（线从哪来）与实测数据仍然有效**，
+> 结论段仅作历史记录，见
+> [56-table-view-open-bottom-right.md](56-table-view-open-bottom-right.md)。
+
 ## 背景
 
 表格视图一直是「左、上」有线、「右、下」没线：表头像是被画了一个开口的框，
