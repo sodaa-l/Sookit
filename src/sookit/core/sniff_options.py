@@ -317,7 +317,9 @@ def build_view_options(formats):
         abr = int(round(fmt.get('abr') or 0))
         # 档位名就是码率，不写「最佳音质」：用户要的是「这条多大、多好」，
         # 而不是替用户下结论；同码率下不同编码各自可见，方便挑容器。
-        title = f'{abr}kbps' if abr else (fmt.get('acodec') or '音频')
+        # 码率未知的音轨（YouTube 233/234 这类）退回 quality（= yt-dlp 的
+        # format_note，如「Default, low」），否则两张卡会同名「音频」（决策 57 补记）。
+        title = f'{abr}kbps' if abr else (fmt.get('quality') or fmt.get('acodec') or '音频')
         audio_options.append(_audio_option(fmt, title, '只保留声音，转换为音频文件'))
 
     return {'video': video_options, 'audio': audio_options}

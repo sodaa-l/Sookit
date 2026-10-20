@@ -202,6 +202,18 @@ def _entry_kind(entry: dict):
     return None
 
 
+def _codec_name(codec):
+    """把 yt-dlp 的 codec 字段归一成「展示用的短名」。
+
+    口径与 `sniff_youtube` 的分类保持一致：`'none'` 表示「这条流不存在」、
+    字段缺失/None 表示「未知」，两种情况都展示为空；其余取 '.' 前的部分
+    （'avc1.64001F' → 'avc1'，'mp4a.40.2' → 'mp4a'）。
+    """
+    if not codec or codec == 'none':
+        return ''
+    return str(codec).split('.')[0]
+
+
 # ---------- 功能类 ----------
 
 class Functions:
@@ -462,13 +474,23 @@ class Functions:
             if fid in seen:
                 continue
             seen.add(fid)
-            vcodec = f.get('vcodec', 'none')
-            acodec = f.get('acodec', 'none')
-            if vcodec != 'none' and acodec != 'none':
+            # yt-dlp 的 codec 口径：只有**字面量 'none'** 表示「这条流不存在」，
+            # 字段缺失 / 为 None 表示「未知」，一律按「有」处理 —— 与 yt-dlp 自己
+            # 的 `-f bestaudio`、`-f best` 选择器同一套判定。X(Twitter) 正踩在
+            # 这上面：
+            #   hls-audio-*：vcodec='none'、**acodec 字段缺失** → 独立音轨
+            #   http-*     ：两个字段都缺失（渐进式成品，实测 h264+aac 双流）→ 成品
+            # 旧写法 `f.get('acodec', 'none')` 把「缺失」当成「没有」，X 的音轨
+            # 全被判成「其他」，默认视图因此误报「无音频流」（决策 57）。
+            vcodec = f.get('vcodec')
+            acodec = f.get('acodec')
+            has_video = vcodec != 'none'
+            has_audio = acodec != 'none'
+            if has_video and has_audio:
                 fmt_type = '视频+音频'
-            elif vcodec != 'none':
+            elif has_video:
                 fmt_type = '视频流'
-            elif acodec != 'none':
+            elif has_audio:
                 fmt_type = '音频流'
             else:
                 fmt_type = '其他'
@@ -479,12 +501,16 @@ class Functions:
                 quality = f"{height}p"
                 if f.get('fps'):
                     quality += f" {int(f.get('fps', 0))}fps"
-            elif fmt_type == '音频流':
-                quality = f"{int(tbr)}kbps" if tbr else ''
-            elif fmt_type == '视频+音频':
+            elif fmt_type == '音频流' and tbr:
+                quality = f"{int(tbr)}kbps"
+            elif fmt_type == '视频+音频' and (height or tbr):
                 quality = f"{height}p" if height else f"{int(tbr)}kbps"
             else:
-                quality = str(f.get('format_note', ''))
+                # 分辨率/码率都没有可展示的值时，退回 yt-dlp 自己的 format_note，
+                # 免得表格里「质量」列一片空白。典型：YouTube 的 233/234 是
+                # m3u8 抽出来的音轨，acodec 为 null、abr 也没有，只有备注
+                # 「Default, low / Default, high」（决策 57 补记）。
+                quality = str(f.get('format_note') or '')
 
             filesize = f.get('filesize') or f.get('filesize_approx', 0)
             if filesize:
@@ -498,8 +524,8 @@ class Functions:
                 'type': fmt_type,
                 'quality': quality,
                 'language': f.get('language', '') or f.get('language_code', '') or '',
-                'vcodec': vcodec.split('.')[0] if vcodec != 'none' else '',
-                'acodec': acodec.split('.')[0] if acodec != 'none' else '',
+                'vcodec': _codec_name(vcodec),
+                'acodec': _codec_name(acodec),
                 'size_str': size_str,
                 'filesize': filesize,
                 # 结构化字段（决策 47）：默认视图按分辨率/帧率/码率归并档位，不再解析

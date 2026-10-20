@@ -671,6 +671,10 @@ class YouTubePage(PageBase):
                     v = fmt.get('vcodec', '')
                     a = fmt.get('acodec', '')
                     codec = f"{v}+{a}" if v and a else (v or a)
+                # yt-dlp 没报编码（字段缺失）：有音视频却空着会被当成填充失败，
+                # 显式写「未知」；「其他」行（storyboard 等）本来就无编码，保持空。
+                if not codec and fmt['type'] != '其他':
+                    codec = '未知'
                 self.format_table.setItem(row, 3, QTableWidgetItem(codec))
                 lang = fmt.get('language', '')
                 self.format_table.setItem(row, 4, QTableWidgetItem(lang))
