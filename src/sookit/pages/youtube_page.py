@@ -326,6 +326,14 @@ class YouTubePage(PageBase):
         self.format_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.format_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.format_table.setAlternatingRowColors(True)
+        # 四边闭合的圆角外框（决策 55）：qfw 默认 `QTableView{border: none}`，
+        # 平时只有表头格子自带的 1px 边线，横向连成上边、行号列连成左边，而最后一列表头
+        # 显式 `border-right: none`、数据行 `border: 0`，于是右边和下边没有线，看着像
+        # 只画了一半。setBorderVisible(True) 会命中 qfw 自带的
+        # `QTableView[isBorderVisible=true] { border: 1px solid rgba(0,0,0,15) }` 规则，
+        # 补齐整圈。代价是 viewport 少 2px 宽、1px 高，由 _distribute_columns() 吸收。
+        self.format_table.setBorderVisible(True)
+        self.format_table.setBorderRadius(8)  # 与默认视图档位卡片的圆角一致
         self.format_table.setMinimumHeight(150)
         self._fix_format_table_columns()
         # 同类型互斥勾选：勾选某项时自动取消同类型其他已勾项（"其他"类型不限）
