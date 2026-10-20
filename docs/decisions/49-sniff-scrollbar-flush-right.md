@@ -17,7 +17,7 @@
 | 层 | 右缩进 | 位置 |
 |---|---|---|
 | `page.layout()` 主布局 | 20 | `youtube_page.py` `setContentsMargins(20, 20, 20, 20)` |
-| 右面板 `right_layout` | 4 | `setContentsMargins(8, 4, 4, 4)` |
+| 右面板 `right_layout` | 4 | `setContentsMargins(8, 4, 4, 4)`（左内距后被决策 52 改为 15） |
 | `default_layout` | 0 | — |
 | `option_layout`（卡片列表） | 6 | `setContentsMargins(0, 0, 6, 0)` |
 | qfw 滚动条自身 | 4 | `ScrollBar._adjustPos` 右缩 1 + `_adjustHandlePos` 手柄再缩 3 |
@@ -44,8 +44,8 @@
 |---|---|---|
 | `page.layout()` | `(20, 20, 20, 20)` → `(20, 20, 0, 20)` | 让出 20px，右面板得以贴到窗口右缘 |
 | `url_row` | 新增 `setContentsMargins(0, 0, 20, 0)` | 补回 URL 行右距，输入框宽度不变 |
-| `right_layout` | `(8, 4, 4, 4)` → `(8, 4, 0, 4)` | 让出 4px |
-| `option_layout` | `(0, 0, 6, 0)` → `(0, 0, 30, 0)` | 6 + 20 + 4 = 30，卡片右缘原位，滚动区贴边 |
+| `right_layout` | `(8, 4, 4, 4)` → `(8, 4, 0, 4)`（左内距后被决策 52 改为 15） | 让出 4px |
+| `option_layout` | `(0, 0, 6, 0)` → `(0, 0, 30, 0)`（后被决策 50 改为 `(15,0,15,0)`、再被决策 52 改为 `(0,0,15,0)`） | 6 + 20 + 4 = 30，卡片右缘原位，滚动区贴边 |
 | `table_layout` | `(0, 0, 0, 0)` → `(0, 0, 24, 0)` | 20 + 4 = 24，表格与表格视图按钮右缘原位 |
 | `default_btn_row` | 新增 `(0, 0, 24, 0)` | 同上，默认视图下载按钮不右移 |
 

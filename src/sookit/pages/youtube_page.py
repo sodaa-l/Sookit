@@ -224,8 +224,10 @@ class YouTubePage(PageBase):
         # ====== 右面板：视图切换 + 默认视图 / 表格视图（决策 47） ======
         right_panel = QWidget()
         right_layout = QVBoxLayout(right_panel)
-        # 右侧内距为 0：默认视图的滚动区要贴到窗口右缘（决策 49）
-        right_layout.setContentsMargins(8, 4, 0, 4)
+        # 右面板统一左留白（决策 52）：视图切换按钮、档位卡片、格式表格三者
+        # 共用这一个内距，左边缘才对得齐。右侧内距仍为 0——默认视图的滚动区
+        # 要贴到窗口右缘（决策 49）。
+        right_layout.setContentsMargins(self.OPTION_MARGIN_X, 4, 0, 4)
         right_layout.setSpacing(8)
 
         # 视图切换：默认视图（选分辨率直接下载）/ 表格视图（逐格式勾选，原交互）
@@ -248,10 +250,11 @@ class YouTubePage(PageBase):
         self.option_content = QWidget()
         self.option_content.setStyleSheet("QWidget { background: transparent; }")
         self.option_layout = QVBoxLayout(self.option_content)
-        # 左右留白对称（决策 50）：左 15 固定；右 = 15 + 滚动条可见时的 13px，
+        # 左留白已由右面板统一提供（决策 52），这里左边距归 0 才能让卡片与
+        # 视图切换按钮、格式表格左边缘对齐；右侧 = 15 + 滚动条可见时的 13px，
         # 由 _sync_option_margins() 按滚动条实际显隐实时调整。
         self.option_layout.setContentsMargins(
-            self.OPTION_MARGIN_X, 0, self.OPTION_MARGIN_X, 0)
+            0, 0, self.OPTION_MARGIN_X, 0)
         self.option_layout.setSpacing(6)
         self.option_layout.addStretch(1)
         self.option_scroll.setWidget(self.option_content)
