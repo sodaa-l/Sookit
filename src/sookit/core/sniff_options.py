@@ -7,6 +7,8 @@ core/sniff_options.py
 
 - 视频档：按 height 去重，最多 5 档；档位名只标分辨率与帧率
 - 音频档：每个独立音轨一档，同码率的 drc/非 drc 变体归并，档位名就是码率
+- 多语言（≥2 种音轨语言）：视频档按「分辨率 × 语言」各出一档，标题追加
+  `・ja` 这样的语言码，音频档同码率的不同语言也各自成档（决策 58）
 - 每个档位都同时给出完整副标题和「去编码」短副标题，窄卡片时由 UI 择优
 
 每个档位都编译成**具体的 yt-dlp 选择器**（用嗅探到的 format_id 精确拼接），
@@ -20,6 +22,10 @@ from sookit.core.functions import FormatType
 from sookit.core.ffmpeg_utils import format_filesize
 
 MAX_VIDEO_ROWS = 5
+
+# 多语言标签分隔符（决策 58）：标题形如「1080p 60fps・ja」，语言码取 yt-dlp 的
+# `language` 原值（小写）。只有 ≥2 种语言时才加后缀，单语言保持原样。
+LANG_SEP = '・'
 
 # 合并落点判定用编码族表，与决策 38 的 mkv 兜底弹窗共用同一份口径。
 # 编码字符串取嗅探结果的 codec 主名（'vp09.00.10.08' → 'vp09'，见
@@ -57,6 +63,35 @@ def _pick_audio(formats):
     """最佳独立音频流（按码率降序，缺失归 0）"""
     audio = [f for f in formats if f.get('type') == FormatType.AUDIO_ONLY]
     return max(audio, key=lambda f: (f.get('abr') or 0, f.get('filesize') or 0), default=None)
+
+
+def _lang_tag(fmt):
+    """该格式的语言码（小写）；没有语言信息时为 ''"""
+    return str(fmt.get('language') or '').strip().lower()
+
+
+def _multi_languages(formats):
+    """多语言视频的语言码列表（原声优先，其次按语言码字典序）。
+
+    单语言或没有语言信息时返回 `[]`——默认视图不该给每条普通视频都挂一个
+    「・ko」，只有真正多语言时才需要让用户区分（决策 58）。
+
+    排序依据 yt-dlp 的 `language_preference`：原声/默认音轨是正数（本例
+    ko=10、ja=-1），与 yt-dlp 自己的默认选轨一致，预选第一档即「最高画质+
+    原声」。
+    """
+    prefs = {}
+    for fmt in formats:
+        if fmt.get('type') != FormatType.AUDIO_ONLY:
+            continue
+        tag = _lang_tag(fmt)
+        if not tag:
+            continue
+        pref = fmt.get('language_preference') or 0
+        prefs[tag] = max(prefs.get(tag, pref), pref)
+    if len(prefs) < 2:
+        return []
+    return sorted(prefs, key=lambda tag: (-prefs[tag], tag))
 
 
 # MP4_AUDIO_CODECS / WEBM_AUDIO_CODECS 等族表见文件头部。
@@ -138,14 +173,20 @@ def _ext_family(ext):
     return ext or ''
 
 
-def _pick_compatible_audio(formats, video_fmt):
+def _pick_compatible_audio(formats, video_fmt, language=None):
     """与视频流合得来的音频流。
 
     优先级：① 与视频 ext 同容器族（合并即可，不必跨容器重封装）
             ② 与视频编码有共同标准容器（能落 webm/mp4，不落 mkv）
-    同类里按码率取最高；都合不来时退回最佳音频（宁可落 mkv 也要有声）。
+    同类里按码率取最高；都合不来时退回同族里码率最高的音频（宁可落 mkv 也要有声）。
+
+    给了 `language` 时只在**该语言**的音轨里挑：多语言视频一旦在本语言内找不到
+    合适音轨，就只能退到本语言里码率最高的那条，绝不能换成别的语言（那等于把
+    音轨下错，决策 58）。
     """
     audio = [f for f in formats if f.get('type') == FormatType.AUDIO_ONLY]
+    if language:
+        audio = [f for f in audio if _lang_tag(f) == language]
     if not audio:
         return None
     vcodec = video_fmt.get('vcodec') or ''
@@ -159,11 +200,16 @@ def _pick_compatible_audio(formats, video_fmt):
     best = max(audio, key=score)
     if score(best)[0] or score(best)[1]:
         return best
-    return _pick_audio(formats)
+    return max(audio, key=lambda f: (f.get('abr') or 0, f.get('filesize') or 0))
 
 
-def _pick_video_at_height(formats, height):
-    """该高度下最佳视频流；该高度只有成品格式时返回成品格式"""
+def _pick_video_at_height(formats, height, language=None):
+    """该高度下最佳视频流；该高度只有成品格式时返回成品格式。
+
+    独立视频流本身不带语言（所有语言共用同一个画面），只有**成品格式**
+    （视频+音频一体）才可能按语言分开，`language` 给定时在成品里只认该语言
+    （语言为空的成品视为通用）（决策 58）。
+    """
     videos = [f for f in formats
               if f.get('type') == FormatType.VIDEO_ONLY and (f.get('height') or 0) == height]
     if videos:
@@ -171,22 +217,28 @@ def _pick_video_at_height(formats, height):
         return max(videos, key=lambda f: (f.get('fps') or 0, f.get('filesize') or 0))
     muxed = [f for f in formats
              if f.get('type') == FormatType.VIDEO_AUDIO and (f.get('height') or 0) == height]
+    if language:
+        muxed = [f for f in muxed if _lang_tag(f) in ('', language)]
     return max(muxed, key=lambda f: (f.get('fps') or 0, f.get('filesize') or 0), default=None)
 
 
-def _video_option(formats, height):
-    """单个视频档：标题 / 副标题 / 精确选择器"""
-    fmt = _pick_video_at_height(formats, height)
+def _video_option(formats, height, language=None):
+    """单个视频档：标题 / 副标题 / 精确选择器（`language` 非空时只配该语言音轨）"""
+    fmt = _pick_video_at_height(formats, height, language)
     if fmt is None:
         return None
     title = f"{height}p"
     if (fmt.get('fps') or 0) >= 50:
         title += f" {int(round(fmt.get('fps')))}fps"
+    option_id = f"h{height}"
+    if language:
+        title += f"{LANG_SEP}{language}"
+        option_id += f"_{language}"
 
     if fmt.get('type') == FormatType.VIDEO_AUDIO:
         codec = fmt.get('vcodec') or fmt.get('acodec') or ''
         return {
-            'id': f"h{height}",
+            'id': option_id,
             'kind': 'video',
             'title': title,
             'subtitle': _join_meta([codec, fmt.get('ext'), _size_text(fmt.get('filesize'))]),
@@ -194,11 +246,11 @@ def _video_option(formats, height):
             'spec': fmt['format_id'],
         }
 
-    audio_fmt = _pick_compatible_audio(formats, fmt)
+    audio_fmt = _pick_compatible_audio(formats, fmt, language)
     vcodec = fmt.get('vcodec') or '视频'
     if audio_fmt is None:
         return {
-            'id': f"h{height}",
+            'id': option_id,
             'kind': 'video',
             'title': title,
             'subtitle': _join_meta([vcodec, fmt.get('ext'), '无音频流',
@@ -215,7 +267,7 @@ def _video_option(formats, height):
     merged_ext = _merged_ext(fmt.get('vcodec'), audio_fmt.get('acodec'),
                              fmt.get('ext'), audio_fmt.get('ext'))
     return {
-        'id': f"h{height}",
+        'id': option_id,
         'kind': 'video',
         'title': title,
         'subtitle': _join_meta([codec, merged_ext, _size_text(size)]),
@@ -225,13 +277,16 @@ def _video_option(formats, height):
     }
 
 
-def _audio_tracks(formats):
+def _audio_tracks(formats, languages=()):
     """独立音轨去重后按码率降序返回（默认视图的音频档来源）。
 
     YouTube 同一码率常有多个变体：`140` 与 `140-drc`、`251` 与 `251-drc`、
     甚至 mp4a/opus 双编码同码率。逐条平铺会把列表塞满重复项，所以按
     「码率取整到 kbps」归并，同码率里优先非 drc（动态范围压缩版音质更差）、
     再优先更大的文件。
+
+    `languages` 非空（多语言视频）时归并键里再带上语言：否则同一码率的 ja/ko
+    会并成一条，另一种语言整档消失（决策 58）。
 
     这里**不做码率阈值筛选**：曾按「最高码率 - 2」筛第二档，导致 129.5kbps
     的 mp4a 因为高于阈值被整批丢掉、第二档回落到 65kbps（用户实际遇到的
@@ -240,16 +295,17 @@ def _audio_tracks(formats):
     tracks = [f for f in formats if f.get('type') == FormatType.AUDIO_ONLY]
     groups = {}
     for fmt in tracks:
+        lang = _lang_tag(fmt) if languages else ''
         abr = fmt.get('abr') or 0
         if abr <= 0:
             # 码率未知的独立音轨（少见）：单独成档，别丢弃
-            groups[('unk', fmt.get('format_id'))] = [fmt]
+            groups[('unk', lang, fmt.get('format_id'))] = [fmt]
             continue
-        groups.setdefault(int(round(abr)), []).append(fmt)
+        groups.setdefault((int(round(abr)), lang), []).append(fmt)
 
     picked = []
     for key, group in groups.items():
-        if isinstance(key, tuple):        # 码率未知组
+        if key[0] == 'unk':               # 码率未知组
             picked.extend(group)
             continue
         best = max(group, key=lambda f: ('drc' not in str(f.get('format_id') or ''),
@@ -295,6 +351,10 @@ def build_view_options(formats):
     """
     formats = formats or []
 
+    # 多语言（≥2 种音轨语言）的站点：视频档按「分辨率 × 语言」各出一档，
+    # 否则一张卡只能悄悄绑死某一种语言、其他语言在默认视图完全看不到（决策 58）
+    languages = _multi_languages(formats)
+
     # ---- 视频档 ----
     # 按 height 去重；同一高度只会有一行（该高度内取最好的流）
     heights = sorted({f.get('height') or 0 for f in formats
@@ -303,9 +363,10 @@ def build_view_options(formats):
 
     video_options = []
     for height in heights[:MAX_VIDEO_ROWS]:
-        option = _video_option(formats, height)
-        if option:
-            video_options.append(option)
+        for lang in (languages or (None,)):
+            option = _video_option(formats, height, lang)
+            if option:
+                video_options.append(option)
     # 视频档一律标分辨率（最高档也不叫「最佳画质」）：档位名只描述这一行是什么，
     # 让用户横向比较；「哪个最好」由排序（高分辨率在前）+ 默认预选首行表达即可。
 
@@ -313,13 +374,16 @@ def build_view_options(formats):
     # 只在确实有独立音频流时给出：只有成品格式的站点上 bestaudio 会退化成整个视频
     # 文件，「仅下载音频」就成了假承诺
     audio_options = []
-    for fmt in _audio_tracks(formats):
+    for fmt in _audio_tracks(formats, languages):
         abr = int(round(fmt.get('abr') or 0))
         # 档位名就是码率，不写「最佳音质」：用户要的是「这条多大、多好」，
         # 而不是替用户下结论；同码率下不同编码各自可见，方便挑容器。
         # 码率未知的音轨（YouTube 233/234 这类）退回 quality（= yt-dlp 的
         # format_note，如「Default, low」），否则两张卡会同名「音频」（决策 57 补记）。
         title = f'{abr}kbps' if abr else (fmt.get('quality') or fmt.get('acodec') or '音频')
+        tag = _lang_tag(fmt) if languages else ''
+        if tag:
+            title = f'{title}{LANG_SEP}{tag}'
         audio_options.append(_audio_option(fmt, title, '只保留声音，转换为音频文件'))
 
     return {'video': video_options, 'audio': audio_options}

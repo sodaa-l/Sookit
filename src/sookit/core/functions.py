@@ -524,6 +524,9 @@ class Functions:
                 'type': fmt_type,
                 'quality': quality,
                 'language': f.get('language', '') or f.get('language_code', '') or '',
+                # 多语言视频（YouTube 多音轨）的语言偏好：yt-dlp 给原声/默认音轨
+                # 一个正数（ko=10、ja=-1），默认视图据此把原声排在最前（决策 58）
+                'language_preference': f.get('language_preference') or 0,
                 'vcodec': _codec_name(vcodec),
                 'acodec': _codec_name(acodec),
                 'size_str': size_str,
