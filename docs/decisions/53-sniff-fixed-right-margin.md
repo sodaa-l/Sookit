@@ -1,4 +1,7 @@
-# 决策 53. 嗅探页档位列表右边距固定 28px，不再随滚动条显隐变化（2026-10-20）
+# 决策 53. 嗅探页档位列表右边距固定，不再随滚动条显隐变化（2026-10-20）
+
+> 定稿数值：**右边距 24px**（初版为 28px，用户实测后要求收到 24px）。
+> 文字中出现的 28px 均为初版记录，实现以 `OPTION_MARGIN_RIGHT = 24` 为准。
 
 ## 背景
 
@@ -18,21 +21,22 @@
 
 ## 结论
 
-右边距取**固定 28px**，不再随滚动条显隐变化：
+右边距取**固定 24px**，不再随滚动条显隐变化：
 
 ```python
 class YouTubePage(PageBase):
-    OPTION_MARGIN_X = 15      # 左留白，同时也作为右留白的基准
-    SCROLLBAR_RESERVE = 13    # qfw 滚动条浮在视口右缘占掉的宽度
+    OPTION_MARGIN_X = 15       # 左留白（由右面板提供，决策 52）
+    SCROLLBAR_RESERVE = 13     # qfw 滚动条浮在视口右缘占掉的宽度
+    OPTION_MARGIN_RIGHT = SCROLLBAR_RESERVE + 11   # = 24
 
     # option_layout 边距
-    (0, 0, OPTION_MARGIN_X + SCROLLBAR_RESERVE, 0)   # = (0, 0, 28, 0)
+    (0, 0, OPTION_MARGIN_RIGHT, 0)   # = (0, 0, 24, 0)
 ```
 
 | 状态 | 卡片右缘 → 滚动条左缘 | 卡片右缘 → 窗口右缘 | 卡片宽度 |
 |---|---|---|---|
-| 滚动条不可见 | — | 29 | 不变 |
-| 滚动条可见 | 16 | 29 | **与上一种状态完全相同** |
+| 滚动条不可见 | — | 25 | 不变 |
+| 滚动条可见 | 12 | 25 | **与上一种状态完全相同** |
 
 两种状态下卡片宽度恒等，滚动条显隐不再引起任何重排。
 
@@ -51,37 +55,39 @@ class YouTubePage(PageBase):
 
 ### 代价
 
-滚动条**不出现**时，卡片右侧会多空 13px（到窗口右缘 29px 而不是 15px）。
-这是刻意的取舍：宁可静态多空一点，也不要滚动条一出现内容就跳。
+24px 里 13px 是让开 qfw 滚动条（它浮在视口右缘、会盖住这块），剩下 11px 是
+卡片到滚动条的呼吸空间。滚动条不出现时这 13px 就是纯空白——这是刻意的取舍：
+宁可静态多空一点，也不要滚动条一出现内容就跳。
 
 ## 实测
 
 真实 `FluentWindow`，1131 宽，8 视频档 + 4 音频档（内容足够高，必然出滚动条）：
 
 ```
-h=1000 barvis=False max=  0 margins=(0,28) cardw=277 到边缘=29 到滚动条=None
-h= 900 barvis=False max=  0 margins=(0,28) cardw=277 到边缘=29 到滚动条=None
-h= 800 barvis=False max=  0 margins=(0,28) cardw=277 到边缘=29 到滚动条=None
-h= 731 barvis=True  max=  8 margins=(0,28) cardw=277 到边缘=29 到滚动条=16
-h= 700 barvis=True  max= 39 margins=(0,28) cardw=277 到边缘=29 到滚动条=16
-h= 644 barvis=True  max= 95 margins=(0,28) cardw=277 到边缘=29 到滚动条=16
-h= 600 barvis=True  max=139 margins=(0,28) cardw=277 到边缘=29 到滚动条=16
+h=1000 barvis=False max=  0 margins=(0,24) cardw=279 到边缘=25 到滚动条=None
+h= 900 barvis=False max=  0 margins=(0,24) cardw=279 到边缘=25 到滚动条=None
+h= 800 barvis=False max=  0 margins=(0,24) cardw=279 到边缘=25 到滚动条=None
+h= 731 barvis=True  max=  8 margins=(0,24) cardw=279 到边缘=25 到滚动条=12
+h= 700 barvis=True  max= 39 margins=(0,24) cardw=279 到边缘=25 到滚动条=12
+h= 644 barvis=True  max= 95 margins=(0,24) cardw=279 到边缘=25 到滚动条=12
+h= 600 barvis=True  max=139 margins=(0,24) cardw=279 到边缘=25 到滚动条=12
 ```
 
-关键点：**`cardw` 在滚动条出现（731）与不出现（800）时完全一致，都是 277**。
-清空列表、重新填充、切到表格视图再切回，边距恒为 `(0, 28)`。
+关键点：**`cardw` 在滚动条出现（731）与不出现（800）时完全一致，都是 279**。
+清空列表、重新填充、切到表格视图再切回，边距恒为 `(0, 24)`。
 
 ## 改动文件
 
 | 文件 | 改动 |
 |---|---|
-| `src/sookit/pages/youtube_page.py` | `option_layout` 右边距改为常量 `OPTION_MARGIN_X + SCROLLBAR_RESERVE`；删除 `_sync_option_margins()` 及四处调用（`rangeChanged` 连接、`_populate_default_view`、`_apply_view`、`_clear_default_view`） |
+| `src/sookit/pages/youtube_page.py` | 新增 `OPTION_MARGIN_RIGHT = SCROLLBAR_RESERVE + 11`（= 24），`option_layout` 用它当右内距；删除 `_sync_option_margins()` 及四处调用（`rangeChanged` 连接、`_populate_default_view`、`_apply_view`、`_clear_default_view`） |
 
 ## 风险
 
-1. **滚动条不出现时右侧多空 13px。** 若以后觉得这个空当碍眼，正确方向是让滚动条
-   常驻（`setVerticalScrollBarPolicy(ScrollBarAlwaysOn)`）而不是恢复动态边距——
-   常驻同样能让卡片宽度不跳，且不留空当。
+1. **`OPTION_MARGIN_RIGHT` 不能小于 `SCROLLBAR_RESERVE`（13）。** 一旦小于，滚动条
+   会压在卡片右缘上。当前 24 留了 11px 余量。若以后想把右边距压得更小，正确方向
+   是让滚动条常驻（`setVerticalScrollBarPolicy(ScrollBarAlwaysOn)`）并配合
+   `setViewportMargins` 真正扣掉 13px，而不是在边距上硬挤。
 2. **`SCROLLBAR_RESERVE` 是写死的 13。** 它由 qfw `ScrollBar._adjustPos` 的
    `move(size.width() - 13, 1)` 决定；若 qfw 升级后改了这个数值，需要同步。
 3. **决策 50 的文档仍保留动态方案的历史分析**（作为「为什么考虑过、为什么放弃」），
@@ -90,11 +96,11 @@ h= 600 barvis=True  max=139 margins=(0,28) cardw=277 到边缘=29 到滚动条=1
 ## 验证
 
 1. 高度 1000/900/800（无滚动条）与 731/700/644/600（有滚动条）七档下，
-   `option_layout` 边距恒为 `(0, 28)`。
-2. **卡片宽度在滚动条显隐两个状态下完全相同**（本例都是 277）。
-3. 清空档位后边距仍为 `(0, 28)`（不再有复位逻辑，也就不可能残留旧值）。
-4. 重新填充、切表格视图再切回默认视图，边距均为 `(0, 28)`。
-5. 滚动条可见时卡片右缘到滚动条左缘 16px（15 留白 + 1px 取整），无遮挡。
+   `option_layout` 边距恒为 `(0, 24)`。
+2. **卡片宽度在滚动条显隐两个状态下完全相同**（本例都是 279）。
+3. 清空档位后边距仍为 `(0, 24)`（不再有复位逻辑，也就不可能残留旧值）。
+4. 重新填充、切表格视图再切回默认视图，边距均为 `(0, 24)`。
+5. 滚动条可见时卡片右缘到滚动条左缘 12px（11px 呼吸空间 + 1px 取整），无遮挡。
 6. 决策 52 的左边缘对齐结论不受影响（左内距仍为 0，左留白仍由右面板提供）。
 
 ## 相关决策

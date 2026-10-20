@@ -1,7 +1,7 @@
 # 决策 50. 嗅探页档位卡片的左右留白对称（2026-10-20）
 
 > **⚠️ 本文的「动态让位」部分已被 [决策 53](53-sniff-fixed-right-margin.md) 取代。**
-> 右边距现已固定为 28px，`_sync_option_margins()` 与 `rangeChanged` 连接已删除。
+> 右边距现已固定为 24px（`OPTION_MARGIN_RIGHT`），`_sync_option_margins()` 与 `rangeChanged` 连接已删除。
 > 本文保留作为「为什么考虑过动态方案、为什么最终放弃」的历史记录，
 > **不要照着本文的代码描述去修改实现**。
 

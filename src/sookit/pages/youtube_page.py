@@ -90,14 +90,16 @@ def _find_fallback_product(cache_dir, name):
 class YouTubePage(PageBase):
     """视频嗅探与下载——封面和格式左右分栏布局"""
 
-    # 默认视图档位列表的左右留白（决策 50、53）。右侧固定多让出滚动条自身占掉的
-    # 宽度：qfw 的滚动条浮在视口右缘、不占布局空间，不让位就会压在卡片上。
-    # 这里两侧都取固定值、不随滚动条显隐变化——滚动条一出现/消失卡片宽度就跳动，
-    # 比「滚动条不出现时右边多空 13px」更难看。
+    # 默认视图档位列表的左右留白（决策 50、53）。两侧都取固定值、不随滚动条
+    # 显隐变化——滚动条一出现/消失卡片宽度就跳动，比「多空几像素」更难看。
     # 卡片不再设宽度上限（决策 51）：一旦封顶，窗口继续变宽时多出来的宽度会全部
     # 堆在右侧，左右留白就不再相等了。卡片铺满「可用宽度 / 2」，两列永远等宽。
     OPTION_MARGIN_X = 15
+    # qfw 滚动条浮在 viewport 右缘、不占布局空间，但会盖住这 13px，
+    # 右边距必须比它大，否则滚动条会压在卡片上。
     SCROLLBAR_RESERVE = 13
+    # 右边距固定 24px = 让开滚动条 13px + 卡片到滚动条的呼吸空间 11px。
+    OPTION_MARGIN_RIGHT = SCROLLBAR_RESERVE + 11
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -253,10 +255,9 @@ class YouTubePage(PageBase):
         self.option_content.setStyleSheet("QWidget { background: transparent; }")
         self.option_layout = QVBoxLayout(self.option_content)
         # 左留白已由右面板统一提供（决策 52），这里左边距归 0 才能让卡片与
-        # 视图切换按钮、格式表格左边缘对齐。右侧恒定 = 15 + 13（滚动条自身宽度），
-        # 不随滚动条显隐变化（决策 53）。
-        self.option_layout.setContentsMargins(
-            0, 0, self.OPTION_MARGIN_X + self.SCROLLBAR_RESERVE, 0)
+        # 视图切换按钮、格式表格左边缘对齐。右侧固定 24px（决策 53），不随
+        # 滚动条显隐变化。
+        self.option_layout.setContentsMargins(0, 0, self.OPTION_MARGIN_RIGHT, 0)
         self.option_layout.setSpacing(6)
         self.option_layout.addStretch(1)
         self.option_scroll.setWidget(self.option_content)
