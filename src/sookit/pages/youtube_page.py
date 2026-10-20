@@ -292,20 +292,27 @@ class YouTubePage(PageBase):
         # ---- 表格视图：原格式表格 + 合并下载 ----
         self.table_view = QWidget()
         table_layout = QVBoxLayout(self.table_view)
-        # 右边距 24 = 原主布局 20 + 右面板 4：表格右边缘与改动前一致（决策 49）
-        table_layout.setContentsMargins(0, 0, 24, 0)
+        # 表格铺满到窗口右缘（决策 54）：qfw 滚动条是表格的子控件，位置按表格
+        # 自身宽度算（`move(width - 13, 1)`），表格不铺满它就只能停在里面。
+        # 内容右侧的留白改由列宽分配让出（见 _FormatTable.RIGHT_RESERVE）。
+        table_layout.setContentsMargins(0, 0, 0, 0)
         table_layout.setSpacing(6)
 
         # 格式表格 —— 自定义子类，resize 时按比例分配列宽
         class _FormatTable(qfw.TableWidget):
             COL_FACTORS = [44, 90, 80, 100, 55]
             COL_MIN = 50
+            # 右侧留白（决策 54）：滚动条浮在 viewport 右缘、不占布局空间，会盖住
+            # 最右边 13px。列宽只分到「可用宽度 - 24」，于是这 24px 里 13px 让开
+            # 滚动条、余 11px 与默认视图卡片的右边距同一口径（OPTION_MARGIN_RIGHT）。
+            RIGHT_RESERVE = 24
             def resizeEvent(self, event):
                 super().resizeEvent(event)
                 self._distribute_columns()
             def _distribute_columns(self):
                 total = sum(self.COL_FACTORS)
-                avail = self.viewport().width()
+                avail = max(self.viewport().width() - self.RIGHT_RESERVE,
+                            self.COL_MIN * len(self.COL_FACTORS))
                 hdr = self.horizontalHeader()
                 hdr.setStretchLastSection(False)
                 for i in range(self.columnCount()):
@@ -330,7 +337,13 @@ class YouTubePage(PageBase):
         self.download_btn.setFixedWidth(240)
         self.download_btn.setEnabled(False)  # 嗅探完毕且有可用格式后才可点击
         self.download_btn.clicked.connect(self.do_download)
-        table_layout.addWidget(self.download_btn, alignment=Qt.AlignmentFlag.AlignCenter)
+        # 右距 24 与默认视图的按钮行同口径（决策 54）：表格容器已铺满到窗口右缘，
+        # 不在这一行补回 24px，按钮会比默认视图的「▶ 下载」右移 12px
+        table_btn_row = QHBoxLayout()
+        table_btn_row.setContentsMargins(0, 0, self.OPTION_MARGIN_RIGHT, 0)
+        table_btn_row.addWidget(self.download_btn,
+                                alignment=Qt.AlignmentFlag.AlignCenter)
+        table_layout.addLayout(table_btn_row)
 
         right_layout.addWidget(self.default_view, stretch=1)
         right_layout.addWidget(self.table_view, stretch=1)
