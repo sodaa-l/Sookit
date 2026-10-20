@@ -90,8 +90,10 @@ def _find_fallback_product(cache_dir, name):
 class YouTubePage(PageBase):
     """视频嗅探与下载——封面和格式左右分栏布局"""
 
-    # 默认视图档位列表的左右留白（决策 50）。右侧要额外让出滚动条自身占掉的宽度：
-    # qfw 的滚动条浮在视口右缘、不占布局空间，不让位就会压在卡片上、观感也仍偏左。
+    # 默认视图档位列表的左右留白（决策 50、53）。右侧固定多让出滚动条自身占掉的
+    # 宽度：qfw 的滚动条浮在视口右缘、不占布局空间，不让位就会压在卡片上。
+    # 这里两侧都取固定值、不随滚动条显隐变化——滚动条一出现/消失卡片宽度就跳动，
+    # 比「滚动条不出现时右边多空 13px」更难看。
     # 卡片不再设宽度上限（决策 51）：一旦封顶，窗口继续变宽时多出来的宽度会全部
     # 堆在右侧，左右留白就不再相等了。卡片铺满「可用宽度 / 2」，两列永远等宽。
     OPTION_MARGIN_X = 15
@@ -251,20 +253,16 @@ class YouTubePage(PageBase):
         self.option_content.setStyleSheet("QWidget { background: transparent; }")
         self.option_layout = QVBoxLayout(self.option_content)
         # 左留白已由右面板统一提供（决策 52），这里左边距归 0 才能让卡片与
-        # 视图切换按钮、格式表格左边缘对齐；右侧 = 15 + 滚动条可见时的 13px，
-        # 由 _sync_option_margins() 按滚动条实际显隐实时调整。
+        # 视图切换按钮、格式表格左边缘对齐。右侧恒定 = 15 + 13（滚动条自身宽度），
+        # 不随滚动条显隐变化（决策 53）。
         self.option_layout.setContentsMargins(
-            0, 0, self.OPTION_MARGIN_X, 0)
+            0, 0, self.OPTION_MARGIN_X + self.SCROLLBAR_RESERVE, 0)
         self.option_layout.setSpacing(6)
         self.option_layout.addStretch(1)
         self.option_scroll.setWidget(self.option_content)
         # 与队列页/GIF 页一致：qfw.ScrollArea 默认是不透明面板色，不置透明会露出灰底
         self.option_scroll.enableTransparentBackground()
         set_smooth_scroll_params(self.option_scroll)
-        # 滚动条显隐会改变右侧可用宽度：可见时补 13px、不可见时收回，
-        # 保证两种状态下卡片左右留白都相等（决策 50）
-        self.option_scroll.scrollDelagate.vScrollBar.rangeChanged.connect(
-            lambda *_: self._sync_option_margins())
 
         # 空态占位：默认视图是进入页面的落点，嗅探前只有一片空白会更像「坏了」。
         # 必须允许换行：否则这一整句会让右面板最小宽度涨到 322px，窗口变窄时
@@ -376,10 +374,6 @@ class YouTubePage(PageBase):
         is_default = key == SNIFF_VIEW_DEFAULT
         self.default_view.setVisible(is_default)
         self.table_view.setVisible(not is_default)
-        # 切回默认视图时按滚动条实际状态补一次右边距（决策 50）：
-        # 表格视图期间默认视图是隐藏的，滚动条的显隐变化不一定触发过 rangeChanged
-        if is_default:
-            QTimer.singleShot(0, self._sync_option_margins)
 
     def refresh_ytdlp_status(self):
         """yt-dlp 装好后重新检测：若已可用则关闭「未找到 yt-dlp」提示"""
@@ -1017,32 +1011,11 @@ class YouTubePage(PageBase):
         # 回到空态：列表收起、占位提示接管
         self.option_scroll.setVisible(False)
         self.option_empty_hint.setVisible(True)
-        # 列表清空后滚动条必然消失，右边距回到基准值（决策 50）
-        margins = self.option_layout.contentsMargins()
-        self.option_layout.setContentsMargins(
-            margins.left(), margins.top(), self.OPTION_MARGIN_X, margins.bottom())
 
     def _section_label(self, text):
         label = qfw.CaptionLabel(text)
         label.setStyleSheet("color: #6b6b6b; font-weight: 600; background: transparent;")
         return label
-
-    def _sync_option_margins(self):
-        """按滚动条实际显隐调整档位列表右边距，让左右留白始终相等（决策 50）
-
-        滚动条是浮在视口右缘的子控件（不占布局空间），所以它可见时必须从右边距里
-        额外让出 13px，否则卡片会被压住、视觉上仍然偏左；不可见时则不需要这份让位。
-        判据用 ``maximum() > 0`` 而不是 ``isVisible()``：默认视图被切走时整块面板
-        不可见，滚动条也会跟着「不可见」，但它一露出来依然要占宽度。
-        """
-        bar = self.option_scroll.scrollDelagate.vScrollBar
-        reserve = self.SCROLLBAR_RESERVE if bar.maximum() > 0 else 0
-        margins = self.option_layout.contentsMargins()
-        left, top, right, bottom = (margins.left(), margins.top(),
-                                    margins.right(), margins.bottom())
-        target = self.OPTION_MARGIN_X + reserve
-        if right != target:
-            self.option_layout.setContentsMargins(left, top, target, bottom)
 
     def _make_option_grid(self):
         """一个分区的卡片网格：固定两列，卡片随窗口变窄（决策 47）"""
@@ -1091,8 +1064,6 @@ class YouTubePage(PageBase):
         elif options['audio']:
             self._select_option(options['audio'][0])
         self.default_download_btn.setEnabled(True)
-        # 填充后滚动条是否出现要等一次布局才能确定，延后一拍再校正右边距
-        QTimer.singleShot(0, self._sync_option_margins)
 
     def _select_option(self, option):
         """全局互斥单选：视频档与音频档共用一个选中项"""
