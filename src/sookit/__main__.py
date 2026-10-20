@@ -133,6 +133,11 @@ def main():
     app.setStyle("Fusion")
     app.setFont(QFont("Microsoft YaHei", 10))
 
+    # 全局滚动条外观（决策 48）：常显极淡、悬停恢复原生浓度。
+    # 必须在 MainWindow 之前调用——qfw 的手柄颜色写在 __init__ 里，已建好的手柄不受影响。
+    from sookit.core.utils import apply_global_scrollbar_style
+    apply_global_scrollbar_style()
+
     # 获取图标路径
     icon_path = str(get_icon_path())
 

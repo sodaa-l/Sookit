@@ -32,7 +32,7 @@ src/sookit/        代码包 (标准 src 布局)
     │   ├─ youtube_utils.py 元数据提取 + 缩略图构建/通用规范化 (HTTP 降级方案)
     │   ├─ sniff_options.py 嗅探页默认视图档位归并 + 容器族判定 (纯函数，决策 47)
     │   ├─ config.py        配置管理 (JSON 缓存 + 线程锁)
-    │   ├─ utils.py         滚动条样式等杂项
+    │   ├─ utils.py         滚动条样式（含全局滚动条补丁，决策 48）等杂项
     │   └─ gif_utils.py     MP4→GIF 自动参数决策转码 (移植自外部脚本，依赖 numpy+Pillow)
     │
     └─ widgets/        可复用 UI 组件层
@@ -103,7 +103,7 @@ flowchart TB
 | `task_queue.py` | 任务队列单例。进度、workspace 生命周期、active_workspaces registry、JSON 持久化 | `TaskQueueManager`, `Task`, `TaskStatus`, `TaskType`, `_generate_ulid()` |
 | `workers.py` | 后台线程: Worker(通用) / TaskWorker(队列, 含 workspace/进程树清理) / MonitorWorker(直播轮询) | `TaskWorker`, `MonitorWorker`, `_kill_process_tree()` |
 | `config.py` | JSON 配置文件读写 + 缓存 + 线程锁。主题色、开机自启、下载配置 | `load_config()`, `save_config()`, `load_download_config()` |
-| `utils.py` | 平滑滚动参数、SSL 上下文 | `set_smooth_scroll_params()`, `get_certifi_ssl_context()` |
+| `utils.py` | 平滑滚动参数、SSL 上下文、**全局滚动条外观补丁**（决策 48：常显极淡、悬停恢复原生浓度） | `set_smooth_scroll_params()`, `get_certifi_ssl_context()`, `apply_global_scrollbar_style()` |
 | `gif_utils.py` | MP4→GIF 自动参数决策转码（帧率锁死 / 色数 MAE 决策 / 预算内最大化宽度）。依赖 numpy+Pillow（延迟 import） | `convert_to_gif()` |
 
 ### 入口与下载器
@@ -202,6 +202,7 @@ flowchart TB
 | 45 | aria2c 原生进度行 ETA/速度格式纠正 + 缺失即清空（2026-10-19） | aria2c 原生行 ETA 是**带单位时长**（`19s`/`1m42s`/`3m`，不是 `mm:ss`）、`DL:` 后**无 `/s`**——旧正则两条都对不上（497 行命中 0）；解析后 ETA 统一归一 `mm:ss`（小时级 `h:mm:ss`，`0s` 视为未知）；`_on_progress` 的 ETA **缺失即清空**，不沿用旧值（否则界面僵在假时间上） | [45-aria2c-eta-format.md](decisions/45-aria2c-eta-format.md) |
 | 46 | 恢复「并发分片数」设置，默认 8（2026-10-19） | **HLS/DASH 分片流的并发只能靠 yt-dlp `-N`**：aria2c 的 `SUPPORTED_PROTOCOLS` 不含 `m3u8_native`，HLS 恒走 `HlsFD`，`--downloader/--downloader-args`（含「连接数」`-x/-s`）对它完全无效。形参 `concurrent_fragments` 固定紧跟 `remote_components`（位置参数，所有调用点须同步）；`> 1` 才追加 `-N`（1=不并发，0/None 同）；设置卡片文案「yt-dlp 并发分片数」、档位 **1/2/4/8/16**、默认 8，**不进 aria2c 灰化列表**。旧值归一下沉到 `config.normalize_fragments`（**不能在设置页归一**，否则 UI 显示 8 而下载仍用 10），规则**向下取档**不静默抬高带宽；`FRAGMENT_TIERS`/`FRAGMENT_DEFAULT` 与下拉档位须同步；动图页也透传 | [46-concurrent-fragments.md](decisions/46-concurrent-fragments.md) |
 | 47 | 嗅探页双视图：默认视图（选分辨率即下载）+ 表格视图（2026-10-20） | 右面板顶部 `SegmentedWidget` 切「默认视图 / 表格视图」，偏好存 `general.sniff_view`（`load_sniff_view`/`save_sniff_view`）；默认视图是**卡片平铺**（68px 圆角卡片 + 单选圈，**不用下拉**、无表头/网格线/多选框；**固定一排放两张、不退回单列**（主窗口最小宽 966px 下也放得下两张；窄了由卡片丢编码而不是变一列），用自建 `OptionFlowLayout` 而非 `AdaptiveFlowLayout`），视频档按 `height` 去重取前 5 档、档位名**只标分辨率/帧率**（不用「最佳画质」这类评价性文案；也不设 `bestvideo+bestaudio` 通配档，避免 yt-dlp 配出跨族组合只能落 mkv）；卡片宽上限 400px、两个下载按钮统一 240×32；音频档按码率归并（同码率 drc/非 drc 只出一档、**不设码率阈值**）且仅在存在独立音频流时给（否则 `bestaudio` 退化成整个视频）；`qfw.ScrollArea` 须 `enableTransparentBackground()` 否则灰底；空态文案须 `setWordWrap(True)` 否则撑大右面板最小宽度、窄窗口去压左栏；`OptionRow` 自绘控件必须实现 `sizeHint()`；窄卡片下副标题**按宽度逐级降级：先丢掉编码段（`SUBTITLE_FULL_MIN_WIDTH=190`，只留 `webm · 约 1.0GB`），再压紧分隔符、降 8pt、省「约」，绝不硬截省略号**（省略号丢的是文件大小）；短副标题 `short_subtitle` 由 `sniff_options` 预先生成；`约` 与数字间始终留空格（`约 1.0GB`）；起点档只由文字区宽度决定、不逐行按内容长度决定（否则同网格卡片有的 `a · b` 有的 `a·b`，像没对齐）；`OptionFlowLayout` 的宿主 widget 必须 `sizePolicy().setHeightForWidth(True)`；`spec` 必须是**精确 format_id 拼接**（`313+251`）而非通配选择器，副标题才与实际流一致；音轨先挑与视频 ext 同容器族、再挑编码同标准族；容器族判定改为「每编码→可用容器集合取交集」（**修订决策 38 口径**：`av01+opus` 合 webm 属标准组合，不再误报 mkv），编码族表上提到 `core/sniff_options.py` 与 `_predict_mkv_merge` **同源**，未知编码不猜容器（副标题省略）；`setCurrentItem` 会发 `currentItemChanged`，初始化恢复须用 `_restoring_view` 守卫防误落盘；`QFontMetrics.elidedText` 宽度参数必须 `int` | [47-sniff-view-modes.md](decisions/47-sniff-view-modes.md) |
+| 48 | 全局滚动条改为常显极淡、悬停加深（2026-10-21） | qfw 滚动条是纯 `QPainter` 自绘（`scroll_bar.py`），**没有全局 QSS 可改**（包内无 `.qss`、`common/config.py` 无配置项），且逐控件 `setHandleColor()` 改不到 qfw 内部自建的菜单/`LineEdit`/导航栏 → 在类上打补丁。`apply_global_scrollbar_style()`（`core/utils.py`）补三处：`ScrollBarHandle.__init__` 把初始色改极淡（亮 `rgba(0,0,0,55)` / 暗 `rgba(255,255,255,70)`）、`ScrollBar.expand` / `collapse` 在**调完原方法后按 `self._isExpanded` 的真实结果**切到悬停色（亮 `114` / 暗 `139`，即 qfw 原生值）或切回极淡。**不能无条件切色**：原 `expand()` 开头 `if self._isExpanded or not self._isEnter: return`、`collapse()` 开头 `if not self._isExpanded or self._isEnter: return` 都会早退。**只改手柄，不动 groove/arrow**（轨道默认 `opacity=0`，只在悬停淡入，本就不算常显）。已否决 `ON_HOVER` 模式：`enterEvent` 绑在滚动条自身那 12px 宽 widget 上，鼠标进内容区不触发，用户要精确推到窗口最右才淡入。幂等守卫 `_sookit_scrollbar_patched`；调用点必须在 `__main__.py` 的 `app.setFont()` 之后、`MainWindow()` **之前**（手柄色写在 `__init__`，已建好的不回溯） | [48-global-scrollbar-opacity.md](decisions/48-global-scrollbar-opacity.md) |
 
 ## AI 编码约定
 
