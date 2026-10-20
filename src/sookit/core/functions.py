@@ -535,6 +535,9 @@ class Functions:
                 # quality 文本。height 为 0 表示未知（如 HLS 成片、storyboard）
                 'height': height,
                 'fps': int(f.get('fps') or 0),
+                # yt-dlp 的原始备注：默认视图用它筛「自动配音」音轨
+                # （format_note 里带 `dubbed-auto`，决策 60）
+                'format_note': str(f.get('format_note') or ''),
                 'abr': int(f.get('abr') or tbr) if fmt_type == '音频流' else 0,
             })
 

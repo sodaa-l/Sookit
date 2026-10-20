@@ -70,6 +70,38 @@ def _lang_tag(fmt):
     return str(fmt.get('language') or '').strip().lower()
 
 
+def _is_auto_dubbed(fmt):
+    """是否是 YouTube 的「自动配音」音轨（yt-dlp 在 format_note 里标 `dubbed-auto`）。
+
+    yt-dlp 只把这两种配音写进 `format_note`（且只写在这种 m3u8 抽出来的
+    `233-*` / `234-*` 音轨上）：
+
+    - `American English - dubbed-auto` → 机器翻译的自动配音
+    - `日本語 - dubbed`                → 人工/官方配音，属于作者提供的音轨，要保留
+
+    同一条配音在 DASH 音轨（`139-*` / `140-*` / `249-*` / `250-*` / `251-*`）上
+    只写语言名（`English (US), medium`），**不带任何配音标记** —— 所以单看某一条
+    音轨分不出来，得先按语言汇总（见 `_auto_dubbed_languages()`，决策 60）。
+    """
+    return 'dubbed-auto' in str(fmt.get('format_note') or '').lower()
+
+
+def _auto_dubbed_languages(formats):
+    """被自动配音占用的语言集合（小写语言码）。
+
+    只要某个语言有一条音轨被标成 `dubbed-auto`，该语言的**所有**音轨都算自动
+    配音：`233-0`（`- dubbed-auto`）与 `139-0` / `140-0` … 是同一份机翻音轨的不同
+    容器，前者只出现在 m3u8 音轨上。人工配音（`- dubbed`）不会进这个集合。
+    """
+    langs = set()
+    for fmt in formats:
+        if _is_auto_dubbed(fmt):
+            tag = _lang_tag(fmt)
+            if tag:
+                langs.add(tag)
+    return langs
+
+
 def _multi_languages(formats):
     """多语言视频的语言码列表（原声优先，其次按语言码字典序）。
 
@@ -350,6 +382,14 @@ def build_view_options(formats):
     该组为空列表（纯音频站点没有视频档；只有成品格式的站点没有独立音频档）。
     """
     formats = formats or []
+    # 自动配音音轨不进默认视图（决策 60）：先看 `format_note` 里的 `dubbed-auto`
+    # 找出被机翻配音占用的**语言**，再把该语言的音轨（含不带标记的 DASH 变体）
+    # 一起筛掉。人工配音（`- dubbed`，如日配）不算自动配音，予以保留。
+    # 从源头筛掉，下游的语言归类、音轨配对、音频档归并、多语言拆分都自动一致。
+    # 表格视图走的是另一份原始数据，仍会照常列出这些行供手动选择。
+    auto_dubbed_langs = _auto_dubbed_languages(formats)
+    formats = [f for f in formats
+               if not (_is_auto_dubbed(f) or _lang_tag(f) in auto_dubbed_langs)]
 
     # 多语言（≥2 种音轨语言）的站点：视频档按「分辨率 × 语言」各出一档，
     # 否则一张卡只能悄悄绑死某一种语言、其他语言在默认视图完全看不到（决策 58）
