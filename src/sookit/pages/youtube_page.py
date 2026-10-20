@@ -329,7 +329,12 @@ class YouTubePage(PageBase):
 
         # 格式表格 —— 自定义子类，resize 时按比例分配列宽
         class _FormatTable(qfw.TableWidget):
-            COL_FACTORS = [44, 90, 80, 100, 55]
+            # 列顺序与表头一致：选择 / ID / 类型 / 质量 / 编码 / 语言（决策 59 加了 ID 列）
+            # 权重按「真机字体量出的最长文案 + 32px 单元格内距」定（决策 59）：
+            # 类型「视频+音频」94px、质量「1080p 60fps」/「Default, high」111px、
+            # 编码「avc1+aac」92px、语言「ko」47px，ID 保到能放下「http-2176」的 98px。
+            # 1131 宽窗口下实际列宽 [55, 102, 102, 120, 97, 55]；超长 ID 靠省略号 + tooltip。
+            COL_FACTORS = [40, 73, 73, 86, 70, 40]
             COL_MIN = 50
             # 右侧留白（决策 54）：滚动条浮在 viewport 右缘、不占布局空间，会盖住
             # 最右边 13px。列宽只分到「可用宽度 - 24」，于是这 24px 里 13px 让开
@@ -407,11 +412,17 @@ class YouTubePage(PageBase):
                     rule.show()
                 rule.raise_()
         self.format_table = _FormatTable()
-        self.format_table.setColumnCount(5)
-        self.format_table.setHorizontalHeaderLabels(["选择", "类型", "质量", "编码", "语言"])
+        self.format_table.setColumnCount(6)
+        self.format_table.setHorizontalHeaderLabels(
+            ["选择", "ID", "类型", "质量", "编码", "语言"])
         self.format_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.format_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.format_table.setAlternatingRowColors(True)
+        # 单元格文案一律单行省略号、不按词换行：ID（`hls-audio-128000-Audio`）与
+        # 质量（`한국어 - original (original)`）这类长文案若允许换行，行高会被撑成
+        # 两行、表格参差不齐；全文看 tooltip（决策 59 第二轮配平）
+        self.format_table.setWordWrap(False)
+        self.format_table.setTextElideMode(Qt.TextElideMode.ElideRight)
         # 右下开口 + 右边线落在列尾（决策 56）：qfw 默认 `QTableView{border: none}`，
         # 表头格子自带的 1px 边线横向连成上边、行号列各格的 left border 连成左边；右/下
         # 两段原本靠 setBorderVisible(True) 的整条外框补（决策 55），但外框贴着控件四周
@@ -662,8 +673,19 @@ class YouTubePage(PageBase):
                 item.setFlags(Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
                 item.setCheckState(Qt.CheckState.Checked if row in precheck_rows else Qt.CheckState.Unchecked)
                 self.format_table.setItem(row, 0, item)
-                self.format_table.setItem(row, 1, QTableWidgetItem(fmt['type']))
-                self.format_table.setItem(row, 2, QTableWidgetItem(fmt['quality']))
+                # ID 列（决策 59）：原样显示 yt-dlp 的 format_id —— 用户能直接和
+                # `yt-dlp -F` 的输出对号，也是合并下载选择器的构成单元。长 ID
+                # （如 hls-audio-128000-Audio）列宽不够会被省略号截断，挂 tooltip 兜底。
+                id_item = QTableWidgetItem(fmt['format_id'])
+                id_item.setToolTip(fmt['format_id'])
+                self.format_table.setItem(row, 1, id_item)
+                self.format_table.setItem(row, 2, QTableWidgetItem(fmt['type']))
+                # 质量列偶尔会被长文案（格式无码率时退回 format_note，如
+                # 「한국어 - original (original)」）撑爆，列宽放不下时省略号截断，
+                # 挂 tooltip 让悬停能看到全文（决策 59 补记）
+                quality_item = QTableWidgetItem(fmt['quality'])
+                quality_item.setToolTip(fmt['quality'])
+                self.format_table.setItem(row, 3, quality_item)
                 codec = fmt.get('vcodec', '')
                 if fmt['type'] == '音频流':
                     codec = fmt.get('acodec', '')
@@ -675,9 +697,9 @@ class YouTubePage(PageBase):
                 # 显式写「未知」；「其他」行（storyboard 等）本来就无编码，保持空。
                 if not codec and fmt['type'] != '其他':
                     codec = '未知'
-                self.format_table.setItem(row, 3, QTableWidgetItem(codec))
+                self.format_table.setItem(row, 4, QTableWidgetItem(codec))
                 lang = fmt.get('language', '')
-                self.format_table.setItem(row, 4, QTableWidgetItem(lang))
+                self.format_table.setItem(row, 5, QTableWidgetItem(lang))
         finally:
             self._format_updating = False
 
