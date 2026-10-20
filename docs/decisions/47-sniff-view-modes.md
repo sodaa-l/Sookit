@@ -88,11 +88,12 @@ cardsPerRow = (available + space) // (minWidth + space)
 所以 `OptionRow.MAX_WIDTH` 只能通过 `flow.setWidgetMaximumWidth()` 生效，
 `row.setMaximumWidth()` 仅在极宽窗口下兜底。
 
-**卡片宽上限 400px（`OPTION_ROW_MAX_WIDTH` / `OptionRow.MAX_WIDTH`）**：卡片是
-「清单项」不是表格单元格，铺满整栏会在宽窗口下把单选圈推到很远、中间留出
-大片空白。注意**不要**给 `insertWidget` 传 `alignment=AlignLeft`：`OptionRow` 是
-自绘控件，默认 `sizeHint` 无效 `(-1,-1)`，带对齐会被收缩成 0 宽而完全看不见——
-所以 `OptionRow` 必须实现按内容估算的 `sizeHint()`（`MIN_WIDTH=320`～`MAX_WIDTH=400`）。
+**卡片宽度不设上限**（~~宽上限 400px~~ 已由决策 51 取消）：卡片宽度恒为
+「可用宽度 / 2」，两列永远等宽、左右留白恒等。曾经有过 400px 上限，但宽窗口下
+多出来的宽度会全部堆到右侧，左右留白就不相等了。
+注意**不要**给 `insertWidget` 传 `alignment=AlignLeft`：`OptionRow` 是自绘控件，
+默认 `sizeHint` 无效 `(-1,-1)`，带对齐会被收缩成 0 宽而完全看不见——所以
+`OptionRow` 必须实现按内容估算的 `sizeHint()`（`MIN_WIDTH=320`，无上限）。
 
 **副标题：窄了先丢编码段，不是先压紧、更不是省略号**（`OptionRow._fit_subtitle`）：
 
@@ -284,7 +285,7 @@ finally:
 | `core/sniff_options.py` | **新建**：档位归并 + 容器族判定（纯函数）；每个 option 带 `subtitle` 与 `short_subtitle`（去编码版） |
 | `widgets/option_row.py` | **新建**：`OptionRow` 自绘单选行控件（`_fit_subtitle` 按宽度丢编码/压紧/降字号） |
 | `widgets/option_grid.py` | **新建**：`OptionFlowLayout` 固定两列网格（`MAX_COLUMNS=2`，不退回单列） |
-| `pages/youtube_page.py` | 右面板加 SegmentedWidget + 两视图容器；新增 `_on_view_changed`/`_apply_view`/`_clear_default_view`/`_section_label`/`_populate_default_view`/`_select_option`/`do_download_default`；四个复位点；初始化恢复偏好；`OPTION_ROW_MAX_WIDTH=400`、`_make_option_grid()`；`_option_flows` 状态与复位；`option_scroll.enableTransparentBackground()`；空态文案 `setWordWrap(True)`；两个下载按钮统一 240×32 居中 |
+| `pages/youtube_page.py` | 右面板加 SegmentedWidget + 两视图容器；新增 `_on_view_changed`/`_apply_view`/`_clear_default_view`/`_section_label`/`_populate_default_view`/`_select_option`/`do_download_default`；四个复位点；初始化恢复偏好；`_make_option_grid()`（卡片不设宽度上限，决策 51）；`_option_flows` 状态与复位；`option_scroll.enableTransparentBackground()`；空态文案 `setWordWrap(True)`；两个下载按钮统一 240×32 居中 |
 
 ## 风险
 

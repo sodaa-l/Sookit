@@ -90,13 +90,10 @@ def _find_fallback_product(cache_dir, name):
 class YouTubePage(PageBase):
     """视频嗅探与下载——封面和格式左右分栏布局"""
 
-    # 默认视图档位卡片的宽度上限（决策 47）。卡片是「清单项」不是表格单元格：
-    # 铺满整栏会在宽窗口下把单选圈推到很远、中间留出大片空白。列数固定两列
-    # （见 OptionFlowLayout），卡片跟着窗口一起变窄，不再退回单列。
-    OPTION_ROW_MAX_WIDTH = 400
-
     # 默认视图档位列表的左右留白（决策 50）。右侧要额外让出滚动条自身占掉的宽度：
     # qfw 的滚动条浮在视口右缘、不占布局空间，不让位就会压在卡片上、观感也仍偏左。
+    # 卡片不再设宽度上限（决策 51）：一旦封顶，窗口继续变宽时多出来的宽度会全部
+    # 堆在右侧，左右留白就不再相等了。卡片铺满「可用宽度 / 2」，两列永远等宽。
     OPTION_MARGIN_X = 15
     SCROLLBAR_RESERVE = 13
 
@@ -1051,7 +1048,7 @@ class YouTubePage(PageBase):
         flow = OptionFlowLayout(parent=holder)
         flow.setHorizontalSpacing(10)
         flow.setVerticalSpacing(8)
-        flow.setWidgetMaximumWidth(self.OPTION_ROW_MAX_WIDTH)
+        # 不设卡片宽度上限：上限会让宽窗口下多出的宽度全堆到右侧（决策 51）
         # 流式布局按宽度决定几列，高度只能由 heightForWidth 算 → holder 必须开启
         policy = holder.sizePolicy()
         policy.setHeightForWidth(True)
@@ -1079,8 +1076,7 @@ class YouTubePage(PageBase):
             holder, flow = self._make_option_grid()
             for opt in opts:
                 row = OptionRow(opt['title'], opt['subtitle'], opt['short_subtitle'])
-                # 卡片宽度由网格统一分配，这里的上限只用于极宽窗口兜底
-                row.setMaximumWidth(self.OPTION_ROW_MAX_WIDTH)
+                # 卡片宽度由网格对半分（见 OptionFlowLayout），不设上限（决策 51）
                 row.clicked.connect(lambda o=opt: self._select_option(o))
                 self._option_rows.append((row, opt))
                 flow.addWidget(row)
