@@ -127,8 +127,12 @@ class YouTubePage(PageBase):
         self._restoring_view = False
 
         # ---- 主布局 ----
+        # 右边距为 0：让右面板（及其中的默认视图滚动区）一直延伸到窗口右缘，
+        # 滚动条才不会浮在卡片区中间（决策 49）。原来 20px 的右缩进由各行
+        # 自己的右边距补回（URL 行 20、表格视图 24、档位列表 30），
+        # 因此除滚动条位置外，其余控件的位置和宽度都与改动前一致。
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setContentsMargins(20, 20, 0, 20)
         layout.setSpacing(10)
 
         title = qfw.TitleLabel("视频嗅探下载")
@@ -144,6 +148,8 @@ class YouTubePage(PageBase):
 
         # ---- URL 输入行 ----
         url_row = QHBoxLayout()
+        # 补回主布局让出的 20px 右缩进，URL 行宽度与改动前一致
+        url_row.setContentsMargins(0, 0, 20, 0)
         self.url_input = qfw.LineEdit()
         self.url_input.setPlaceholderText("粘贴视频链接...")
         # 蓝色嗅探按钮
@@ -216,7 +222,8 @@ class YouTubePage(PageBase):
         # ====== 右面板：视图切换 + 默认视图 / 表格视图（决策 47） ======
         right_panel = QWidget()
         right_layout = QVBoxLayout(right_panel)
-        right_layout.setContentsMargins(8, 4, 4, 4)
+        # 右侧内距为 0：默认视图的滚动区要贴到窗口右缘（决策 49）
+        right_layout.setContentsMargins(8, 4, 0, 4)
         right_layout.setSpacing(8)
 
         # 视图切换：默认视图（选分辨率直接下载）/ 表格视图（逐格式勾选，原交互）
@@ -239,7 +246,9 @@ class YouTubePage(PageBase):
         self.option_content = QWidget()
         self.option_content.setStyleSheet("QWidget { background: transparent; }")
         self.option_layout = QVBoxLayout(self.option_content)
-        self.option_layout.setContentsMargins(0, 0, 6, 0)
+        # 右边距 30 = 原主布局 20 + 右面板 4 + 本布局 6，
+        # 让滚动区贴住窗口右缘的同时，卡片右边缘位置保持不变（决策 49）
+        self.option_layout.setContentsMargins(0, 0, 30, 0)
         self.option_layout.setSpacing(6)
         self.option_layout.addStretch(1)
         self.option_scroll.setWidget(self.option_content)
@@ -263,13 +272,19 @@ class YouTubePage(PageBase):
         self.default_download_btn.setFixedWidth(240)
         self.default_download_btn.setEnabled(False)  # 嗅探出档位后才可点
         self.default_download_btn.clicked.connect(self.do_download_default)
-        default_layout.addWidget(self.default_download_btn,
-                                 alignment=Qt.AlignmentFlag.AlignCenter)
+        # 按钮单独一行并留出 24px 右距 = 原主布局 20 + 右面板 4：
+        # 右面板已贴到窗口右缘，不补回这个内距按钮整体会右移 12px（决策 49）
+        default_btn_row = QHBoxLayout()
+        default_btn_row.setContentsMargins(0, 0, 24, 0)
+        default_btn_row.addWidget(self.default_download_btn,
+                                  alignment=Qt.AlignmentFlag.AlignCenter)
+        default_layout.addLayout(default_btn_row)
 
         # ---- 表格视图：原格式表格 + 合并下载 ----
         self.table_view = QWidget()
         table_layout = QVBoxLayout(self.table_view)
-        table_layout.setContentsMargins(0, 0, 0, 0)
+        # 右边距 24 = 原主布局 20 + 右面板 4：表格右边缘与改动前一致（决策 49）
+        table_layout.setContentsMargins(0, 0, 24, 0)
         table_layout.setSpacing(6)
 
         # 格式表格 —— 自定义子类，resize 时按比例分配列宽
