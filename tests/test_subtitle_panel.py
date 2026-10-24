@@ -106,7 +106,7 @@ class SubtitlePanelTests(QtCase):
         self.assertEqual(set(self.panel._visible_keys), {PLATFORM['key'], CHINESE['key']})
         self.assertEqual(self.panel.selected_formats(), ['srt'])
         self.assertFalse(self.panel.download_button.isEnabled())
-        self.assertIn('选择一条', self.panel.download_hint.text())
+        self.assertEqual(self.panel.download_button.toolTip(), '')
 
     def test_filter_preserves_selection_and_all_only_changes_visible(self):
         self.panel.search_input.setText('EN-us')
@@ -127,22 +127,23 @@ class SubtitlePanelTests(QtCase):
         self.assertEqual(self.panel.download_count(), 1)
 
     def test_automatic_off_clears_hidden_selections_even_under_search(self):
-        self.panel.automatic_action.setChecked(True)
+        self.panel.automatic_switch.setChecked(True)
         self.panel._rows[AUTOMATIC['key']][1].setChecked(True)
         self.panel._rows[PLATFORM['key']][1].setChecked(True)
         self.panel.search_input.setText('zh-Hant')
-        self.panel.automatic_action.setChecked(False)
+        self.panel.automatic_switch.setChecked(False)
         self.assertEqual(self.selected_keys(), {PLATFORM['key']})
-        self.panel.automatic_action.setChecked(True)
+        self.panel.automatic_switch.setChecked(True)
         self.assertEqual(self.selected_keys(), {PLATFORM['key']})
 
-    def test_automatic_only_empty_hint_and_button(self):
+    def test_automatic_only_empty_hint_and_switch(self):
         self.panel.set_tracks([AUTOMATIC])
         self.assertEqual(self.panel.empty_hint.text(), '发现1条自动字幕')
-        self.assertFalse(self.panel.show_automatic_button.isHidden())
+        self.assertTrue(self.panel.automatic_switch.isEnabled())
+        self.assertFalse(self.panel.automatic_switch.isChecked())
         self.assertTrue(self.panel.track_scroll.isHidden())
-        self.panel.show_automatic_button.click()
-        self.assertTrue(self.panel.automatic_action.isChecked())
+        self.panel.automatic_switch.setChecked(True)
+        self.assertTrue(self.panel.automatic_switch.isChecked())
         self.assertEqual(self.panel._visible_keys, [AUTOMATIC['key']])
         self.assertFalse(self.panel.track_scroll.isHidden())
 
@@ -153,7 +154,7 @@ class SubtitlePanelTests(QtCase):
         self.panel.format_checks['vtt'].click()
         self.assertEqual(self.panel.download_count(), 6)
         self.assertIn('6', self.panel.download_button.text())
-        self.assertIn('2 条字幕 × 3 种格式 = 6', self.panel.download_hint.text())
+        self.assertEqual(self.panel.download_button.toolTip(), '')
         requested = MagicMock()
         self.panel.download_requested.connect(requested)
         self.panel.download_button.click()
@@ -162,37 +163,37 @@ class SubtitlePanelTests(QtCase):
             check.setChecked(False)
         self.assertEqual(self.panel.download_count(), 0)
         self.assertFalse(self.panel.download_button.isEnabled())
-        self.assertIn('输出格式', self.panel.download_hint.text())
+        self.assertEqual(self.panel.download_button.toolTip(), '')
 
-    def test_more_menu_comment_discovery_and_new_sniff_reset(self):
-        self.assertFalse(self.panel.automatic_action.isChecked())
-        self.assertEqual(self.panel.automatic_action.text(), '显示自动字幕（含自动翻译）')
-        self.assertTrue(self.panel.comments_action.isEnabled())
+    def test_comment_button_discovery_and_new_sniff_reset(self):
+        self.assertFalse(self.panel.automatic_switch.isChecked())
+        self.assertEqual(self.panel.automatic_switch.getText(), '')
+        self.assertTrue(self.panel.comments_button.isEnabled())
         requested = MagicMock()
         self.panel.comments_requested.connect(requested)
-        self.panel.comments_action.trigger()
+        self.panel.comments_button.click()
         requested.assert_called_once_with()
-        self.panel.automatic_action.setChecked(True)
+        self.panel.automatic_switch.setChecked(True)
         self.panel.select_all.click()
         self.panel.search_input.setText('English')
         self.panel.set_tracks([AUTOMATIC], [COMMENT])
-        self.assertFalse(self.panel.automatic_action.isChecked())
+        self.assertFalse(self.panel.automatic_switch.isChecked())
         self.assertFalse(self.panel.selected_tracks())
         self.assertEqual(self.panel.search_input.text(), '')
         self.panel.set_tracks([], [COMMENT])
-        self.assertIn('更多内容', self.panel.empty_hint.text())
-        self.assertTrue(self.panel.comments_action.isEnabled())
+        self.assertIn('输出格式', self.panel.empty_hint.text())
+        self.assertTrue(self.panel.comments_button.isEnabled())
         self.assertFalse(self.panel.download_button.isEnabled())
         self.panel.clear()
-        self.assertFalse(self.panel.comments_action.isEnabled())
+        self.assertFalse(self.panel.comments_button.isEnabled())
         self.assertFalse(self.panel.selected_tracks())
-        self.assertFalse(self.panel.automatic_action.isChecked())
+        self.assertFalse(self.panel.automatic_switch.isChecked())
 
     def test_many_tracks_batch_selection_refreshes_once_and_keeps_manual_toggles(self):
         tracks = [track(f'lang-{i}', 'platform' if i < 316 else 'automatic')
                   for i in range(632)]
         self.panel.set_tracks(tracks)
-        self.panel.automatic_action.setChecked(True)
+        self.panel.automatic_switch.setChecked(True)
         changed = MagicMock()
         self.panel.selection_changed.connect(changed)
         self.panel.select_all.click()
@@ -200,7 +201,7 @@ class SubtitlePanelTests(QtCase):
         self.assertEqual(len(self.panel.selected_tracks()), 632)
         self.assertTrue(all(check.isChecked() for _, check in self.panel._rows.values()))
         changed.reset_mock()
-        self.panel.automatic_action.setChecked(False)
+        self.panel.automatic_switch.setChecked(False)
         changed.assert_called_once_with()
         self.assertEqual(len(self.panel.selected_tracks()), 316)
         self.assertTrue(all(not self.panel._rows[t['key']][1].isChecked()
@@ -219,10 +220,10 @@ class SubtitlePanelTests(QtCase):
                          extractor_detail={'keep': True})
         self.panel.set_tracks([PLATFORM, automatic])
         self.assertEqual(self.panel._visible_keys, [PLATFORM['key']])
-        self.panel.automatic_action.setChecked(True)
+        self.panel.automatic_switch.setChecked(True)
         self.panel.select_all.click()
-        self.assertEqual(self.panel.selected_tracks(), [PLATFORM, automatic])
-        self.panel.automatic_action.setChecked(False)
+        self.assertEqual(self.panel.selected_tracks(), [automatic, PLATFORM])
+        self.panel.automatic_switch.setChecked(False)
         self.assertEqual(self.panel.selected_tracks(), [PLATFORM])
 
     def test_comments_dialog_keeps_original_format_and_tracks_separate(self):
@@ -370,9 +371,12 @@ class YouTubePageTests(QtCase):
                     row = panel._rows[key][0]
                     row_right = row.mapTo(self.page, QPoint(row.width(), 0)).x()
                     self.assertEqual(width - row_right, self.page.OPTION_MARGIN_RIGHT)
-                tools_right = panel.more_button.mapTo(
-                    self.page, QPoint(panel.more_button.width(), 0)).x()
-                self.assertEqual(width - tools_right, self.page.OPTION_MARGIN_RIGHT)
+                switch_right = panel.automatic_switch.indicator.mapTo(
+                    self.page, QPoint(panel.automatic_switch.indicator.width(), 0)).x()
+                self.assertEqual(width - switch_right, self.page.OPTION_MARGIN_RIGHT)
+                comments_right = panel.comments_button.mapTo(
+                    self.page, QPoint(panel.comments_button.width(), 0)).x()
+                self.assertEqual(width - comments_right, self.page.OPTION_MARGIN_RIGHT)
                 button = panel.download_button
                 self.assertEqual((button.width(), button.height()), (240, 32))
                 panel_bottom = panel.mapTo(self.page, QPoint(0, panel.height())).y()
@@ -462,7 +466,7 @@ class YouTubePageTests(QtCase):
             dialog = factory.return_value
             dialog.exec.return_value = True
             dialog.selected_track.return_value = COMMENT
-            panel.comments_action.trigger()
+            panel.comments_button.click()
         self.page.run_queued_task.assert_called_once()
         call = self.page.run_queued_task.call_args.kwargs
         self.assertEqual(call['func'].__name__, 'download_comments')
@@ -509,7 +513,7 @@ class YouTubePageTests(QtCase):
                 self.sniff([PLATFORM, AUTOMATIC], [COMMENT])
                 self.show_subtitles()
                 panel = self.page.subtitle_panel
-                panel.automatic_action.setChecked(True)
+                panel.automatic_switch.setChecked(True)
                 panel.select_all.click()
                 if action == 'new':
                     self.page.do_sniff()
@@ -522,7 +526,7 @@ class YouTubePageTests(QtCase):
                     self.page._sniff_timeout()
                 self.assertEqual(self.page._subtitle_url, '')
                 self.assertFalse(panel.selected_tracks())
-                self.assertFalse(panel.automatic_action.isChecked())
+                self.assertFalse(panel.automatic_switch.isChecked())
                 self.assertTrue(self.page.content_segment.isHidden())
                 self.assertFalse(panel.download_button.isEnabled())
                 self.page._queue_subtitle_task(MagicMock(), (), 'test')

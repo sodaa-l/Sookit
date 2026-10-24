@@ -14,6 +14,7 @@ from pathlib import Path
 import re
 import shutil
 import tempfile
+from urllib.parse import parse_qs, urlsplit
 
 from sookit.core.ffmpeg_utils import get_ffmpeg_path, run_ffmpeg, run_ytdlp
 from sookit.core.ytdlp_utils import build_ytdlp_cmd
@@ -22,22 +23,134 @@ from sookit.core.ytdlp_utils import build_ytdlp_cmd
 _AI_NAME = re.compile(
     r'\bAI\b|\bauto(?:matic(?:ally)?|generated)?[ -](?:generated|captions?|subtitles?)'
     r'|自动(?:生成|字幕|翻译)|机器(?:生成|翻译)|AI\s*生成', re.IGNORECASE)
+_AUTO_GENERATED_NAME = re.compile(
+    r'\b(?:auto(?:matic)?[- ]generated|ai[- ]generated|original)\b'
+    r'|自动(?:生成|字幕)|机器生成|AI\s*生成', re.IGNORECASE)
+_AUTO_TRANSLATED_NAME = re.compile(
+    r'\b(?:auto[- ]?translated|translated|translation|from\s+[\w-]+)\b'
+    r'|自动翻译|机器翻译', re.IGNORECASE)
+_ORIGINAL_NAME = re.compile(r'\(\s*original\s*\)', re.IGNORECASE)
+_FROM_LANGUAGE_NAME = re.compile(r'\bfrom\s+(.+?)\s*$', re.IGNORECASE)
 _EXT = re.compile(r'^[a-z0-9]+$')
 _TIMING = re.compile(
     r'^(?P<start>(?:\d{2,}:)?\d{2}:\d{2}[.,]\d{3})\s+-->\s+'
     r'(?P<end>(?:\d{2,}:)?\d{2}:\d{2}[.,]\d{3})(?:\s+.*)?$')
 
 
+def _usable_subtitle_entries(entries):
+    if not isinstance(entries, list):
+        return []
+    return [entry for entry in entries if isinstance(entry, dict)
+            and (entry.get('url') or entry.get('data'))
+            and _EXT.fullmatch(str(entry.get('ext', '')).lower())]
+
+
+def _automatic_kind(language, entries, has_original=False):
+    """Return generated/translated classification from explicit extractor metadata."""
+    names = [str(entry.get('name') or '') for entry in entries]
+    is_original = (language.casefold().endswith('-orig')
+                   or any(_ORIGINAL_NAME.search(name) for name in names))
+    if has_original:
+        return 'generated' if is_original else 'translated'
+    if is_original or any(_AUTO_GENERATED_NAME.search(name) for name in names):
+        return 'generated'
+    if any(_AUTO_TRANSLATED_NAME.search(name) for name in names):
+        return 'translated'
+    for entry in entries:
+        url = entry.get('url')
+        if isinstance(url, str):
+            try:
+                if parse_qs(urlsplit(url).query).get('tlang'):
+                    return 'translated'
+            except ValueError:
+                continue
+    return 'unknown'
+
+
+def _normalized_language_tag(value):
+    if not isinstance(value, str):
+        return ''
+    value = value.strip().replace('_', '-').casefold()
+    return '' if value in ('und', 'unknown', 'none') else value
+
+
+def _normalized_language_name(value):
+    return re.sub(r'\s+', ' ', str(value)).strip().casefold()
+
+
+def _video_source_language(info, automatic_captions):
+    for field in ('language', 'original_language'):
+        language = _normalized_language_tag(info.get(field))
+        if language:
+            return language
+    if isinstance(automatic_captions, dict):
+        for language, entries in automatic_captions.items():
+            if not isinstance(language, str):
+                continue
+            language_tag = _normalized_language_tag(language)
+            usable = _usable_subtitle_entries(entries)
+            names = [str(entry.get('name') or '') for entry in usable]
+            if usable and language_tag.endswith('-orig'):
+                return language_tag[:-5]
+            if usable and any(_ORIGINAL_NAME.search(name) for name in names):
+                return language_tag
+    return ''
+
+
+def _translation_matches_source(language, entries, source_language, source_names):
+    if not source_language:
+        return True
+    candidates = [language]
+    for entry in entries:
+        url = entry.get('url')
+        if not isinstance(url, str):
+            continue
+        try:
+            candidates.extend(parse_qs(urlsplit(url).query).get('tlang', []))
+        except ValueError:
+            continue
+    source_suffix = f'-{source_language}'
+    for candidate in candidates:
+        tag = _normalized_language_tag(candidate)
+        if len(tag) > len(source_suffix) and tag.endswith(source_suffix):
+            return True
+    for entry in entries:
+        match = _FROM_LANGUAGE_NAME.search(str(entry.get('name') or ''))
+        if match and _normalized_language_name(match.group(1)) in source_names:
+            return True
+    return False
+
+
 def build_subtitle_tracks(info) -> dict:
     """Return selectable captions and raw comment tracks from yt-dlp metadata."""
     result = {'subtitle_tracks': [], 'comment_tracks': []}
+    automatic_captions = info.get('automatic_captions') or {}
+    source_language = _video_source_language(info, automatic_captions)
+    has_original = False
+    original_names = set()
+    if isinstance(automatic_captions, dict):
+        for language, entries in automatic_captions.items():
+            if not isinstance(language, str) or not language:
+                continue
+            usable = _usable_subtitle_entries(entries)
+            names = [str(entry.get('name') or '') for entry in usable]
+            is_original = (language.casefold().endswith('-orig')
+                           or any(_ORIGINAL_NAME.search(name) for name in names))
+            if usable and is_original:
+                has_original = True
+                for name in names:
+                    if _ORIGINAL_NAME.search(name):
+                        name = _ORIGINAL_NAME.sub('', name)
+                        name = re.sub(r'\s+original\s*$', '', name, flags=re.IGNORECASE)
+                        normalized_name = _normalized_language_name(name)
+                        if normalized_name:
+                            original_names.add(normalized_name)
+
     for bucket in ('subtitles', 'automatic_captions'):
         for language, entries in (info.get(bucket) or {}).items():
-            if not isinstance(language, str) or not language or not isinstance(entries, list):
+            if not isinstance(language, str) or not language:
                 continue
-            usable = [entry for entry in entries if isinstance(entry, dict)
-                      and (entry.get('url') or entry.get('data'))
-                      and _EXT.fullmatch(str(entry.get('ext', '')).lower())]
+            usable = _usable_subtitle_entries(entries)
             if not usable:
                 continue
             formats = list(dict.fromkeys(str(entry['ext']).lower() for entry in usable))
@@ -49,6 +162,14 @@ def build_subtitle_tracks(info) -> dict:
             track = {'key': f'{bucket}:{language}', 'language': language, 'name': name,
                      'source': source, 'formats': formats, 'bucket': bucket,
                      'title': str(info.get('title') or info.get('id') or 'subtitles')}
+            if source == 'automatic':
+                automatic_kind = _automatic_kind(
+                    language, usable, has_original if bucket == 'automatic_captions' else False)
+                if (bucket == 'automatic_captions' and automatic_kind == 'translated'
+                        and not _translation_matches_source(
+                            language, usable, source_language, original_names)):
+                    continue
+                track['automatic_kind'] = automatic_kind
             result['comment_tracks' if comment else 'subtitle_tracks'].append(track)
     return result
 

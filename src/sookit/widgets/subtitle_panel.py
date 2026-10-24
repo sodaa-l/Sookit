@@ -1,10 +1,29 @@
 """嗅探页字幕选择；仅管理展示与选择，下载由页面交给任务队列。"""
 
 from PyQt6.QtCore import Qt, QSignalBlocker, pyqtSignal
-from PyQt6.QtWidgets import QFrame, QHBoxLayout, QVBoxLayout, QWidget
+from PyQt6.QtGui import QPainter
+from PyQt6.QtWidgets import QFrame, QHBoxLayout, QStyle, QStyleOptionButton, QVBoxLayout, QWidget
 import qfluentwidgets as qfw
+from qfluentwidgets.components.widgets.check_box import CheckBoxIcon
 
 from sookit.core.utils import set_smooth_scroll_params
+
+
+_AUTO_TRANSLATION_LANGUAGE_ORDER = ('zh-hans', 'zh-hant', 'en')
+
+
+def _track_sort_key(track):
+    if track.get('source') == 'automatic':
+        if track.get('automatic_kind') == 'generated':
+            return 0, 0
+        if track.get('automatic_kind') == 'translated':
+            language = str(track.get('language') or '').casefold()
+            for index, preferred in enumerate(_AUTO_TRANSLATION_LANGUAGE_ORDER):
+                if language == preferred or language.startswith(preferred + '-'):
+                    return 1, index
+            return 1, len(_AUTO_TRANSLATION_LANGUAGE_ORDER)
+        return 2, 0
+    return 3, 0
 
 
 class CommentDownloadDialog(qfw.MessageBoxBase):
@@ -34,6 +53,28 @@ class CommentDownloadDialog(qfw.MessageBoxBase):
         return dict(self._tracks[index]) if 0 <= index < len(self._tracks) else None
 
 
+class CircularCheckBox(qfw.CheckBox):
+    """字幕轨道选择框，保留 Fluent 状态色并绘制圆形指示器。"""
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        option = QStyleOptionButton()
+        option.initFrom(self)
+        rect = self.style().subElementRect(QStyle.SubElement.SE_CheckBoxIndicator, option, self)
+        painter.setPen(self._borderColor())
+        painter.setBrush(self._backgroundColor())
+        painter.drawEllipse(rect)
+
+        if not self.isEnabled():
+            painter.setOpacity(0.8)
+
+        if self.checkState() == Qt.CheckState.Checked:
+            CheckBoxIcon.ACCEPT.render(painter, rect)
+        elif self.checkState() == Qt.CheckState.PartiallyChecked:
+            CheckBoxIcon.PARTIAL_ACCEPT.render(painter, rect)
+
+
 class SubtitlePanel(QWidget):
     """逐轨选择、可见项全选与字幕输出格式；切换内容 tab 不重建面板。"""
 
@@ -59,18 +100,14 @@ class SubtitlePanel(QWidget):
         self.search_input.setMinimumWidth(0)
         self.search_input.textChanged.connect(self._apply_filter)
         tools.addWidget(self.search_input, 1)
-        self.more_button = qfw.DropDownPushButton("更多内容")
-        self.more_menu = qfw.RoundMenu(parent=self)
-        self.automatic_action = qfw.Action("显示自动字幕（含自动翻译）", self)
-        self.automatic_action.setCheckable(True)
-        self.automatic_action.toggled.connect(self._on_automatic_toggled)
-        self.more_menu.addAction(self.automatic_action)
-        self.more_menu.addSeparator()
-        self.comments_action = qfw.Action("下载实时评论…", self)
-        self.comments_action.triggered.connect(self.comments_requested.emit)
-        self.more_menu.addAction(self.comments_action)
-        self.more_button.setMenu(self.more_menu)
-        tools.addWidget(self.more_button)
+        self.automatic_label = qfw.BodyLabel("显示自动生成字幕")
+        tools.addWidget(self.automatic_label)
+        self.automatic_switch = qfw.SwitchButton(indicatorPos=qfw.IndicatorPosition.RIGHT)
+        self.automatic_switch.setOffText("")
+        self.automatic_switch.setOnText("")
+        self.automatic_switch.setSpacing(0)
+        self.automatic_switch.checkedChanged.connect(self._on_automatic_toggled)
+        tools.addWidget(self.automatic_switch)
         layout.addLayout(tools)
 
         selection_row = QHBoxLayout()
@@ -107,10 +144,6 @@ class SubtitlePanel(QWidget):
         self.empty_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.empty_hint.setStyleSheet("color: #9a9a9a; background: transparent;")
         empty_layout.addWidget(self.empty_hint)
-        self.show_automatic_button = qfw.PushButton("显示自动字幕")
-        self.show_automatic_button.clicked.connect(
-            lambda: self.automatic_action.setChecked(True))
-        empty_layout.addWidget(self.show_automatic_button, alignment=Qt.AlignmentFlag.AlignHCenter)
         empty_layout.addStretch()
         layout.addWidget(self.empty_widget, 1)
 
@@ -125,10 +158,10 @@ class SubtitlePanel(QWidget):
             self.format_checks[ext] = check
             formats_row.addWidget(check)
         formats_row.addStretch()
+        self.comments_button = qfw.PushButton("下载实时评论…")
+        self.comments_button.clicked.connect(self.comments_requested.emit)
+        formats_row.addWidget(self.comments_button)
         layout.addLayout(formats_row)
-        self.download_hint = qfw.CaptionLabel()
-        self.download_hint.setWordWrap(True)
-        layout.addWidget(self.download_hint)
         buttons = QHBoxLayout()
         buttons.setContentsMargins(0, 0, right_margin, 0)
         self.download_button = qfw.PrimaryPushButton()
@@ -139,21 +172,23 @@ class SubtitlePanel(QWidget):
         self.clear()
 
     def set_tracks(self, tracks, comment_tracks=None):
-        self._tracks = [dict(track) for track in tracks
-                        if track.get('source') in ('platform', 'automatic')]
+        self._tracks = sorted(
+            (dict(track) for track in tracks
+             if track.get('source') in ('platform', 'automatic')),
+            key=_track_sort_key)
         self._comment_tracks = [dict(track) for track in (comment_tracks or [])]
         self._selected_keys.clear()
-        self.automatic_action.blockSignals(True)
-        self.automatic_action.setChecked(False)
-        self.automatic_action.blockSignals(False)
+        self.automatic_switch.blockSignals(True)
+        self.automatic_switch.setChecked(False)
+        self.automatic_switch.blockSignals(False)
         self.search_input.blockSignals(True)
         self.search_input.clear()
         self.search_input.blockSignals(False)
-        self.comments_action.setEnabled(bool(self._comment_tracks))
-        self.comments_action.setText(
+        self.comments_button.setEnabled(bool(self._comment_tracks))
+        self.comments_button.setText(
             f"下载实时评论…（{len(self._comment_tracks)}）" if self._comment_tracks
             else "下载实时评论…")
-        self.automatic_action.setEnabled(any(t['source'] == 'automatic' for t in self._tracks))
+        self.automatic_switch.setEnabled(any(t['source'] == 'automatic' for t in self._tracks))
         while self.track_layout.count() > 1:
             widget = self.track_layout.takeAt(0).widget()
             widget.hide()
@@ -163,7 +198,7 @@ class SubtitlePanel(QWidget):
             row = qfw.CardWidget()
             row_layout = QHBoxLayout(row)
             row_layout.setContentsMargins(12, 9, 12, 9)
-            check = qfw.CheckBox()
+            check = CircularCheckBox()
             check.toggled.connect(lambda checked, key=track['key']: self._set_selected(key, checked))
             row_layout.addWidget(check)
             text_layout = QVBoxLayout()
@@ -171,7 +206,13 @@ class SubtitlePanel(QWidget):
             name = qfw.BodyLabel(track.get('name') or track['language'])
             name.setWordWrap(True)
             text_layout.addWidget(name)
-            source = '平台字幕' if track['source'] == 'platform' else '自动字幕/翻译'
+            if track['source'] == 'platform':
+                source = '平台字幕'
+            else:
+                source = {
+                    'generated': '自动生成字幕',
+                    'translated': '自动翻译字幕',
+                }.get(track.get('automatic_kind'), '自动字幕/翻译')
             details = qfw.CaptionLabel(f"{track['language']} · {source}")
             details.setWordWrap(True)
             text_layout.addWidget(details)
@@ -223,7 +264,7 @@ class SubtitlePanel(QWidget):
     def _apply_filter(self, *_):
         query = self.search_input.text().strip().casefold()
         self._visible_keys = []
-        automatic = self.automatic_action.isChecked()
+        automatic = self.automatic_switch.isChecked()
         available = [track for track in self._tracks
                      if automatic or track['source'] != 'automatic']
         for track in self._tracks:
@@ -238,13 +279,12 @@ class SubtitlePanel(QWidget):
         self.empty_widget.setVisible(not has_visible)
         automatic_count = sum(t['source'] == 'automatic' for t in self._tracks)
         only_hidden_automatic = not available and bool(automatic_count)
-        self.show_automatic_button.setVisible(only_hidden_automatic)
         if only_hidden_automatic:
             text = f"发现{automatic_count}条自动字幕"
         elif query and available:
             text = "没有匹配的字幕语言，请更换搜索词"
         elif self._comment_tracks:
-            text = "未发现字幕；实时评论可从「更多内容 → 下载实时评论…」单独下载"
+            text = "未发现字幕；可用“输出格式”右侧的“下载实时评论”按钮单独下载"
         else:
             text = "未发现可下载字幕"
         self.empty_hint.setText(text)
@@ -260,9 +300,4 @@ class SubtitlePanel(QWidget):
         self.selection_label.setText(f"已选 {tracks} 条 · 当前显示 {len(self._visible_keys)} 条")
         self.download_button.setText(f"▶ 下载字幕（{count}）")
         self.download_button.setEnabled(bool(count))
-        hint = ("请至少选择一种输出格式" if not formats else
-                "请至少选择一条字幕语言" if not tracks else
-                f"{tracks} 条字幕 × {formats} 种格式 = {count} 个文件")
-        self.download_hint.setText(hint)
-        self.download_button.setToolTip(hint)
         self.selection_changed.emit()

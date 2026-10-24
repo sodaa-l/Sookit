@@ -8,13 +8,13 @@
 
 字幕逐轨多选，显示语言名、原始语言码及来源，支持搜索。「全选当前筛选」只作用可见轨道，搜索保留已选项；批量操作阻断逐项信号，结束后仅汇总一次。SRT / TXT / VTT 三种格式可多选，默认 SRT；按钮显示轨道数乘格式数，任一未选则禁用。内容切换不清除音视频档位、表格勾选和字幕选择。
 
-自动字幕（含自动翻译）默认隐藏，更多内容菜单可开启，关闭时清除其选择。仅有自动字幕时仍显示字幕页及显式开启入口。新嗅探会清空轨道、搜索和自动字幕显示状态。实时评论或弹幕使用独立对话框，逐次下载一条原始 JSON / XML，不参与三种字幕格式的选择。
+自动字幕（含自动翻译）默认隐藏，使用字幕搜索框右侧的开关控制，开关只显示拨杆、不显示 ON/OFF 状态文字；关闭时清除其选择。仅有自动字幕时仍显示字幕页及可用开关。新嗅探会清空轨道、搜索和自动字幕显示状态。明确识别的自动生成字幕置顶；明确识别的自动翻译轨道按 zh-Hans、zh-Hant、en、其他语言排序；类别无法确认的自动轨道随后显示，平台字幕最后。实时评论或弹幕使用独立对话框，逐次下载一条原始 JSON / XML，不参与三种字幕格式的选择；下载按钮位于“输出格式”行最右侧，与字幕卡片右边缘对齐。
 
 ## 元数据与归属
 
 - `Functions.sniff_youtube` 的 JSON 嗅探增加 `--write-auto-subs`，以展开自动字幕元数据；`-J` 模式下不下载字幕文件。
-- `build_subtitle_tracks(info)` 返回 `subtitle_tracks` / `comment_tracks`，轨道保留 `key`、`language`、`name`、`source`、`formats`、`bucket`、`title`。下载使用原始 bucket 和语言码，不能仅凭展示来源反推 bucket。
-- `subtitles` 桶不等于人工：展示为「平台字幕」。`automatic_captions`、`ai-` 语言前缀及明确 AI / 自动生成名称归为自动字幕；依赖提取器元数据，不能保证识别所有 AI 字幕。`live_chat` / `danmaku` 分流到评论。
+- `build_subtitle_tracks(info)` 返回 `subtitle_tracks` / `comment_tracks`，轨道保留 `key`、`language`、`name`、`source`、`formats`、`bucket`、`title`；自动来源另带 `automatic_kind`（`generated`、`translated` 或 `unknown`）。同一语言若同时出现在 `subtitles` 与 `automatic_captions`，保留两条来源不同的轨道；每个桶内同语言的格式合并。下载使用原始 bucket 和语言码，不能仅凭展示来源反推 bucket。
+- `subtitles` 桶不等于人工：展示为「平台字幕」。`automatic_captions`、`ai-` 语言前缀及明确 AI / 自动生成名称归为自动字幕；YouTube yt-dlp 的 `-orig` 后缀或 `(Original)` / `auto-generated` 名称标记原语种自动生成，URL 的 `tlang` 或名称中的翻译标记用于识别自动翻译。自动字幕列表中出现 `(Original)` 时，该 Original 轨道为自动生成，其余自动字幕归为自动翻译。已知视频源语言时，仅保留元数据能确认由该源语言翻译的自动翻译轨道；来源不符或无法确认的自动翻译轨道丢弃。源语言优先读取 `language` / `original_language`，缺失时从 `-orig` 轨道回退；若源语言也无法确认则不按来源过滤。旧版或其他提取器没有这些信息时标为 `unknown`，不保证能识别所有 AI 字幕。`live_chat` / `danmaku` 分流到评论。
 - 字幕任务绑定成功嗅探时的 URL，不能读取后来被编辑的输入框。开始、停止、失败、超时或清空链接会使字幕结果失效；旧代际回调不得复位新嗅探的按钮与计时器。
 - 嗅探 worker 创建时即保留引用并连接 `finished`，在 GUI 线程排队回收；字幕任务只复用当前嗅探代际的封面字节。
 

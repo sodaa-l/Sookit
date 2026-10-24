@@ -312,7 +312,7 @@ class DiscoveryTests(unittest.TestCase):
                              {'subtitle_tracks': [], 'comment_tracks': []})
 
     def test_origin_classification_stable_keys_and_available_formats(self):
-        info = {'title': 'Title', 'subtitles': {
+        info = {'title': 'Title', 'language': 'ja', 'subtitles': {
             'en': [{'ext': 'vtt', 'url': 'url', 'name': 'English'},
                    {'ext': 'srt', 'data': 'subtitle'}, {'ext': 'vtt', 'url': 'url'},
                    {'ext': 'ttml'}, {'url': 'no extension'}],
@@ -321,18 +321,35 @@ class DiscoveryTests(unittest.TestCase):
             'live_chat': [{'ext': 'json', 'url': 'chat'}],
             'danmaku': [{'ext': 'xml', 'url': 'comments'}],
             'empty': [{'ext': 'srt', 'data': ''}],
-        }, 'automatic_captions': {'en': [{'ext': 'vtt', 'url': 'url'}]}}
+        }, 'automatic_captions': {
+            'en': [{'ext': 'vtt', 'url': 'url?tlang=en', 'name': 'English'}],
+            'en-ja': [{'ext': 'vtt', 'url': 'url?tlang=en-ja',
+                       'name': 'English from Japanese'}],
+            'en-zh-Hans': [{'ext': 'vtt', 'url': 'url?tlang=en-zh-Hans',
+                            'name': 'English from Chinese (Simplified)'}],
+            'ja-orig': [{'ext': 'vtt', 'url': 'url', 'name': 'Japanese (Original)'}],
+            'fr': [{'ext': 'vtt', 'url': 'url', 'name': 'French'}],
+        }}
         result = subtitles.build_subtitle_tracks(info)
-        self.assertEqual(len(result['subtitle_tracks']), 4)
+        self.assertEqual(len(result['subtitle_tracks']), 5)
         self.assertEqual(len(result['comment_tracks']), 2)
-        platform, ai, automatic_name, automatic_bucket = result['subtitle_tracks']
+        platform, ai, automatic_name, automatic_bucket, original_bucket = \
+            result['subtitle_tracks']
         self.assertEqual(platform['source'], 'platform')
         self.assertEqual(platform['name'], 'English')
         self.assertEqual(platform['formats'], ['vtt', 'srt'])
         self.assertEqual(ai['source'], 'automatic')
         self.assertEqual(ai['bucket'], 'subtitles')
         self.assertEqual(automatic_name['source'], 'automatic')
+        self.assertEqual(automatic_name['automatic_kind'], 'generated')
         self.assertEqual(automatic_bucket['source'], 'automatic')
+        self.assertEqual(automatic_bucket['language'], 'en-ja')
+        self.assertEqual(automatic_bucket['automatic_kind'], 'translated')
+        self.assertEqual(original_bucket['automatic_kind'], 'generated')
+        retained_keys = {track['key'] for track in result['subtitle_tracks']}
+        self.assertNotIn('automatic_captions:en', retained_keys)
+        self.assertNotIn('automatic_captions:en-zh-Hans', retained_keys)
+        self.assertNotIn('automatic_captions:fr', retained_keys)
         self.assertNotEqual(platform['key'], automatic_bucket['key'])
         self.assertTrue(all(item['source'] == 'comment' for item in result['comment_tracks']))
         self.assertEqual(result, subtitles.build_subtitle_tracks(info))
