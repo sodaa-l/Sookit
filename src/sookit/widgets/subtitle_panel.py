@@ -26,27 +26,29 @@ def _track_sort_key(track):
     return 3, 0
 
 
-class CommentDownloadDialog(qfw.MessageBoxBase):
+class CommentDownloadDialog(qfw.Dialog):
     """实时评论使用独立选择器，保留站点提供的 JSON / XML 等原格式。"""
 
     def __init__(self, tracks, parent=None):
-        super().__init__(parent)
+        super().__init__(
+            "下载实时评论",
+            "按站点提供的原格式保存，实时评论不转换为字幕。",
+            parent)
         self._tracks = [dict(track) for track in tracks]
-        self.viewLayout.addWidget(qfw.SubtitleLabel("下载实时评论"))
-        hint = qfw.BodyLabel("按站点提供的原格式保存，实时评论不转换为字幕。")
-        hint.setWordWrap(True)
-        self.viewLayout.addWidget(hint)
+        self.titleLabel.hide()
         self.track_combo = qfw.ComboBox()
         for track in self._tracks:
             formats = " / ".join(str(ext).upper() for ext in track.get('formats', []))
             self.track_combo.addItem(
                 f"{track.get('name') or track['language']} · {track['language']}"
                 f" · {formats or '原格式'}")
-        self.viewLayout.addWidget(self.track_combo)
+        self.textLayout.addWidget(self.track_combo)
         self.yesButton.setText("加入下载队列")
         self.cancelButton.setText("取消")
         self.yesButton.setEnabled(bool(self._tracks))
-        self.widget.setMinimumWidth(360)
+        self.vBoxLayout.activate()
+        size_hint = self.vBoxLayout.sizeHint()
+        self.setFixedSize(max(360, size_hint.width()), max(240, size_hint.height()))
 
     def selected_track(self):
         index = self.track_combo.currentIndex()
@@ -94,6 +96,7 @@ class SubtitlePanel(QWidget):
         layout.setSpacing(8)
 
         tools = QHBoxLayout()
+        tools.setSpacing(18)
         tools.setContentsMargins(0, 0, right_margin, 0)
         self.search_input = qfw.SearchLineEdit()
         self.search_input.setPlaceholderText("搜索字幕语言或语言码")
@@ -117,7 +120,7 @@ class SubtitlePanel(QWidget):
 
         selection_row = QHBoxLayout()
         selection_row.setContentsMargins(0, 0, right_margin, 0)
-        self.select_all = qfw.CheckBox("全选当前筛选")
+        self.select_all = qfw.CheckBox("全选")
         self.select_all.clicked.connect(self._select_visible)
         selection_row.addWidget(self.select_all)
         selection_row.addStretch()
@@ -216,7 +219,7 @@ class SubtitlePanel(QWidget):
             else:
                 source = {
                     'generated': '自动生成字幕',
-                    'translated': '自动翻译字幕',
+                    'translated': '机翻字幕',
                 }.get(track.get('automatic_kind'), '自动字幕/翻译')
             details = qfw.CaptionLabel(f"{track['language']} · {source}")
             details.setWordWrap(True)
