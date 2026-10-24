@@ -380,17 +380,17 @@ class TaskQueueManager(QObject):
         # 在后台处理 worker 终止
         if task.worker:
             worker = task.worker
+            # 先保留引用并监听退出：cancel() 终止进程树时线程就可能已经结束。
+            self._cancelling_workers.add(worker)
+            worker.finished.connect(
+                lambda w=worker: self._cancelling_workers.discard(w))
             worker.cancel(delete_part)
+            # 也覆盖连接信号前已退出的 worker；已排队的回调可安全重复 discard。
+            if not worker.isRunning():
+                self._cancelling_workers.discard(worker)
             # 取消（delete_part=True）删除了 workspace，从 registry 移除登记
             if delete_part and task.workspace:
                 self._unregister_workspace(task.workspace)
-            # 保留 worker 引用，防止 QThread 在后台线程尚未退出时被 GC 回收，
-            # 避免 "QThread: Destroyed while thread is still running" 崩溃
-            self._cancelling_workers.add(worker)
-            # 使用 Qt 内建的 finished 信号（无论是否取消都会触发），
-            # 在 worker 真正停止后自动释放引用
-            worker.finished.connect(
-                lambda w=worker: self._cancelling_workers.discard(w))
 
     def has_running_tasks(self) -> bool:
         """是否有正在运行的下载任务（供关闭 Sookit 时确认弹窗判断）。"""

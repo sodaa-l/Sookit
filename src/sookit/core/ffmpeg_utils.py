@@ -142,8 +142,12 @@ def _is_ytdlp_noise(line: str) -> bool:
 
 
 def run_ytdlp(cmd_list, log_callback, process_ref=None, on_process_created=None,
-              on_path=None, diagnostics=False):
+              on_path=None, diagnostics=False, *, subtitle_manifest=None):
     """执行 yt-dlp 命令并返回产物路径列表。
+
+    subtitle_manifest 非空时，把 requested_subtitles 的 JSON 写入该路径（after_video）。
+    此模式不使用 after_move / 日志产物兜底，并严格要求零退出码；调用方负责
+    校验清单里的语言、实际格式和 workspace 内文件。默认音视频行为不变。
 
     diagnostics=True 时给 yt-dlp 加 `-v`，把完整输出缓冲在内存里：
     逐请求/逐帧的噪声行（`[debug] ...`、ffmpeg 组件日志、`frame=` 统计）**不进日志**，
@@ -155,6 +159,17 @@ def run_ytdlp(cmd_list, log_callback, process_ref=None, on_process_created=None,
     _last_dest = None
     _error_lines = []   # 收集 yt-dlp 的 ERROR 输出行，用于失败时给出具体原因
     _diag = deque(maxlen=300) if diagnostics else None   # -v 输出尾部（失败时回放）
+    process = None
+    tmp_path = None
+    callback_error = None
+
+    def _notify(callback, *args):
+        nonlocal callback_error
+        try:
+            callback(*args)
+        except Exception as error:
+            callback_error = error
+            raise
 
     def _dump_diagnostics():
         """失败时回放 yt-dlp 详细输出尾部（尽力而为，自身不得抛异常）。"""
@@ -170,15 +185,18 @@ def run_ytdlp(cmd_list, log_callback, process_ref=None, on_process_created=None,
     try:
         # 创建临时文件用于 --print-to-file 输出最终路径
         import tempfile
-        tmp_path = tempfile.mktemp(suffix='.ytdlp_path')
+        tmp_path = None if subtitle_manifest is not None else tempfile.mktemp(suffix='.ytdlp_path')
         # 强制 yt-dlp 输出 UTF-8：Windows 中文环境默认输出 GBK，若按 UTF-8 解码会导致
         # 中文路径（如 [download] Destination: ...安次嶺希和子...mp4）乱码，
         # 进而导致 _on_path 记录的错误路径删不掉真实的 .part/.part.aria2。
         # 与 _run_ytdlp_json 的 --encoding utf-8 保持一致。
         # 注意：--encoding 必须插在 yt-dlp 可执行路径(cmd_list[0])之后，不能放最前面，
         # 否则 Popen 会把 --encoding 当程序名执行而启动失败。
+        print_template = ('after_video:%(requested_subtitles)j'
+                          if subtitle_manifest is not None else 'after_move:filepath')
         cmd_list = cmd_list[:1] + ['--encoding', 'utf-8'] + cmd_list[1:] + \
-                   ['--print-to-file', 'after_move:filepath', tmp_path]
+                   ['--print-to-file', print_template,
+                    str(subtitle_manifest) if subtitle_manifest is not None else tmp_path]
         # 诊断模式：-v 才能拿到 ffmpeg 的命令行与 stderr（合并失败的唯一线索）
         if diagnostics:
             cmd_list = cmd_list[:1] + ['-v'] + cmd_list[1:]
@@ -201,7 +219,7 @@ def run_ytdlp(cmd_list, log_callback, process_ref=None, on_process_created=None,
         if process_ref is not None:
             process_ref.append(process)
         if on_process_created is not None:
-            on_process_created(process)
+            _notify(on_process_created, process)
         while True:
             line = process.stdout.readline()
             if not line and process.poll() is not None:
@@ -213,7 +231,7 @@ def run_ytdlp(cmd_list, log_callback, process_ref=None, on_process_created=None,
                 _diag.append(ls)
             # 噪声行（-v 调试行 / ffmpeg 逐请求与逐帧输出）只留在诊断缓冲里
             if log_callback and not (_diag is not None and _is_ytdlp_noise(ls)):
-                log_callback(ls)
+                _notify(log_callback, ls)
             if ls.lower().startswith("error") or ": error" in ls.lower() or ls.lower().startswith("warning"):
                 # ERROR/WARNING 行收集（去重、去重绘控制字符）
                 clean = ls.replace("\r", "")
@@ -231,11 +249,16 @@ def run_ytdlp(cmd_list, log_callback, process_ref=None, on_process_created=None,
                         _last_dest = raw
                         # 实时暴露目标文件路径（供任务记录对应的 .part，取消时精准删除本任务临时文件）
                         if on_path is not None:
-                            on_path(raw)
+                            _notify(on_path, raw)
         # 读取 --print-to-file 输出的最终路径（最可靠）。
         # 一个 Task 可能产出多个最终文件（如 -f '137,140' 不合并时视频+音频），
         # yt-dlp 会把每个最终路径写为一行，因此按行拆分收集为列表。
         # yt-dlp 输出的是 UTF-8，用 GBK 打开含日/韩字符的路径会报错
+        if subtitle_manifest is not None:
+            # skip-download 不触发 after_move；字幕由调用方按结构化清单严格验收。
+            if process.returncode != 0:
+                raise RuntimeError(_build_ytdlp_error(process.returncode, _error_lines))
+            return []
         output_paths = []
         if os.path.exists(tmp_path):
             try:
@@ -259,13 +282,16 @@ def run_ytdlp(cmd_list, log_callback, process_ref=None, on_process_created=None,
             # 检查最终输出文件是否存在：存在则视为成功，不存在才报错
             if output_paths and all(os.path.isfile(p) and os.path.getsize(p) > 0 for p in output_paths):
                 if log_callback:
-                    log_callback(f"⚠ yt-dlp 退出码: {process.returncode}（但目标文件存在，视为成功）")
+                    _notify(log_callback, f"⚠ yt-dlp 退出码: {process.returncode}（但目标文件存在，视为成功）")
             else:
                 raise RuntimeError(_build_ytdlp_error(process.returncode, _error_lines))
         return output_paths
     except KeyboardInterrupt:
         raise
     except Exception as e:
+        if e is callback_error:
+            # 取消由 Worker 回调抛出；保留原异常，不能被诊断信息覆盖。
+            raise
         # 收集到的 ERROR 行里若包含登录/反爬特征，优先给出明确提示
         msg = str(e)
         _dump_diagnostics()   # 失败时回放 -v 详情（含 ffmpeg 命令行与 stderr）
@@ -276,6 +302,41 @@ def run_ytdlp(cmd_list, log_callback, process_ref=None, on_process_created=None,
                         "YouTube 要求登录确认（未登录/被反爬拦截）：建议导入 Cookies 后重试"
                     ) from e
         raise RuntimeError(f"yt-dlp 执行失败: {msg}")
+    finally:
+        if process is not None:
+            try:
+                if process.poll() is None:
+                    # 决策 9：异常/取消时只结束本任务的进程树。
+                    if sys.platform == 'win32':
+                        try:
+                            subprocess.run(
+                                ['taskkill', '/PID', str(process.pid), '/T', '/F'],
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                timeout=10, creationflags=subprocess.CREATE_NO_WINDOW)
+                        except (OSError, subprocess.SubprocessError):
+                            pass
+                    if process.poll() is None:
+                        process.kill()
+                wait = getattr(process, 'wait', None)
+                if wait is not None:
+                    try:
+                        wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        wait(timeout=5)
+            except (OSError, subprocess.SubprocessError):
+                pass  # 清理失败不得掩盖原始下载/取消异常。
+            finally:
+                if process.stdout is not None:
+                    try:
+                        process.stdout.close()
+                    except OSError:
+                        pass
+        if tmp_path and os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
 
 
 # ---------- aria2c ----------

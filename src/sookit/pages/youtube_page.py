@@ -11,7 +11,7 @@ from PyQt6.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QSplitter, QWidget, QFrame,
     QTableWidgetItem, QHeaderView, QAbstractItemView
 )
-from PyQt6.QtCore import Qt, QThread, QTimer, QByteArray, pyqtSignal
+from PyQt6.QtCore import Qt, QThread, QTimer, QByteArray, pyqtSignal, pyqtSlot
 
 from sookit.core.workers import GenericWorker
 from PyQt6.QtGui import QFont, QPixmap, QImage, QColor, QPainter
@@ -36,6 +36,8 @@ from sookit.widgets.infobar import show_infobar
 from sookit.widgets.notifier import notify_result_notice
 from sookit.widgets.option_grid import OptionFlowLayout
 from sookit.widgets.option_row import OptionRow
+from sookit.widgets.subtitle_panel import SubtitlePanel, CommentDownloadDialog
+from sookit.core.subtitle_utils import download_subtitles, download_comments
 from sookit.pages.base import PageBase
 from sookit.core.task_queue import TaskType
 from sookit.core.ffmpeg_utils import run_ytdlp
@@ -141,6 +143,10 @@ class YouTubePage(PageBase):
         self._sniff_channel = ''
         self._sniff_duration = 0
         self._last_sniff_url = ''
+        self._subtitle_url = ''  # 仅成功嗅探后绑定；不能用后来被编辑的输入框
+        self._comment_tracks = []
+        self._content_tab = 'media'
+        self._media_view = SNIFF_VIEW_DEFAULT
         self._sniff_worker = None
         # 嗅探代际：每次开始/停止嗅探递增。回调携带发起时的序号，对不上即丢弃——
         # 覆盖「用户停止后仍有在途结果到达」的竞态与「旧嗅探结果覆盖新嗅探」两种情况
@@ -149,6 +155,7 @@ class YouTubePage(PageBase):
         self._cover_loader_worker = None
         self._cover_download_worker = None
         self._cover_data = None  # 封面原始字节数据（供任务队列复用）
+        self._cover_data_seq = None  # 字幕任务只复用同一轮嗅探的封面
         self._sniff_thumbs = []  # 嗅探得到的封面列表（_populate_cover_combo 有效分支时保存，供入队复用）
         self._cover_fallback_worker = None  # 最终兜底 worker（落盘下载 + ffmpeg 转码）
         self._fallback_tried_urls = set()   # 已尝试过兜底的 URL（同 URL 会话内只试一次，防循环）
@@ -263,12 +270,21 @@ class YouTubePage(PageBase):
         right_layout.setContentsMargins(self.OPTION_MARGIN_X, 4, 0, 4)
         right_layout.setSpacing(8)
 
-        # 视图切换：默认视图（选分辨率直接下载）/ 表格视图（逐格式勾选，原交互）
-        self.view_segment = qfw.SegmentedWidget()
-        self.view_segment.addItem('default', '默认视图')
-        self.view_segment.addItem('table', '表格视图')
-        self.view_segment.currentItemChanged.connect(self._on_view_changed)
-        right_layout.addWidget(self.view_segment, alignment=Qt.AlignmentFlag.AlignLeft)
+        # 内容切换与音视频视图互相独立，右缘与卡片共用固定留白。
+        header_row = QHBoxLayout()
+        header_row.setContentsMargins(0, 0, self.OPTION_MARGIN_RIGHT, 0)
+        self.content_segment = qfw.SegmentedWidget()
+        self.content_segment.addItem('media', '音视频')
+        self.content_segment.addItem('subtitles', '字幕')
+        self.content_segment.setCurrentItem('media')
+        self.content_segment.currentItemChanged.connect(self._on_content_changed)
+        self.content_segment.hide()  # 有字幕（包括自动字幕）或评论后才出现
+        header_row.addWidget(self.content_segment)
+        header_row.addStretch(1)
+        self.view_button = qfw.PushButton("表格视图")
+        self.view_button.clicked.connect(self._toggle_media_view)
+        header_row.addWidget(self.view_button)
+        right_layout.addLayout(header_row)
 
         # ---- 默认视图：单列平铺档位 + 一键下载 ----
         self.default_view = QWidget()
@@ -309,7 +325,7 @@ class YouTubePage(PageBase):
         self.default_download_btn = qfw.PrimaryPushButton("▶ 下载")
         self.default_download_btn.setFixedWidth(240)
         self.default_download_btn.setEnabled(False)  # 嗅探出档位后才可点
-        self.default_download_btn.clicked.connect(self.do_download_default)
+        self.default_download_btn.clicked.connect(self._download_current_content)
         # 按钮单独一行并留出 24px 右距 = 原主布局 20 + 右面板 4：
         # 右面板已贴到窗口右缘，不补回这个内距按钮整体会右移 12px（决策 49）
         default_btn_row = QHBoxLayout()
@@ -440,7 +456,7 @@ class YouTubePage(PageBase):
         self.download_btn = qfw.PrimaryPushButton("▶ 下载并合并选中格式")
         self.download_btn.setFixedWidth(240)
         self.download_btn.setEnabled(False)  # 嗅探完毕且有可用格式后才可点击
-        self.download_btn.clicked.connect(self.do_download)
+        self.download_btn.clicked.connect(self._download_current_content)
         # 右距 24 与默认视图的按钮行同口径（决策 54）：表格容器已铺满到窗口右缘，
         # 不在这一行补回 24px，按钮会比默认视图的「▶ 下载」右移 12px
         table_btn_row = QHBoxLayout()
@@ -452,6 +468,12 @@ class YouTubePage(PageBase):
         right_layout.addWidget(self.default_view, stretch=1)
         right_layout.addWidget(self.table_view, stretch=1)
         self.table_view.setVisible(False)
+        self.subtitle_panel = SubtitlePanel(right_margin=self.OPTION_MARGIN_RIGHT)
+        self.subtitle_panel.download_requested.connect(self._download_current_content)
+        self.subtitle_panel.comments_requested.connect(self._download_comments)
+        right_layout.addWidget(self.subtitle_panel, stretch=1)
+        self.subtitle_panel.hide()
+        self.url_input.textChanged.connect(self._on_url_changed)
 
         # 组装 splitter
         splitter.addWidget(left_panel)
@@ -473,25 +495,102 @@ class YouTubePage(PageBase):
         self._restoring_view = True
         try:
             saved_view = load_sniff_view()
-            self.view_segment.setCurrentItem(saved_view)
             self._apply_view(saved_view)
         finally:
             self._restoring_view = False
 
-    # -------- 视图切换（决策 47）--------
+    # -------- 内容 / 音视频视图切换 --------
     def _on_view_changed(self, key):
-        """SegmentedWidget 切换回调：切视图并记住偏好"""
         if key not in (SNIFF_VIEW_DEFAULT, SNIFF_VIEW_TABLE):
             return
         self._apply_view(key)
-        if not getattr(self, '_restoring_view', False):
+        if not self._restoring_view:
             save_sniff_view(key)
 
+    def _toggle_media_view(self):
+        self._on_view_changed(SNIFF_VIEW_TABLE if self._media_view == SNIFF_VIEW_DEFAULT
+                              else SNIFF_VIEW_DEFAULT)
+
     def _apply_view(self, key):
-        """按视图 key 显示对应面板（不落盘，供初始化恢复复用）"""
-        is_default = key == SNIFF_VIEW_DEFAULT
-        self.default_view.setVisible(is_default)
-        self.table_view.setVisible(not is_default)
+        """视图偏好只属于音视频；切到字幕时保留档位和表格勾选。"""
+        self._media_view = key
+        self._on_content_changed(self._content_tab)
+
+    def _on_content_changed(self, key):
+        if key not in ('media', 'subtitles'):
+            return
+        self._content_tab = key
+        media = key == 'media'
+        self.default_view.setVisible(media and self._media_view == SNIFF_VIEW_DEFAULT)
+        self.table_view.setVisible(media and self._media_view == SNIFF_VIEW_TABLE)
+        self.subtitle_panel.setVisible(not media)
+        self.view_button.setVisible(media)
+        self.view_button.setText("表格视图" if self._media_view == SNIFF_VIEW_DEFAULT else "默认视图")
+
+    def _invalidate_subtitles(self):
+        self._subtitle_url = ''
+        self._comment_tracks = []
+        self.subtitle_panel.clear()
+        self.content_segment.setCurrentItem('media')
+        self.content_segment.hide()
+        self._on_content_changed('media')
+
+    def _on_url_changed(self, text):
+        # 输入新链接不改写旧结果的归属；主动清空则连在途结果一起作废。
+        if text.strip():
+            return
+        self._sniff_seq += 1
+        self._invalidate_subtitles()
+        if self._sniff_worker is not None and self._sniff_worker.isRunning():
+            self._sniff_worker.request_stop()
+        if hasattr(self, '_sniff_timer') and self._sniff_timer:
+            self._sniff_timer.stop()
+        self._reset_sniff_btn()
+
+    def _download_current_content(self):
+        if self._content_tab == 'subtitles':
+            tracks = self.subtitle_panel.selected_tracks()
+            formats = self.subtitle_panel.selected_formats()
+            if self._subtitle_url and tracks and formats:
+                self._queue_subtitle_task(download_subtitles, (tracks, formats), '字幕下载')
+        elif self._media_view == SNIFF_VIEW_TABLE:
+            self.do_download()
+        else:
+            self.do_download_default()
+
+    def _download_comments(self):
+        if not self._subtitle_url or not self._comment_tracks:
+            return
+        # 对话框打开后也须核对代际，避免嵌套事件循环收到新的嗅探结果。
+        seq = self._sniff_seq
+        dialog = CommentDownloadDialog(self._comment_tracks, self.window())
+        try:
+            if dialog.exec() and seq == self._sniff_seq and self._subtitle_url:
+                track = dialog.selected_track()
+                if track:
+                    self._queue_subtitle_task(download_comments, (track,), '实时评论下载')
+        finally:
+            dialog.deleteLater()
+
+    def _queue_subtitle_task(self, func, selection_args, label):
+        url = self._subtitle_url
+        if not url:
+            return
+        out_dir = self.read_path(self.out_dir) or DEFAULT_OUTPUT_DIR
+        title = self._sniff_title or url
+        metadata = {
+            'filename': title, 'title': title, 'channel': self._sniff_channel,
+            'duration': self._sniff_duration, 'url': url,
+            'out': out_dir, 'out_dir': out_dir,
+            'cover_url': self._sniff_thumbs[0]['url'] if self._sniff_thumbs else '',
+        }
+        if self._cover_data and self._cover_data_seq == self._sniff_seq:
+            metadata['cover_data'] = self._cover_data
+        self.run_queued_task(
+            func=func, args=(url, out_dir, *selection_args),
+            task_type=TaskType.YTDLP, title=f"{label} - {title}",
+            metadata=metadata, kwargs={'remote': self.remote_cb.isChecked()})
+        show_infobar(self, "info", title="任务已加入队列", content="", duration=3000)
 
     def refresh_ytdlp_status(self):
         """yt-dlp 装好后重新检测：若已可用则关闭「未找到 yt-dlp」提示"""
@@ -518,6 +617,9 @@ class YouTubePage(PageBase):
 
     # -------- 嗅探 --------
     def do_sniff(self):
+        self._invalidate_subtitles()
+        if hasattr(self, '_sniff_timer') and self._sniff_timer:
+            self._sniff_timer.stop()
         url = self.url_input.text().strip()
         if not url:
             show_infobar(self, "warning", title="提示", content="请先输入视频链接",
@@ -546,6 +648,9 @@ class YouTubePage(PageBase):
         self._sniff_title = ''
         self._sniff_channel = ''
         self._sniff_duration = 0
+        self._cover_data = None
+        self._cover_data_seq = None
+        self._sniff_thumbs = []
 
         # 立即从 URL 提取 video_id，同步加载封面
         video_id = extract_youtube_id(url)
@@ -559,22 +664,35 @@ class YouTubePage(PageBase):
             # 立即启动封面加载（异步）
             self._load_cover_image(video_id)
 
-        self._sniff_worker = GenericWorker(
-            Functions.sniff_youtube, args=(url,), kwargs={'log': None})
-        self._sniff_worker.done.connect(lambda info, s=seq: self._on_sniff_done(s, info))
-        self._sniff_worker.error.connect(lambda msg, s=seq: self._on_sniff_error(s, msg))
-        self._sniff_worker.start()
+        # 创建时就持有引用并连接 finished：替换时才连接会漏掉已经发出的信号。
+        if self._sniff_worker is not None and self._sniff_worker.isRunning():
+            self._sniff_worker.request_stop()
+        worker = GenericWorker(Functions.sniff_youtube, args=(url,), kwargs={'log': None})
+        self._threads.append(worker)
+        worker.finished.connect(self._on_sniff_worker_finished, Qt.ConnectionType.QueuedConnection)
+        self._sniff_worker = worker
+        worker.done.connect(lambda info, s=seq, u=url: self._on_sniff_done(s, info, u))
+        worker.error.connect(lambda msg, s=seq: self._on_sniff_error(s, msg))
+        worker.start()
         self.log("▶ 正在嗅探视频信息...")
         self._sniff_timer = QTimer(self)
         self._sniff_timer.setSingleShot(True)
-        self._sniff_timer.timeout.connect(self._sniff_timeout)
+        self._sniff_timer.timeout.connect(lambda s=seq: self._sniff_timeout(s))
         self._sniff_timer.start(60000)
+
+    @pyqtSlot()
+    def _on_sniff_worker_finished(self):
+        # 显式排队到页面所属的 GUI 线程；不捕获 worker，重复通知也可安全忽略。
+        worker = self.sender()
+        if worker in self._threads:
+            self._threads.remove(worker)
 
     def stop_sniff(self):
         # 代际失效在最前面且无条件执行：worker 可能已经跑完并把结果排进了信号队列，
         # 此时 request_stop() 拦不住它，只能靠序号丢弃；同时也保证「按钮已是停止态、
         # worker 其实已结束」时 UI 能复位（否则只剩 _on_sniff_* 里的复位会因序号不符而跳过）
         self._sniff_seq += 1
+        self._invalidate_subtitles()
         if hasattr(self, '_sniff_timer') and self._sniff_timer and self._sniff_timer.isActive():
             self._sniff_timer.stop()
         if self._sniff_worker is not None and self._sniff_worker.isRunning():
@@ -590,15 +708,19 @@ class YouTubePage(PageBase):
         self.stop_sniff_btn.setVisible(False)
         self.sniff_btn.setVisible(True)
 
-    def _on_sniff_done(self, seq, info):
-        # 先做与结果无关的复位（过期回调也必须复位，否则按钮/计时器会卡在嗅探态）
+    def _on_sniff_done(self, seq, info, sniff_url=None):
+        if seq != self._sniff_seq:
+            return  # 旧回调不能复位新一轮嗅探的按钮或计时器
         if hasattr(self, '_sniff_timer') and self._sniff_timer and self._sniff_timer.isActive():
             self._sniff_timer.stop()
         self._reset_sniff_btn()
-        if seq != self._sniff_seq:
-            return  # 过期结果：用户已停止或已发起新一轮嗅探
         if self._sniff_timed_out:
             return
+        self._subtitle_url = sniff_url if sniff_url is not None else self._last_sniff_url
+        tracks = info.get('subtitle_tracks') or []
+        self._comment_tracks = [dict(track) for track in (info.get('comment_tracks') or [])]
+        self.subtitle_panel.set_tracks(tracks, self._comment_tracks)
+        self.content_segment.setVisible(bool(tracks or self._comment_tracks))
 
         # 保存嗅探数据（video_id 可能已在 do_sniff 中设置）
         # 仅 YouTube 赋值，避免非 YouTube 的站点 ID（如 B 站 BV 号）污染 _sniff_video_id
@@ -756,14 +878,14 @@ class YouTubePage(PageBase):
         return (cat, -self._parse_quality_value(fmt['quality']))
 
     def _on_sniff_error(self, seq, err_msg):
-        # 先复位（过期回调也要复位，理由同 _on_sniff_done）
+        if seq != self._sniff_seq:
+            return
         if hasattr(self, '_sniff_timer') and self._sniff_timer and self._sniff_timer.isActive():
             self._sniff_timer.stop()
         self._reset_sniff_btn()
-        if seq != self._sniff_seq:
-            return  # 过期结果：用户已停止或已发起新一轮嗅探
         if self._sniff_timed_out:
             return
+        self._invalidate_subtitles()
         self.log(f"嗅探失败: {err_msg}")
         # 嗅探失败没有可信格式，默认视图档位一并清空（表格同上）
         self._clear_default_view()
@@ -788,9 +910,12 @@ class YouTubePage(PageBase):
         # 失败提示与「补封面」无关：必须放在 if 之外，任何失败路径都要弹
         show_infobar(self, "error", title="嗅探失败", content=err_msg)
 
-    def _sniff_timeout(self):
+    def _sniff_timeout(self, seq=None):
+        if seq is not None and seq != self._sniff_seq:
+            return
         if self._sniff_worker and self._sniff_worker.isRunning():
             self._sniff_timed_out = True
+            self._invalidate_subtitles()
             # 超时沿用 _sniff_timed_out 守卫而不递增代际：超时自身已给出反馈，
             # 随后到达的结果由该标记丢弃即可（与 stop_sniff 的序号机制分工不同）
             # 先尝试安全退出
@@ -836,6 +961,7 @@ class YouTubePage(PageBase):
                     self.failed.emit()
 
         worker = CoverLoader()
+        worker._sniff_seq = self._sniff_seq
         # 带身份转发：过期 worker（已被新 loader 取代）的晚到结果直接丢弃，
         # 避免晚到的失败清掉新 loader 刚成功显示的封面（跨嗅探同理）
         worker.loaded.connect(lambda d, w=worker: self._on_cover_loaded(d, w))
@@ -854,6 +980,7 @@ class YouTubePage(PageBase):
         if worker is not None and worker is not self._cover_loader_worker:
             return
         self._cover_data = data  # 保存供任务队列复用
+        self._cover_data_seq = getattr(worker, '_sniff_seq', self._sniff_seq)
         pixmap = QPixmap()
         if pixmap.loadFromData(QByteArray(data)):
             # 交给 CoverImageWidget 的 paintEvent 按当前尺寸缩放绘制，无黑边
@@ -884,6 +1011,7 @@ class YouTubePage(PageBase):
         self._fallback_tried_urls.add(best_url)
         self.log("常规封面加载失败，尝试最终兜底（落盘下载 + 转码）...")
         worker = self.CoverFallbackWorker(best_url)
+        worker._sniff_seq = self._sniff_seq
         worker.resolved.connect(
             lambda data, msg, w=worker: self._on_cover_fallback_resolved(data, msg, w))
         worker.finished.connect(lambda w=worker: self._on_fallback_finished(w))
@@ -899,6 +1027,7 @@ class YouTubePage(PageBase):
             pixmap = QPixmap()
             if pixmap.loadFromData(QByteArray(data)):
                 self._cover_data = data  # 供任务队列复用
+                self._cover_data_seq = worker._sniff_seq
                 self.cover_label.setPixmap(pixmap)
                 self.log(f"封面兜底成功: {msg}")
                 return
@@ -939,6 +1068,7 @@ class YouTubePage(PageBase):
                     self.failed.emit()
 
         worker = UrlCoverLoader()
+        worker._sniff_seq = self._sniff_seq
         worker.loaded.connect(lambda d, w=worker: self._on_cover_loaded(d, w))
         worker.failed.connect(lambda w=worker: self._on_cover_failed(w))
         worker.finished.connect(lambda w=worker: self._on_loader_finished(w))

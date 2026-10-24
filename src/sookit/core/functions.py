@@ -463,7 +463,7 @@ class Functions:
         Functions._check_ytdlp()
         if log: log(f"正在嗅探: {url}")
         try:
-            info = _run_ytdlp_json(url, '--no-playlist')
+            info = _run_ytdlp_json(url, '--no-playlist', '--write-auto-subs')
         except Exception as e:
             raise RuntimeError(f"嗅探失败: {e}")
 
@@ -547,7 +547,9 @@ class Functions:
 
         if log: log(f"嗅探完成: {info.get('title', '')}, 共 {len(formats)} 个格式, {len(valid_thumbs)} 个封面")
 
-        return {
+        from sookit.core.subtitle_utils import build_subtitle_tracks
+
+        result = {
             'title': info.get('title', ''),
             'duration': info.get('duration', 0),
             'channel': info.get('channel', '') or info.get('uploader', ''),
@@ -557,6 +559,8 @@ class Functions:
             'formats': formats,
             'thumbnails': valid_thumbs,
         }
+        result.update(build_subtitle_tracks(info))
+        return result
 
     @staticmethod
     def fetch_gif_items(url, log=None):

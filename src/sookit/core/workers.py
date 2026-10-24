@@ -222,6 +222,7 @@ class TaskWorker(QThread):
         self.metadata = metadata or {}   # 任务元数据（FFMPEG 进度时长主来源 metadata['duration']）
         self._paused = False
         self._cancelled = False
+        self._delete_on_cancel = False
         self._process = None
         self._process_lock = threading.Lock()
         self.error = ""              # 任务失败时的错误信息（供 task_queue / UI 弹窗）
@@ -289,6 +290,7 @@ class TaskWorker(QThread):
         delete_part=True（默认，用户主动取消/关闭）：删除整个 task workspace。
         delete_part=False（暂停保留续传）：保留 workspace。
         """
+        self._delete_on_cancel = delete_part
         self._cancelled = True
         with self._process_lock:
             proc = self._process
@@ -302,9 +304,17 @@ class TaskWorker(QThread):
             self.delete_workspace()
 
     def _on_process_created(self, process):
-        """保存子进程引用"""
+        """保存子进程引用；取消与下一阶段启动并发时立即终止新进程。"""
         with self._process_lock:
             self._process = process
+            cancelled = self._cancelled
+        if cancelled:
+            _kill_process_tree(getattr(process, "pid", None))
+            try:
+                process.terminate()
+            except Exception:
+                pass
+            raise RuntimeError("任务已取消")
 
     def run(self):
         """执行任务"""
@@ -324,14 +334,19 @@ class TaskWorker(QThread):
                     "任务参数 kwargs 占用了 TaskWorker 注入的保留名: "
                     + ", ".join(sorted(reserved)))
 
+            if self._cancelled:
+                raise RuntimeError("任务已取消")
+
             # 包装 log 回调以支持进度解析
             def log_with_progress(msg):
                 if self._cancelled:
-                    return
+                    raise RuntimeError("任务已取消")
                 
                 # 等待暂停结束
                 while self._paused and not self._cancelled:
                     self.msleep(100)
+                if self._cancelled:
+                    raise RuntimeError("任务已取消")
                 
                 self.log_signal.emit(msg)
                 
@@ -394,3 +409,7 @@ class TaskWorker(QThread):
                 self.error = str(e)
                 self.log_signal.emit(f"错误: {e}")
                 self.finished_signal.emit(False)
+        finally:
+            # cancel() 可能恰逢本地导出写文件；执行栈退出后再清一次，避免残留。
+            if self._cancelled and self._delete_on_cancel:
+                self.delete_workspace()
