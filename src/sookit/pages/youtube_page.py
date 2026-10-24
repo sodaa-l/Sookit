@@ -274,8 +274,11 @@ class YouTubePage(PageBase):
         header_row = QHBoxLayout()
         header_row.setContentsMargins(0, 0, self.OPTION_MARGIN_RIGHT, 0)
         self.content_segment = qfw.SegmentedWidget()
-        self.content_segment.addItem('media', '音视频')
-        self.content_segment.addItem('subtitles', '字幕')
+        media_item = self.content_segment.addItem('media', '音视频')
+        subtitles_item = self.content_segment.addItem('subtitles', '字幕')
+        segment_item_width = max(media_item.sizeHint().width(), subtitles_item.sizeHint().width()) + 24
+        media_item.setFixedWidth(segment_item_width)
+        subtitles_item.setFixedWidth(segment_item_width)
         self.content_segment.setCurrentItem('media')
         self.content_segment.currentItemChanged.connect(self._on_content_changed)
         self.content_segment.hide()  # 有字幕（包括自动字幕）或评论后才出现
