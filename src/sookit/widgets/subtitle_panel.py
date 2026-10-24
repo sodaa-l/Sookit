@@ -204,15 +204,18 @@ class SubtitlePanel(QWidget):
         self._rows = {}
         for track in self._tracks:
             row = qfw.CardWidget()
+            row.setCursor(Qt.CursorShape.PointingHandCursor)
             row_layout = QHBoxLayout(row)
             row_layout.setContentsMargins(12, 9, 12, 9)
             check = CircularCheckBox()
             check.toggled.connect(lambda checked, key=track['key']: self._set_selected(key, checked))
+            row.clicked.connect(check.toggle)
             row_layout.addWidget(check)
             text_layout = QVBoxLayout()
             text_layout.setSpacing(2)
             name = qfw.BodyLabel(track.get('name') or track['language'])
             name.setWordWrap(True)
+            name.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
             text_layout.addWidget(name)
             if track['source'] == 'platform':
                 source = '平台字幕'
@@ -223,6 +226,7 @@ class SubtitlePanel(QWidget):
                 }.get(track.get('automatic_kind'), '自动字幕/翻译')
             details = qfw.CaptionLabel(f"{track['language']} · {source}")
             details.setWordWrap(True)
+            details.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
             text_layout.addWidget(details)
             row_layout.addLayout(text_layout, 1)
             self.track_layout.insertWidget(self.track_layout.count() - 1, row)
