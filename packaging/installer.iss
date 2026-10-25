@@ -62,6 +62,10 @@ Name: "startmenuicon"; Description: "添加到开始菜单"; GroupDescription: "
 ; 交给下面各自绑组件的条目处理。Excludes 模式前导反斜杠 = 锚定到源树根
 ; （不加前导反斜杠会匹配任意层级的同名子路径，不够精确）。
 Source: "..\dist\Sookit\*"; DestDir: "{app}"; Excludes: "\tools\yt-dlp\*,\tools\ffmpeg\*"; Flags: ignoreversion recursesubdirs createallsubdirs
+; 浏览器扩展为独立目录，用户在 Chrome 开发者模式加载；固定公钥保证扩展 ID 不随路径变化。
+Source: "..\browser-extension\*"; DestDir: "{app}\browser-extension"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "com.sookit.browser.json"; DestDir: "{app}"; Flags: ignoreversion
+
 
 ; ---- 两个可选组件 ----
 ; 各用一条通配符条目 + 一个「升装闸门」Check（函数见 [Code] 的 PatchIfPresent）：
@@ -77,6 +81,9 @@ Source: "..\dist\Sookit\*"; DestDir: "{app}"; Excludes: "\tools\yt-dlp\*,\tools\
 ; 注意：源目录必须存在，否则 ISCC 编译失败（CI 由 release.yml 先下载，本地打包需自备这两个目录）。
 Source: "..\dist\Sookit\tools\ffmpeg\*"; DestDir: "{app}\tools\ffmpeg"; Components: ffmpeg; Check: PatchIfPresent('tools\ffmpeg\ffmpeg.exe')
 Source: "..\dist\Sookit\tools\yt-dlp\*"; DestDir: "{app}\tools\yt-dlp"; Components: ytdlp; Check: PatchIfPresent('tools\yt-dlp\yt-dlp.exe')
+
+[Registry]
+Root: HKLM; Subkey: "Software\Google\Chrome\NativeMessagingHosts\com.sookit.browser"; ValueType: string; ValueName: ""; ValueData: "{app}\com.sookit.browser.json"; Flags: uninsdeletekey
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: startmenuicon

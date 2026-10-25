@@ -13,6 +13,7 @@ src/sookit/        代码包 (标准 src 布局)
     │
     ├─ __main__.py        程序入口 (main() — 单实例互斥体 + 依赖检查 + 启动)
     ├─ main_window.py     MainWindow 主窗口 (FluentWindow) + quit_app 清理 + 关闭确认
+    ├─ native_host.py     Chrome Native Messaging 独立入口（决策 62）
     ├─ updater.py         独立 GUI 下载器入口 (打包为 updater.exe，提权下载 yt-dlp/Deno)
     ├─ paths.py           统一资源路径定位 (PROJECT_ROOT / APPDATA / LOCALAPPDATA)
     │
@@ -103,6 +104,8 @@ flowchart TB
 | `youtube_utils.py` | YouTube ID 提取、缩略图构建（硬编码 5 档 + 通用规范化）、HTTP 元数据获取 | `extract_youtube_id()`, `build_thumbnails()`, `normalize_thumbnails()`, `fetch_youtube_metadata()` |
 | `sniff_options.py` | 嗅探页默认视图的档位归并 + 合并容器族判定（纯函数、无 Qt，决策 47） | `build_view_options()`, `is_standard_pair()` |
 | `subtitle_utils.py` | 字幕/评论轨道分类、每轨单次下载、SRT/TXT/VTT 导出、严格清单校验（决策 61） | `build_subtitle_tracks()`, `download_subtitles()`, `download_comments()` |
+| `browser_protocol.py` | 浏览器消息帧、YouTube 单视频白名单、固定扩展 ID（决策 62） | `normalize_video_url()`, `validate_request()`, `encode_message()`, `decode_message()` |
+| `browser_ipc.py` | 当前用户/会话的 Qt 本机通道；GUI 线程分发、退出清理（决策 62） | `BrowserRequestServer`, `send_request()` |
 | `task_queue.py` | 任务队列单例。进度、workspace 生命周期、active_workspaces registry、JSON 持久化 | `TaskQueueManager`, `Task`, `TaskStatus`, `TaskType`, `_generate_ulid()` |
 | `workers.py` | 后台线程: Worker(通用) / TaskWorker(队列, 含 workspace/进程树清理) / MonitorWorker(直播轮询) | `TaskWorker`, `MonitorWorker`, `_kill_process_tree()` |
 | `config.py` | JSON 配置文件读写 + 缓存 + 线程锁。主题色、开机自启、下载配置 | `load_config()`, `save_config()`, `load_download_config()` |
@@ -221,6 +224,8 @@ flowchart TB
 | 60 | 默认视图忽略「自动配音」音轨（`dubbed-auto`），人工配音保留（2026-10-21） | 用户给 Shorts 样本，默认视图里出现 `American English - dubbed-auto・en-us` 音频档、视频档还被拆出整套 `en-us`；用户随后补充：那个 Shorts 的 en-US 音轨**其实全都是机翻配音**（只有 m3u8 的 233/234 带标记），而另一个视频（`Yb9H5vhWyHg`）的日语音轨是**真人配音**、不能丢 —— 所以要认「是否机翻」，不能按「是否原声」判。**根因**：yt-dlp 只在 m3u8 抽出的 `233-*`/`234-*` 音轨的 `format_note` 里写配音性质（`- dubbed-auto` 机翻 / `- dubbed` 人工），同一份配音的 DASH 变体（`139-*`/`140-*`/`249-*`/`250-*`/`251-*`）只写语言名、无标记；而归一化字典此前**没保留 `format_note`**，连唯一标记都看不到 → 自动配音进了音频档、还参与 `_multi_languages()` 语言统计（决策 58 的拆档机制被误用）、可能被 `_pick_compatible_audio()` 拿去配对。做法：`sniff_youtube` 补 `'format_note'`；`sniff_options.py` 新增 `_is_auto_dubbed()`（子串匹配）与 `_auto_dubbed_languages()`（**按语言汇总**：某语言只要有一条被标 `dubbed-auto`，该语言全部音轨都算机翻），`build_view_options()` 入口 `formats = [f for f in formats if not (_is_auto_dubbed(f) or _lang_tag(f) in auto_dubbed_langs)]` 一次筛掉，下游语言归类/配对/音频档归并/多语言拆分自动一致。**表格视图不动**（走 `_formats_data`），自动配音行照旧列出、可手动勾选。结果该 Shorts：音频档 24→**7**（全是 zh-Hant）、视频档 10→**5**（不再拆语言、无 `・` 后缀），表格仍 50 行；ja 视频**不误伤**（10 视频/12 音频不变，`140-0` 与 `日本語 - dubbed` 都在）、NCT 5/7、X 3/3 无回归；纯文字断言 19/19。**已否决**：只按单条 `format_note` 筛（第一版，只筛掉 233-0/234-0，5 条 DASH 变体仍留）、按 `info['language']` 丢所有非原声（会连真人配音一起丢，用户明确反对）、按 `language_preference < 0` 判（机翻与人工配音偏好值都是 -1，分不出）、只在 UI 层删卡片（语言统计已被污染）、在 `sniff_youtube` 源头丢弃（表格视图还要能选）。**风险**：识别依赖 233/234 上的标记，某语言若只有 DASH 音轨则识别不出（退化为改前行为、不误删）；识别后按语言**整族**丢弃（该语言下的音轨都会消失，当前数据无法再细分）；靠英文子串匹配，上游改文案则失效（不误删）；默认视图与表格视图口径不同，需文档说明 | [60-ignore-auto-dubbed-audio.md](decisions/60-ignore-auto-dubbed-audio.md) |
 | 61 | 视频嗅探的字幕与实时评论下载（2026-10-24） | 顶部按「音视频 / 字幕」切换，音视频双视图移到右上按钮（修订决策 47）；字幕逐轨多语言与 SRT/TXT/VTT 多格式，每源仅获取一次；自动字幕默认隐藏，评论独立原格式；绑定嗅探 URL，复用 YTDLP workspace；字幕用 after_video 结构化清单和严格零退出码验收（不套用决策 6），返回完整产物列表 | [61-sniff-subtitle-download.md](decisions/61-sniff-subtitle-download.md) |
 
+| 62 | Chrome 视频页按钮与后台嗅探 | MV3 扩展 → Native Messaging → 当前用户/会话的 Qt 本机通道；优先已有实例，无连接才静默启动；忙时拒绝且保留现场，复用嗅探及通知；固定公钥与 allowed_origins 保持一致 | [62-chrome-background-sniff.md](decisions/62-chrome-background-sniff.md) |
+
 ## 测试
 
 已安装项目依赖及 yt-dlp / FFmpeg 后，运行离线回归（临时本地 HTTP、真实外部工具与隔离的 Qt 队列，不访问测试平台）：
@@ -230,6 +235,8 @@ uv run --no-sync python -X utf8 -m unittest discover -s tests -p 'test_*.py' -v
 ```
 
 字幕功能本轮 76 条通过；真实平台验证、测试边界及独立联网探针命令见[决策 61](decisions/61-sniff-subtitle-download.md#验证与边界)。测试临时文件自动清理，不修改用户配置、任务记录或通知设置。
+
+浏览器按钮与消息分发另运行 `node --test tests/test_browser_extension.cjs`；桥接架构、源码注册、打包和真实 Chrome 验收边界见[决策 62](decisions/62-chrome-background-sniff.md)。
 
 ## AI 编码约定
 

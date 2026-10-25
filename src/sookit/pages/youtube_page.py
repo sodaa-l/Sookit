@@ -619,6 +619,20 @@ class YouTubePage(PageBase):
         show_infobar(self, "error", title=title, content=content)
 
     # -------- 嗅探 --------
+    def sniff_from_browser(self, url):
+        """外部请求不打断已有嗅探，也不显示或激活窗口（决策 62）。"""
+        from sookit.core.browser_protocol import normalize_video_url
+        url = normalize_video_url(url)
+        timer = getattr(self, '_sniff_timer', None)
+        if ((timer is not None and timer.isActive())
+                or (self._sniff_worker is not None and self._sniff_worker.isRunning())):
+            return {'ok': False, 'error': 'Sookit 正在嗅探其他请求，请完成后再试'}
+        if not is_ytdlp_available():
+            return {'ok': False, 'error': 'Sookit 尚未安装 yt-dlp，请到设置页下载安装'}
+        self.url_input.setText(url)
+        self.do_sniff()
+        return {'ok': True, 'message': 'Sookit 已在后台开始嗅探'}
+
     def do_sniff(self):
         self._invalidate_subtitles()
         if hasattr(self, '_sniff_timer') and self._sniff_timer:

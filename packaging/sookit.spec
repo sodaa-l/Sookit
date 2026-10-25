@@ -84,9 +84,27 @@ exe_updater = EXE(
     icon=os.path.join(PKG, "sookit.ico"),
 )
 
+# ---- Chrome Native Messaging host（控制台子系统提供二进制 stdin/stdout） ----
+a_browser = Analysis(
+    [os.path.join(SRC, "sookit", "native_host.py")],
+    pathex=[SRC], binaries=[], datas=[], hiddenimports=[],
+    hookspath=[], hooksconfig={}, runtime_hooks=[], excludes=[],
+    noarchive=False, optimize=0,
+)
+pyz_browser = PYZ(a_browser.pure)
+exe_browser = EXE(
+    pyz_browser, a_browser.scripts, [], exclude_binaries=True,
+    name="sookit-native-host", debug=False, bootloader_ignore_signals=False,
+    strip=False, upx=True, console=True, hide_console="hide-early",
+    icon=os.path.join(PKG, "sookit.ico"),
+)
+
 coll = COLLECT(
     exe,
     exe_updater,
+    exe_browser,
+    a_browser.binaries,
+    a_browser.datas,
     a.binaries,
     a.datas,
     a_updater.binaries,

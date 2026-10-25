@@ -41,6 +41,22 @@ ffmpeg / aria2c 不随仓库分发，建议自行下载放到对应目录（**ff
 - `tools\ffmpeg\`（ffmpeg.exe、ffprobe.exe）
 - `tools\aria2c\`（aria2c.exe）
 
+## Chrome 视频页按钮
+
+加载扩展后，YouTube 视频页的点赞、分享等操作旁会出现「Sookit 图标 + Sookit」按钮。点击后将当前视频交给桌面应用嗅探：应用未运行时静默启动，已运行时直接交给现有实例；正在嗅探其他视频时给出提示。网页提示接收成功后，可继续看视频，最终结果使用 Sookit 原有系统通知（需启用通知，且受 Windows 勿扰设置影响）。
+
+**安装版：** 安装含浏览器桥接的新版本后，打开 `chrome://extensions`，开启「开发者模式」，点击「加载已解压的扩展」，选择 Sookit 安装目录下的 `browser-extension` 文件夹，再刷新 YouTube 视频页。
+
+**源码版：** 先在项目目录运行以下命令，生成并注册当前用户的本机桥接，然后在上述 Chrome 页面加载本项目的 `browser-extension` 文件夹：
+
+```bash
+uv run --no-sync python scripts/register_browser_bridge.py
+```
+
+开发桥接依赖现有项目虚拟环境和源码目录；移动目录或重建环境后应重新注册。撤销注册使用 `uv run --no-sync python scripts/register_browser_bridge.py --unregister`，并在 Chrome 中移除扩展。切换到安装版前应先撤销开发注册，避免它覆盖安装版入口。
+
+按钮目前支持桌面版 YouTube 的普通视频页，包括通过站内导航打开的视频；仅触发嗅探，下载仍在 Sookit 内选择。使用当前网络及 Sookit 的 yt-dlp 配置，不会将浏览器登录 Cookie 自动交给应用。
+
 ## 字幕下载
 
 在「视频嗅探」中粘贴视频网页链接并嗅探。发现字幕或实时评论后，右侧会出现「音视频 / 字幕」切换；音视频的「默认视图 / 表格视图」改由右上角按钮切换。

@@ -125,6 +125,15 @@ class MainWindow(qfw.FluentWindow):
         # 系统通知接线（决策 40：主窗口不在焦点时任务完成/失败、嗅探/解析结果弹 Windows Toast）
         self._setup_task_toast()
 
+    def handle_browser_request(self, request):
+        """本机通道在 GUI 线程回调；保留窗口显隐和焦点。"""
+        if getattr(self, '_quitting', False):
+            return {'ok': False, 'error': 'Sookit 正在退出，请稍后重试'}
+        response = self.youtube_page.sniff_from_browser(request['url'])
+        if response.get('ok'):
+            self.switchTo(self.youtube_page)
+        return response
+
     # ========== 系统通知（决策 40） ==========
 
     def _setup_task_toast(self):
@@ -294,6 +303,9 @@ class MainWindow(qfw.FluentWindow):
 
     def quit_app(self):
         """真正退出应用前清理所有子进程"""
+        self._quitting = True
+        if hasattr(self, '_browser_server'):
+            self._browser_server.close()
         # 停止直播监控的 workers
         self.monitor_page.stop_all_workers()
         # 取消所有下载任务，终止各自的 yt-dlp/aria2c 进程树

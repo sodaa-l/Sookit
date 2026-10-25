@@ -13,7 +13,7 @@ import sys
 _SINGLE_INSTANCE_MUTEX = "Local\\Sookit"
 
 
-def _acquire_single_instance():
+def _acquire_single_instance(silent=False):
     """创建/占用单实例命名互斥体；返回句柄（int）表示持有成功，返回 None 表示已有实例。
 
     供安装/卸载器（Inno AppMutex）检测本程序是否在运行：Sookit 运行期间该互斥体一直存在。
@@ -27,12 +27,13 @@ def _acquire_single_instance():
     # ERROR_ALREADY_EXISTS = 183
     if kernel32.GetLastError() == 183:
         kernel32.CloseHandle(handle)
-        ctypes.windll.user32.MessageBoxW(
-            None,
-            "Sookit 已在运行，请勿重复启动。",
-            "Sookit",
-            0x40 | 0x1000,  # MB_ICONINFORMATION | MB_SETFOREGROUND
-        )
+        if not silent:
+            ctypes.windll.user32.MessageBoxW(
+                None,
+                "Sookit 已在运行，请勿重复启动。",
+                "Sookit",
+                0x40 | 0x1000,  # MB_ICONINFORMATION | MB_SETFOREGROUND
+            )
         return None
     return handle
 
@@ -59,7 +60,8 @@ def _cleanup_fallback_covers():
 def main():
     # ---------- 单实例互斥体 ----------
     # 必须在创建 QApplication 之前检测：已有实例则提示并退出，不启动界面。
-    _mutex = _acquire_single_instance()
+    silent_launch = '--silent' in sys.argv
+    _mutex = _acquire_single_instance(silent=silent_launch)
     if _mutex is None:
         sys.exit(0)
 
@@ -144,12 +146,19 @@ def main():
     # 先创建主窗口（不显示）
     window = MainWindow()
 
+    # 决策 62：浏览器仅发送单视频链接，不改变窗口焦点。
+    from sookit.core.browser_ipc import BrowserRequestServer
+    window._browser_server = BrowserRequestServer(window.handle_browser_request, window)
+    if not window._browser_server.listen():
+        logging.getLogger('Sookit').warning('浏览器本机请求通道监听失败')
+    app.aboutToQuit.connect(window._browser_server.close)
+    app.setQuitOnLastWindowClosed(False)
+
     # 创建启动画面（parent 设为主窗口，会自动跟随主窗口大小）
     splash = SplashScreen(icon_path, window)
     splash.setIconSize(QSize(128, 128))
 
-    # 静默启动判断
-    silent_launch = "--silent" in sys.argv
+    # 静默启动状态已在单实例检查前读取。
 
     # 创建系统托盘图标
     tray_icon = QSystemTrayIcon(QIcon(icon_path), app)

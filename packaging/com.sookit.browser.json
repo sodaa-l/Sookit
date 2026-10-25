@@ -1,0 +1,7 @@
+{
+  "name": "com.sookit.browser",
+  "description": "Sookit Chrome browser bridge",
+  "path": "sookit-native-host.exe",
+  "type": "stdio",
+  "allowed_origins": ["chrome-extension://inplhidhdgncdjkkmbfcocedkabbaghn/"]
+}
