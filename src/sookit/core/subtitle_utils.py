@@ -282,6 +282,31 @@ def _milliseconds(timestamp):
 
 def _read_cues(path):
     text = path.read_text(encoding='utf-8-sig').replace('\r\n', '\n').replace('\r', '\n')
+    if (path.suffix.lower() == '.vtt'
+            and 'Kind: captions' in text.partition('\n\n')[0].splitlines()):
+        # YouTube captions may put a whitespace-only line between timing and cue text.
+        # Keep it with the cue, but retain the separator for an empty cue before the next one.
+        lines = text.split('\n')
+        normalized = []
+        index = 0
+        while index < len(lines):
+            line = lines[index]
+            normalized.append(line)
+            index += 1
+            if not _TIMING.fullmatch(line.strip()):
+                continue
+            blank_end = index
+            while blank_end < len(lines) and not lines[blank_end].strip():
+                blank_end += 1
+            if blank_end == index:
+                continue
+            next_is_cue = (_TIMING.fullmatch(lines[blank_end].strip())
+                           or (blank_end + 1 < len(lines)
+                               and _TIMING.fullmatch(lines[blank_end + 1].strip())))
+            if next_is_cue:
+                normalized.append('')
+            index = blank_end
+        text = '\n'.join(normalized)
     cues = []
     for block in re.split(r'\n[ \t]*\n', text.strip()):
         lines = block.splitlines()

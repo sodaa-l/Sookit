@@ -488,6 +488,18 @@ class ParserTests(unittest.TestCase):
             self.assertEqual(files[1].read_text(encoding='utf-8'),
                              'Hello <literal>\n\nHello <literal>\n')
 
+    def test_youtube_vtt_whitespace_lines_after_timing_stay_with_cue(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / 'youtube.vtt'
+            path.write_text('WEBVTT\nKind: captions\nLanguage: ja\n\n'
+                            '00:00:27.519 --> 00:00:57.270 align:start position:0%\n \n'
+                            '<00:00:27.720><c>First</c>\n\n'
+                            '00:00:57.270 --> 00:00:57.280 align:start position:0%\n \n \n\n'
+                            '00:00:57.280 --> 00:00:59.549 align:start position:0%\n \n'
+                            '<00:00:57.600><c>Second</c>\n', encoding='utf-8')
+            cues = subtitles._read_cues(path)
+            self.assertEqual([cue[2] for cue in cues], ['First', 'Second'])
+
     def test_literal_tags_and_entities_round_trip_in_all_exports(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

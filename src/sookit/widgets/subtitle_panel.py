@@ -166,7 +166,7 @@ class SubtitlePanel(QWidget):
             self.format_checks[ext] = check
             formats_row.addWidget(check)
         formats_row.addStretch()
-        self.comments_button = qfw.PushButton("下载实时评论…")
+        self.comments_button = qfw.PushButton("下载实时评论")
         self.comments_button.clicked.connect(self.comments_requested.emit)
         formats_row.addWidget(self.comments_button)
         layout.addLayout(formats_row)
@@ -193,9 +193,6 @@ class SubtitlePanel(QWidget):
         self.search_input.clear()
         self.search_input.blockSignals(False)
         self.comments_button.setEnabled(bool(self._comment_tracks))
-        self.comments_button.setText(
-            f"下载实时评论…（{len(self._comment_tracks)}）" if self._comment_tracks
-            else "下载实时评论…")
         self.automatic_switch.setEnabled(any(t['source'] == 'automatic' for t in self._tracks))
         while self.track_layout.count() > 1:
             widget = self.track_layout.takeAt(0).widget()
