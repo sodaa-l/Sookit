@@ -546,6 +546,7 @@ class BrowserSettingsUiTests(unittest.TestCase):
         self.assertEqual(header.height(), 70)
         logo = header.layout().itemAt(0).widget()
         self.assertEqual((logo.width(), logo.height()), (16, 16))
+        self.assertIsNotNone(logo.pixmap())
         icon_x = logo.mapTo(header, logo.rect().topLeft()).x()
         title_x = setup_title.mapTo(header, setup_title.rect().topLeft()).x()
         self.assertEqual(icon_x, theme_card.iconLabel.mapTo(

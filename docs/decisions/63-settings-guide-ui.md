@@ -30,7 +30,7 @@ CardWidget(margins 0,0,0,0; spacing 0)
 
 - 标题/说明不再用 15px/600 自定义 QSS 的 `StrongBodyLabel`，改用手写行与 `qfw.SettingCard` 同一套排版：`QLabel` 套 `FluentStyleSheet.SETTING_CARD`（标题 14px 常规、`contentLabel` 11px 灰），行高固定 70，左侧 16px 图标 + 16px 间距，文本块在行内垂直居中。
 - 说明标签用 `_guide_text_label(..., word_wrap=False)`：`SettingCard.contentLabel` 是不换行的纯 `QLabel`，这里若开换行，两行文本会被 70px 行高裁掉半行。
-- 图标换成 Chrome 标志，用 `_ChromeLogo` 手绘 16×16 四色圆标（红 `#EA4335` / 绿 `#34A853` / 黄 `#FBBC05` 三扇区 + 白色内环 + 蓝心 `#4285F4`）：仓库与 qfluentwidgets 都没有 Chrome 官方图标资源，手绘可避免新增第三方图片资产。
+- 图标换成 Chrome 标志：`_ChromeLogo` 用 `QSvgRenderer` 直接矢量渲染 `src/sookit/assets/chrome-logo.svg`（取自 Google 官方 Chrome 站点的 `chrome-logo.svg`，1.4KB，随代码包发布，`sookit.paths.get_chrome_logo_path()` 定位）。位图从 256px 缩到 16px 会发糊，矢量渲染在 16px 与 HiDPI（`pixmap()` 按 `devicePixelRatioF()` 出图）下都保持锐利；控件仍是 16×16，与 `SettingCard` 图标同尺寸。
 
 ## 自绘部件
 

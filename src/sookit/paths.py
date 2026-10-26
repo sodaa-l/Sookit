@@ -63,3 +63,12 @@ def get_tools_dir() -> Path:
 def get_icon_path() -> Path:
     """应用图标路径（960x960.png，随代码包走）"""
     return Path(__file__).parent / "assets" / "960x960.png"
+
+
+def get_chrome_logo_path() -> Path:
+    """Chrome 标志路径（chrome-logo.svg，随代码包走）
+
+    矢量素材取自 Google 官方 Chrome 站点（chrome-logo.svg），供设置页
+    引导区按任意尺寸清晰渲染。
+    """
+    return Path(__file__).parent / "assets" / "chrome-logo.svg"

@@ -14,7 +14,9 @@ from PyQt6.QtCore import (
 )
 from PyQt6.QtGui import (
     QColor, QDesktopServices, QFontMetrics, QPainter, QPainterPath, QPen,
+    QPixmap,
 )
+from PyQt6.QtSvg import QSvgRenderer
 
 import qfluentwidgets as qfw
 from qfluentwidgets import DotInfoBadge, InfoBadgePosition
@@ -41,6 +43,7 @@ from sookit.core.browser_diagnostics import (
 )
 from sookit.core.utils import set_smooth_scroll_params
 from sookit import APP_NAME, APP_VERSION
+from sookit.paths import get_chrome_logo_path
 from sookit.widgets.infobar import show_infobar
 from sookit.widgets.elided_label import ElidedLabel
 
@@ -190,41 +193,49 @@ class _GuideValueLabel(ElidedLabel):
 
 
 class _ChromeLogo(QWidget):
-    """Chrome 图标（16×16 手绘四色圆标）
+    """Chrome 标志图标（16×16，与 SettingCard 的图标尺寸一致）
 
-    仓库和 qfluentwidgets 都没有 Chrome 官方图标资源，为不引入第三方图片
-    资产，这里用 QPainter 画一个近似的四色圆标，尺寸与 SettingCard 的图标
-    一致（16×16）。
+    使用随代码包提供的官方 Chrome 矢量标志（src/sookit/assets/chrome-logo.svg，
+    取自 Google 官方 Chrome 站点），按控件矩形直接矢量渲染，任何 DPI 下都不会
+    出现位图缩放的发虚效果。
     """
 
-    #: (起始角度, 颜色)：Qt 角度制 1/16 度、逆时针，0° 在 3 点钟方向
-    _SECTORS = (
-        (30.0, QColor("#EA4335")),   # 上方：红
-        (150.0, QColor("#34A853")),  # 左下：绿
-        (270.0, QColor("#FBBC05")),  # 右下：黄
-    )
+    _renderer = None
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setFixedSize(16, 16)
 
+    def renderer(self):
+        """返回 SVG 渲染器；资源缺失或非法时返回 None"""
+        if _ChromeLogo._renderer is None:
+            renderer = QSvgRenderer(str(get_chrome_logo_path()))
+            _ChromeLogo._renderer = renderer if renderer.isValid() else False
+        return _ChromeLogo._renderer or None
+
+    def pixmap(self):
+        """返回按当前控件尺寸渲染的图标（供测试与需要位图的场景使用）"""
+        renderer = self.renderer()
+        if renderer is None:
+            return None
+        ratio = self.devicePixelRatioF()
+        size = QSize(round(self.width() * ratio), round(self.height() * ratio))
+        pixmap = QPixmap(size)
+        pixmap.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        renderer.render(painter, QRectF(0, 0, size.width(), size.height()))
+        painter.end()
+        pixmap.setDevicePixelRatio(ratio)
+        return pixmap
+
     def paintEvent(self, event):
+        renderer = self.renderer()
+        if renderer is None:
+            return
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        rect = QRectF(self.rect())
-        radius = min(rect.width(), rect.height()) / 2.0
-        center = rect.center()
-        circle = QRectF(center.x() - radius, center.y() - radius,
-                        radius * 2, radius * 2)
-        painter.setPen(Qt.PenStyle.NoPen)
-        for start, color in self._SECTORS:
-            painter.setBrush(color)
-            painter.drawPie(circle, int(start * 16), int(120 * 16))
-        # 中心白色圆环 + 蓝色圆心
-        painter.setBrush(QColor(255, 255, 255))
-        painter.drawEllipse(center, radius * 0.46, radius * 0.46)
-        painter.setBrush(QColor("#4285F4"))
-        painter.drawEllipse(center, radius * 0.36, radius * 0.36)
+        renderer.render(painter, QRectF(self.rect()))
 
 
 class SettingsPage(QWidget):
