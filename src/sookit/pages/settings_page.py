@@ -4,7 +4,9 @@
 import os
 import re
 
-from PyQt6.QtWidgets import QVBoxLayout, QHBoxLayout, QWidget, QFrame, QApplication
+from PyQt6.QtWidgets import (
+    QVBoxLayout, QHBoxLayout, QWidget, QFrame, QApplication, QSizePolicy,
+)
 from PyQt6.QtCore import Qt, QThread, QObject, pyqtSignal, pyqtSlot, QTimer, QUrl
 from PyQt6.QtGui import QDesktopServices
 
@@ -32,6 +34,7 @@ from sookit.core.browser_diagnostics import (
 from sookit.core.utils import set_smooth_scroll_params
 from sookit import APP_NAME, APP_VERSION
 from sookit.widgets.infobar import show_infobar
+from sookit.widgets.elided_label import ElidedLabel
 
 
 class SettingsPage(QWidget):
@@ -197,40 +200,94 @@ class SettingsPage(QWidget):
 
         self.browser_guide_panel = QWidget(self.browser_setup_card)
         browser_guide_lay = QVBoxLayout(self.browser_guide_panel)
-        browser_guide_lay.setContentsMargins(0, 4, 0, 0)
-        browser_guide_lay.setSpacing(6)
-        guide_step1 = QHBoxLayout()
-        guide_step1_label = qfw.BodyLabel(
-            "1. 在 Chrome 地址栏输入 chrome://extensions/。")
-        guide_step1_label.setWordWrap(True)
-        guide_step1.addWidget(guide_step1_label, 1)
+        browser_guide_lay.setContentsMargins(0, 6, 0, 0)
+        browser_guide_lay.setSpacing(8)
+
+        guide_divider = QFrame(self.browser_guide_panel)
+        guide_divider.setFrameShape(QFrame.Shape.HLine)
+        guide_divider.setFrameShadow(QFrame.Shadow.Plain)
+        guide_divider.setLineWidth(1)
+        guide_divider.setMidLineWidth(0)
+        browser_guide_lay.addWidget(guide_divider)
+
+        def add_guide_step(number, title, detail, action_button=None):
+            row = QHBoxLayout()
+            row.setSpacing(10)
+            number_label = qfw.CaptionLabel(str(number))
+            number_label.setObjectName(f"browserGuideStepNumber{number}")
+            number_label.setAlignment(
+                Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter)
+            number_label.setFixedWidth(20)
+            row.addWidget(number_label)
+
+            step_content = QWidget(self.browser_guide_panel)
+            step_content.setMaximumWidth(820)
+            step_content.setSizePolicy(
+                QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+            content = QVBoxLayout(step_content)
+            content.setContentsMargins(0, 0, 0, 0)
+            content.setSpacing(2)
+            title_label = qfw.BodyLabel(title)
+            title_label.setObjectName(f"browserGuideStepTitle{number}")
+            title_font = title_label.font()
+            title_font.setBold(True)
+            title_label.setFont(title_font)
+            content.addWidget(title_label)
+
+            detail_row = QHBoxLayout()
+            detail_row.setSpacing(8)
+            detail_label = qfw.CaptionLabel(detail)
+            detail_label.setObjectName(f"browserGuideStepDetail{number}")
+            detail_label.setWordWrap(True)
+            detail_label.setSizePolicy(
+                QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Preferred)
+            detail_row.addWidget(detail_label)
+            if action_button is not None:
+                detail_row.addWidget(action_button)
+            detail_row.addStretch(1)
+            content.addLayout(detail_row)
+            row.addWidget(step_content, 1)
+            row.addStretch(1)
+            browser_guide_lay.addLayout(row)
+            return content
+
         self.browser_copy_extensions_url_button = qfw.PushButton("复制地址")
-        guide_step1.addWidget(self.browser_copy_extensions_url_button)
-        browser_guide_lay.addLayout(guide_step1)
-        guide_step2 = qfw.BodyLabel("2. 开启右上角的“开发者模式”。")
-        guide_step2.setWordWrap(True)
-        browser_guide_lay.addWidget(guide_step2)
-        guide_step3 = qfw.BodyLabel(
-            "3. 点击“加载已解压的扩展程序”，选择此扩展目录：")
-        guide_step3.setWordWrap(True)
-        browser_guide_lay.addWidget(guide_step3)
-        self.browser_extension_path_label = qfw.BodyLabel("")
-        self.browser_extension_path_label.setWordWrap(True)
-        browser_guide_lay.addWidget(self.browser_extension_path_label)
-        guide_path_buttons = QHBoxLayout()
-        guide_path_buttons.addStretch()
+        add_guide_step(
+            1, "打开扩展管理",
+            "在 Chrome 地址栏输入 chrome://extensions/",
+            self.browser_copy_extensions_url_button)
+        add_guide_step(
+            2, "开启开发者模式",
+            "打开页面右上角的开发者模式开关")
+        step3_content = add_guide_step(
+            3, "加载扩展",
+            "点击“加载已解压的扩展程序”，选择扩展目录")
+
+        path_row = QHBoxLayout()
+        path_row.setSpacing(6)
+        self.browser_extension_path_label = ElidedLabel(
+            "", max_lines=1, parent=self.browser_guide_panel)
+        self.browser_extension_path_label.setObjectName("contentLabel")
+        self.browser_extension_path_label.setSizePolicy(
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        self.browser_extension_path_label.setToolTip("")
+        qfw.FluentStyleSheet.SETTING_CARD.apply(
+            self.browser_extension_path_label)
+        path_row.addWidget(self.browser_extension_path_label, 1)
         self.browser_copy_folder_button = qfw.PushButton("复制路径")
         self.browser_guide_open_folder_button = qfw.PushButton("打开文件夹")
-        guide_path_buttons.addWidget(self.browser_copy_folder_button)
-        guide_path_buttons.addWidget(self.browser_guide_open_folder_button)
-        browser_guide_lay.addLayout(guide_path_buttons)
-        guide_step4 = qfw.BodyLabel(
-            "4. 刷新 YouTube 视频页，点击 Sookit 验证。")
-        guide_step4.setWordWrap(True)
-        browser_guide_lay.addWidget(guide_step4)
-        upgrade_note = qfw.BodyLabel(
-            "升级后如扩展文件有更新，请在 Chrome 扩展页重新加载，再刷新视频页。")
+        path_row.addWidget(self.browser_copy_folder_button)
+        path_row.addWidget(self.browser_guide_open_folder_button)
+        step3_content.addLayout(path_row)
+
+        add_guide_step(
+            4, "返回 YouTube 验证",
+            "刷新 YouTube 视频页并点击 Sookit")
+        upgrade_note = qfw.CaptionLabel(
+            "扩展更新后，在 Chrome 扩展页重新加载并刷新视频页")
+        upgrade_note.setObjectName("contentLabel")
         upgrade_note.setWordWrap(True)
+        qfw.FluentStyleSheet.SETTING_CARD.apply(upgrade_note)
         browser_guide_lay.addWidget(upgrade_note)
         self._browser_guide_expanded = False
         self.browser_guide_panel.setVisible(False)
@@ -536,6 +593,7 @@ class SettingsPage(QWidget):
         if hasattr(self, "browser_extension_path_label"):
             prefix = "扩展目录：" if extension_dir.is_dir() else "未找到扩展目录："
             self.browser_extension_path_label.setText(f"{prefix}{extension_dir}")
+            self.browser_extension_path_label.setToolTip(str(extension_dir))
         try:
             result = diagnose_browser_components()
         except Exception as exc:

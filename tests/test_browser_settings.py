@@ -10,8 +10,9 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import MagicMock, patch
 
-from PyQt6.QtCore import QTimer
+from PyQt6.QtCore import QEvent, QTimer
 from PyQt6.QtWidgets import QApplication, QLabel
+import qfluentwidgets as qfw
 
 from sookit import native_host
 from sookit.core import config
@@ -435,7 +436,12 @@ class BrowserSettingsUiTests(unittest.TestCase):
             item.start()
             self.addCleanup(item.stop)
         page = SettingsPage()
-        self.addCleanup(page.deleteLater)
+
+        def cleanup_page():
+            page.deleteLater()
+            QApplication.sendPostedEvents(page, QEvent.Type.DeferredDelete)
+
+        self.addCleanup(cleanup_page)
         return page
 
     def test_default_state_guide_steps_copy_and_component_summary(self):
@@ -443,14 +449,39 @@ class BrowserSettingsUiTests(unittest.TestCase):
         self.assertTrue(page.browser_extension_switch.isChecked())
         self.assertEqual(page.browser_components_status.text(),
                          '扩展文件完整 · 浏览器桥接正常')
+        step_titles = [
+            page.browser_guide_panel.findChild(
+                QLabel, f'browserGuideStepTitle{number}')
+            for number in range(1, 5)
+        ]
+        self.assertEqual([label.text() for label in step_titles], [
+            '打开扩展管理', '开启开发者模式', '加载扩展', '返回 YouTube 验证',
+        ])
+        step_details = [
+            page.browser_guide_panel.findChild(
+                QLabel, f'browserGuideStepDetail{number}')
+            for number in range(1, 5)
+        ]
+        self.assertEqual([label.text() for label in step_details], [
+            '在 Chrome 地址栏输入 chrome://extensions/',
+            '打开页面右上角的开发者模式开关',
+            '点击“加载已解压的扩展程序”，选择扩展目录',
+            '刷新 YouTube 视频页并点击 Sookit',
+        ])
+        self.assertTrue(all(label.font().bold() for label in step_titles))
         labels = [label.text() for label in page.findChildren(QLabel)]
-        self.assertIn('扩展已随安装包提供，首次使用需在 Chrome 中手动加载', labels)
-        self.assertTrue(any('1. 在 Chrome 地址栏输入 chrome://extensions/' in text
-                            for text in labels))
-        self.assertTrue(any('2. 开启右上角的“开发者模式”' in text for text in labels))
-        self.assertTrue(any('3. 点击“加载已解压的扩展程序”' in text for text in labels))
-        self.assertTrue(any('4. 刷新 YouTube 视频页，点击 Sookit 验证。' in text
-                            for text in labels))
+        header_description_text = (
+            '扩展已随安装包提供，首次使用需在 Chrome 中手动加载')
+        self.assertIn(header_description_text, labels)
+        header_description = next(
+            label for label in page.findChildren(QLabel)
+            if label.text() == header_description_text)
+        self.assertIn('font: 11px', header_description.styleSheet())
+        self.assertTrue(any(
+            '扩展更新后，在 Chrome 扩展页重新加载并刷新视频页' in text
+            for text in labels))
+        self.assertFalse(page._browser_guide_expanded)
+        self.assertTrue(page.browser_guide_panel.isHidden())
         self.assertFalse(any('已完成安装' in text for text in labels))
         self.assertFalse(any('在 YouTube 视频页点击 Sookit，即可在后台进行嗅探。' in text
                              for text in labels))
@@ -463,9 +494,12 @@ class BrowserSettingsUiTests(unittest.TestCase):
 
         page.browser_install_guide_button.click()
         self.assertTrue(page._browser_guide_expanded)
+        self.assertFalse(page.browser_guide_panel.isHidden())
+        self.assertTrue(all(not label.isHidden() for label in step_titles))
         self.assertEqual(page.browser_install_guide_button.text(), '收起引导')
         page.browser_install_guide_button.click()
         self.assertFalse(page._browser_guide_expanded)
+        self.assertTrue(page.browser_guide_panel.isHidden())
         self.assertEqual(page.browser_install_guide_button.text(), '安装引导')
 
         clipboard = MagicMock()
@@ -481,6 +515,110 @@ class BrowserSettingsUiTests(unittest.TestCase):
                 patch('sookit.pages.settings_page.show_infobar'):
             page.browser_copy_folder_button.click()
         self.assertEqual(clipboard.setText.call_args.args[0], directory)
+
+    def test_guide_layout_stays_within_card_and_elides_long_path(self):
+        page = self._page()
+        page.browser_install_guide_button.click()
+        long_path = Path(
+            'D:/VideoToolBox/' + '/'.join(['long-folder-name-1234567890'] * 18)
+            + '/browser-extension')
+        with patch.object(page, '_browser_extension_path', return_value=long_path), \
+                patch('sookit.pages.settings_page.diagnose_browser_components',
+                      return_value={'ok': True, 'issues': []}):
+            page._refresh_browser_components()
+
+        path_label = page.browser_extension_path_label
+        self.assertEqual(path_label.objectName(), 'contentLabel')
+        for theme, expected_color in (
+                (qfw.Theme.LIGHT, 'rgb(96, 96, 96)'),
+                (qfw.Theme.DARK, 'rgb(208, 208, 208)')):
+            with self.subTest(theme=theme):
+                qfw.FluentStyleSheet.SETTING_CARD.apply(path_label, theme)
+                style = path_label.styleSheet()
+                self.assertIn('QLabel#contentLabel', style)
+                self.assertIn(f'color: {expected_color};', style)
+                self.assertIn('font: 11px', style)
+
+        clipboard = MagicMock()
+        with patch.object(page, '_browser_extension_path', return_value=long_path), \
+                patch('sookit.pages.settings_page.QApplication.clipboard',
+                      return_value=clipboard), \
+                patch('sookit.pages.settings_page.show_infobar'):
+            page.browser_copy_folder_button.click()
+        clipboard.setText.assert_called_once_with(str(long_path))
+
+        page.show()
+        for width in (966, 1131, 1600):
+            with self.subTest(width=width):
+                page.resize(width, 731)
+                QApplication.processEvents()
+                panel = page.browser_guide_panel
+                self.assertFalse(panel.isHidden())
+                title_labels = [
+                    panel.findChild(QLabel, f'browserGuideStepTitle{number}')
+                    for number in range(1, 5)
+                ]
+                title_y = [label.mapTo(panel, label.rect().topLeft()).y()
+                           for label in title_labels]
+                self.assertEqual(title_y, sorted(title_y))
+
+                for number in range(1, 5):
+                    number_label = panel.findChild(
+                        QLabel, f'browserGuideStepNumber{number}')
+                    title_label = panel.findChild(
+                        QLabel, f'browserGuideStepTitle{number}')
+                    number_x = number_label.mapTo(
+                        panel, number_label.rect().topLeft()).x()
+                    title_x = title_label.mapTo(
+                        panel, title_label.rect().topLeft()).x()
+                    self.assertLessEqual(number_x, 2)
+                    self.assertAlmostEqual(
+                        title_x - number_x - number_label.width(), 10, delta=2)
+
+                displayed_path = QLabel.text(path_label)
+                self.assertEqual(path_label.toolTip(), str(long_path))
+                self.assertIn(str(long_path), path_label.text())
+                self.assertIn('…', displayed_path)
+                self.assertLess(len(displayed_path), len(path_label.text()))
+
+                controls = (
+                    path_label,
+                    page.browser_copy_folder_button,
+                    page.browser_guide_open_folder_button,
+                )
+                control_x = []
+                for control in controls:
+                    point = control.mapTo(panel, control.rect().topLeft())
+                    control_x.append(point.x())
+                    self.assertGreater(control.width(), 0)
+                    self.assertGreaterEqual(point.x(), 0)
+                    self.assertLessEqual(point.x() + control.width(), panel.width())
+                self.assertGreaterEqual(
+                    control_x[1] - control_x[0] - path_label.width(), 0)
+                self.assertLessEqual(
+                    control_x[1] - control_x[0] - path_label.width(), 12)
+
+                step1_detail = panel.findChild(
+                    QLabel, 'browserGuideStepDetail1')
+                step1_detail_x = step1_detail.mapTo(
+                    panel, step1_detail.rect().topLeft()).x()
+                copy_url_x = page.browser_copy_extensions_url_button.mapTo(
+                    panel, page.browser_copy_extensions_url_button.rect().topLeft()).x()
+                self.assertGreaterEqual(
+                    copy_url_x - step1_detail_x - step1_detail.width(), 0)
+                self.assertLessEqual(
+                    copy_url_x - step1_detail_x - step1_detail.width(), 8)
+
+                path_group_start = path_label.mapTo(
+                    panel, path_label.rect().topLeft()).x()
+                path_group_end = (
+                    page.browser_guide_open_folder_button.mapTo(
+                        panel, page.browser_guide_open_folder_button.rect().topLeft()).x()
+                    + page.browser_guide_open_folder_button.width())
+                path_group_width = path_group_end - path_group_start
+                self.assertLessEqual(path_group_width, 840)
+                if width == 1600:
+                    self.assertGreaterEqual(path_group_width, 700)
 
     def test_switch_success_saves_and_displays_paused_status(self):
         page = self._page()
