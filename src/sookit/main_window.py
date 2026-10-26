@@ -17,6 +17,7 @@ from qfluentwidgets import FluentIcon as FIF, NavigationItemPosition, \
 
 from sookit import APP_NAME, APP_VERSION
 from sookit.paths import get_icon_path
+from sookit.core.config import load_browser_extension_enabled
 
 # ---------- 从 widgets 导入自定义控件 ----------
 from sookit.widgets.infobar import show_infobar
@@ -129,6 +130,11 @@ class MainWindow(qfw.FluentWindow):
         """本机通道在 GUI 线程回调；保留窗口显隐和焦点。"""
         if getattr(self, '_quitting', False):
             return {'ok': False, 'error': 'Sookit 正在退出，请稍后重试'}
+        try:
+            if not load_browser_extension_enabled():
+                return {'ok': False, 'error': '浏览器扩展调用已暂停'}
+        except Exception as exc:
+            return {'ok': False, 'error': f'无法确认浏览器扩展开关：{exc}'}
         response = self.youtube_page.sniff_from_browser(request['url'])
         if response.get('ok'):
             self.switchTo(self.youtube_page)

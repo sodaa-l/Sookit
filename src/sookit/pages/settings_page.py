@@ -4,8 +4,9 @@
 import os
 import re
 
-from PyQt6.QtWidgets import QVBoxLayout, QHBoxLayout, QWidget, QFrame
-from PyQt6.QtCore import Qt, QThread, QObject, pyqtSignal, pyqtSlot, QTimer
+from PyQt6.QtWidgets import QVBoxLayout, QHBoxLayout, QWidget, QFrame, QApplication
+from PyQt6.QtCore import Qt, QThread, QObject, pyqtSignal, pyqtSlot, QTimer, QUrl
+from PyQt6.QtGui import QDesktopServices
 
 import qfluentwidgets as qfw
 from qfluentwidgets import DotInfoBadge, InfoBadgePosition
@@ -21,6 +22,12 @@ from sookit.core.functions import (
     set_autostart, is_autostart, load_close_action, save_close_action,
     load_task_complete_action, save_task_complete_action,
     load_toast_notification_enabled, save_toast_notification_enabled,
+)
+from sookit.core.config import (
+    load_browser_extension_enabled, save_browser_extension_enabled,
+)
+from sookit.core.browser_diagnostics import (
+    diagnose_browser_components, get_extension_dir,
 )
 from sookit.core.utils import set_smooth_scroll_params
 from sookit import APP_NAME, APP_VERSION
@@ -40,6 +47,12 @@ class SettingsPage(QWidget):
         # yt-dlp / Deno 版本检测结果（None=尚未返回；""=未安装/获取失败）
         self._yt_ver = None
         self._deno_ver = None
+        self._browser_extension_load_error = None
+        try:
+            self._browser_extension_enabled = load_browser_extension_enabled()
+        except Exception as exc:
+            self._browser_extension_enabled = False
+            self._browser_extension_load_error = str(exc)
         self._init_ui()
         self._connect_signals()
         QTimer.singleShot(200, self._check_versions)
@@ -127,6 +140,119 @@ class SettingsPage(QWidget):
         self.toast_switch.setChecked(True)
         toast_lay.addWidget(self.toast_switch)
         layout.addWidget(toast_card)
+
+        layout.addSpacing(16)
+
+        # ===== 浏览器扩展 =====
+        layout.addWidget(qfw.SubtitleLabel("浏览器扩展"))
+        layout.addSpacing(12)
+
+        self.browser_toggle_card = qfw.CardWidget(self)
+        self.browser_toggle_card.setMinimumHeight(70)
+        browser_toggle_lay = QVBoxLayout(self.browser_toggle_card)
+        browser_toggle_lay.setContentsMargins(15, 12, 15, 12)
+        browser_toggle_lay.setSpacing(4)
+        browser_toggle_row = QHBoxLayout()
+        browser_toggle_row.addWidget(qfw.BodyLabel("允许浏览器扩展调用 Sookit"))
+        browser_toggle_row.addStretch()
+        self.browser_extension_switch = qfw.SwitchButton()
+        self.browser_extension_switch.setChecked(self._browser_extension_enabled)
+        self.browser_extension_switch.setToolTip(
+            "此开关只控制 Sookit 是否接收请求；扩展自身启停由 Chrome 管理。")
+        browser_toggle_row.addWidget(self.browser_extension_switch)
+        browser_toggle_lay.addLayout(browser_toggle_row)
+        self.browser_extension_paused_label = qfw.BodyLabel(
+            "已暂停接收浏览器请求，可随时重新开启")
+        self.browser_extension_paused_label.setVisible(not self._browser_extension_enabled)
+        browser_toggle_lay.addWidget(self.browser_extension_paused_label)
+        self.browser_extension_config_error_label = qfw.BodyLabel(
+            f"无法读取浏览器扩展开关，已按关闭处理：{self._browser_extension_load_error}"
+            if self._browser_extension_load_error else "")
+        self.browser_extension_config_error_label.setWordWrap(True)
+        self.browser_extension_config_error_label.setVisible(
+            bool(self._browser_extension_load_error))
+        browser_toggle_lay.addWidget(self.browser_extension_config_error_label)
+        layout.addWidget(self.browser_toggle_card)
+
+        self.browser_setup_card = qfw.CardWidget(self)
+        browser_setup_lay = QVBoxLayout(self.browser_setup_card)
+        browser_setup_lay.setContentsMargins(15, 12, 15, 12)
+        browser_setup_lay.setSpacing(8)
+        browser_setup_header = QHBoxLayout()
+        browser_setup_text = QVBoxLayout()
+        browser_setup_text.setSpacing(2)
+        browser_setup_text.addWidget(qfw.BodyLabel("Chrome 扩展"))
+        browser_setup_description = qfw.BodyLabel(
+            "扩展已随安装包提供，首次使用需在 Chrome 中手动加载")
+        browser_setup_description.setObjectName("contentLabel")
+        browser_setup_description.setWordWrap(True)
+        qfw.FluentStyleSheet.SETTING_CARD.apply(browser_setup_description)
+        browser_setup_text.addWidget(browser_setup_description)
+        browser_setup_header.addLayout(browser_setup_text, 1)
+        self.browser_install_guide_button = qfw.PrimaryPushButton("安装引导")
+        self.browser_open_folder_button = qfw.PushButton("打开扩展文件夹")
+        browser_setup_header.addWidget(self.browser_install_guide_button)
+        browser_setup_header.addWidget(self.browser_open_folder_button)
+        browser_setup_lay.addLayout(browser_setup_header)
+
+        self.browser_guide_panel = QWidget(self.browser_setup_card)
+        browser_guide_lay = QVBoxLayout(self.browser_guide_panel)
+        browser_guide_lay.setContentsMargins(0, 4, 0, 0)
+        browser_guide_lay.setSpacing(6)
+        guide_step1 = QHBoxLayout()
+        guide_step1_label = qfw.BodyLabel(
+            "1. 在 Chrome 地址栏输入 chrome://extensions/。")
+        guide_step1_label.setWordWrap(True)
+        guide_step1.addWidget(guide_step1_label, 1)
+        self.browser_copy_extensions_url_button = qfw.PushButton("复制地址")
+        guide_step1.addWidget(self.browser_copy_extensions_url_button)
+        browser_guide_lay.addLayout(guide_step1)
+        guide_step2 = qfw.BodyLabel("2. 开启右上角的“开发者模式”。")
+        guide_step2.setWordWrap(True)
+        browser_guide_lay.addWidget(guide_step2)
+        guide_step3 = qfw.BodyLabel(
+            "3. 点击“加载已解压的扩展程序”，选择此扩展目录：")
+        guide_step3.setWordWrap(True)
+        browser_guide_lay.addWidget(guide_step3)
+        self.browser_extension_path_label = qfw.BodyLabel("")
+        self.browser_extension_path_label.setWordWrap(True)
+        browser_guide_lay.addWidget(self.browser_extension_path_label)
+        guide_path_buttons = QHBoxLayout()
+        guide_path_buttons.addStretch()
+        self.browser_copy_folder_button = qfw.PushButton("复制路径")
+        self.browser_guide_open_folder_button = qfw.PushButton("打开文件夹")
+        guide_path_buttons.addWidget(self.browser_copy_folder_button)
+        guide_path_buttons.addWidget(self.browser_guide_open_folder_button)
+        browser_guide_lay.addLayout(guide_path_buttons)
+        guide_step4 = qfw.BodyLabel(
+            "4. 刷新 YouTube 视频页，点击 Sookit 验证。")
+        guide_step4.setWordWrap(True)
+        browser_guide_lay.addWidget(guide_step4)
+        upgrade_note = qfw.BodyLabel(
+            "升级后如扩展文件有更新，请在 Chrome 扩展页重新加载，再刷新视频页。")
+        upgrade_note.setWordWrap(True)
+        browser_guide_lay.addWidget(upgrade_note)
+        self._browser_guide_expanded = False
+        self.browser_guide_panel.setVisible(False)
+        browser_setup_lay.addWidget(self.browser_guide_panel)
+        layout.addWidget(self.browser_setup_card)
+
+        self.browser_components_card = qfw.CardWidget(self)
+        browser_components_lay = QVBoxLayout(self.browser_components_card)
+        browser_components_lay.setContentsMargins(15, 12, 15, 12)
+        browser_components_lay.setSpacing(6)
+        browser_components_row = QHBoxLayout()
+        self.browser_components_status = qfw.BodyLabel("正在检查本机组件…")
+        browser_components_row.addWidget(self.browser_components_status, 1)
+        self.browser_components_refresh_button = qfw.PrimaryPushButton("重新检查")
+        browser_components_row.addWidget(self.browser_components_refresh_button)
+        browser_components_lay.addLayout(browser_components_row)
+        self.browser_components_details = qfw.BodyLabel("")
+        self.browser_components_details.setWordWrap(True)
+        self.browser_components_details.setVisible(False)
+        browser_components_lay.addWidget(self.browser_components_details)
+        layout.addWidget(self.browser_components_card)
+        self._refresh_browser_components()
 
         layout.addSpacing(16)
 
@@ -292,6 +418,18 @@ class SettingsPage(QWidget):
         self.task_complete_combo.currentIndexChanged.connect(self._on_task_complete_changed)
         # 系统通知开关信号连接（决策 40）
         self.toast_switch.checkedChanged.connect(self._on_toast_notification_changed)
+        # 浏览器扩展设置与引导
+        self.browser_extension_switch.checkedChanged.connect(
+            self._on_browser_extension_changed)
+        self.browser_install_guide_button.clicked.connect(self._toggle_browser_guide)
+        self.browser_open_folder_button.clicked.connect(self._open_browser_extension_folder)
+        self.browser_guide_open_folder_button.clicked.connect(
+            self._open_browser_extension_folder)
+        self.browser_copy_extensions_url_button.clicked.connect(
+            self._copy_chrome_extensions_url)
+        self.browser_copy_folder_button.clicked.connect(self._copy_browser_extension_path)
+        self.browser_components_refresh_button.clicked.connect(
+            self._refresh_browser_components)
         # 检查更新按钮信号连接
         self.check_update_btn.clicked.connect(self._on_check_update)
 
@@ -340,6 +478,81 @@ class SettingsPage(QWidget):
     def _on_toast_notification_changed(self, checked: bool):
         """系统通知开关变更（决策 40）"""
         save_toast_notification_enabled(checked)
+
+    def _on_browser_extension_changed(self, checked: bool):
+        """保存浏览器扩展开关；失败时恢复 UI 并提示原因。"""
+        try:
+            save_browser_extension_enabled(checked)
+        except Exception as exc:
+            was_blocked = self.browser_extension_switch.blockSignals(True)
+            self.browser_extension_switch.setChecked(self._browser_extension_enabled)
+            self.browser_extension_switch.blockSignals(was_blocked)
+            show_infobar(
+                self, "error", title="保存失败",
+                content=f"无法保存浏览器扩展开关，已恢复原状态：{exc}", duration=6000)
+            return
+
+        self._browser_extension_enabled = checked
+        self._browser_extension_load_error = None
+        self.browser_extension_paused_label.setVisible(not checked)
+        self.browser_extension_config_error_label.clear()
+        self.browser_extension_config_error_label.setVisible(False)
+
+    def _toggle_browser_guide(self):
+        self._browser_guide_expanded = not self._browser_guide_expanded
+        self.browser_guide_panel.setVisible(self._browser_guide_expanded)
+        self.browser_install_guide_button.setText(
+            "收起引导" if self._browser_guide_expanded else "安装引导")
+
+    def _browser_extension_path(self):
+        return get_extension_dir()
+
+    def _copy_chrome_extensions_url(self):
+        QApplication.clipboard().setText("chrome://extensions/")
+        show_infobar(self, "success", title="已复制", content="Chrome 扩展页地址已复制。",
+                     duration=2500)
+
+    def _copy_browser_extension_path(self):
+        path = self._browser_extension_path()
+        QApplication.clipboard().setText(str(path))
+        show_infobar(self, "success", title="已复制", content="扩展目录路径已复制。",
+                     duration=2500)
+
+    def _open_browser_extension_folder(self):
+        path = self._browser_extension_path()
+        if not path.is_dir():
+            show_infobar(
+                self, "error", title="找不到扩展目录",
+                content=f"未找到扩展目录：{path}", duration=6000)
+            return
+        if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(path))):
+            show_infobar(
+                self, "error", title="无法打开文件夹",
+                content=f"系统未能打开扩展目录：{path}", duration=6000)
+
+    def _refresh_browser_components(self):
+        """重新读取本机扩展/桥接文件与 Chrome 注册项，不修改系统状态。"""
+        extension_dir = self._browser_extension_path()
+        if hasattr(self, "browser_extension_path_label"):
+            prefix = "扩展目录：" if extension_dir.is_dir() else "未找到扩展目录："
+            self.browser_extension_path_label.setText(f"{prefix}{extension_dir}")
+        try:
+            result = diagnose_browser_components()
+        except Exception as exc:
+            result = {"ok": False, "issues": [f"检查本机组件失败：{exc}"]}
+
+        issues = list(dict.fromkeys(result.get("issues", [])))
+        if result.get("ok") and not issues:
+            self.browser_components_status.setText("扩展文件完整 · 浏览器桥接正常")
+            self.browser_components_details.clear()
+            self.browser_components_details.setVisible(False)
+            return
+
+        self.browser_components_status.setText("本机组件需要处理")
+        self.browser_components_details.setText("\n".join(f"• {issue}" for issue in issues))
+        self.browser_components_details.setVisible(True)
+
+    # ========== 安装引导与本机组件诊断 ==========
 
     def _on_check_update(self):
         """「检查更新」按钮：复用主窗口更新流程（后台查询 → 结果回显）。

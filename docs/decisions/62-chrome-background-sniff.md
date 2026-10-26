@@ -22,7 +22,7 @@ YouTube 操作栏按钮 → 扩展后台 → sookit-native-host.exe
 - 后台核对发送扩展 ID、顶层视频页和请求视频 ID；host 再核对 Chrome 传入的扩展 origin，Qt 接收端再次验证请求。
 - 仅允许 `sniff` 动作和 HTTPS YouTube 单视频，统一成 `https://www.youtube.com/watch?v=<11位ID>`；剥离时间、播放列表等参数。Shorts、live 和短链可由协议层规范化，但本轮按钮仅覆盖桌面 `/watch` 页面。
 - `core/browser_protocol.py` 不依赖 Qt。Native Messaging 和本机通道均使用 4 字节小端长度加 UTF-8 JSON，单帧上限 16KiB。
-- 扩展清单固定公钥，对应 ID `aonfogehcnacjjmgcedjpbgcjadbegma`。安装目录变动不会改变 ID；不得单独更换公钥，否则必须同步 host 的 `allowed_origins` 和协议常量。
+- 扩展清单固定公钥，对应 ID `inplhidhdgncdjkkmbfcocedkabbaghn`。安装目录变动不会改变 ID；不得单独更换公钥，否则必须同步 host 的 `allowed_origins` 和协议常量。该值以 `core/browser_protocol.py` 与打包 host 清单为准。
 
 ## 生命周期
 
@@ -34,6 +34,11 @@ host 优先向现有实例发送；只有无法建立连接才用独立进程启
 - 浏览器请求复用 `YouTubePage.do_sniff()`：原有配置、格式与字幕、封面、代际校验、停止和超时逻辑一并生效。
 - worker 仍在运行或计时器仍在等待回调时，返回忙碌提示，保留当前输入和结果；不终止现有任务。yt-dlp 缺失时直接返回安装提示。
 - 网页成功提示表示“应用已接受并启动嗅探”。最终成功/失败沿用决策 40 的系统通知，服从通知开关和 Windows 勿扰模式；点击通知打开主窗口。
+- `general.browser_extension_enabled` 默认开启。已有 GUI 在分发请求前检查该值；冷启动 host 在启动 GUI 前读取同一配置，关闭或配置无法确认时拒绝新浏览器请求。此闸门不取消既有任务，也不影响手动嗅探。
+
+## 设置页诊断
+
+设置页只读检查扩展清单及其文件引用、host 程序与清单、固定扩展 ID / `allowed_origins` 和注册路径；manifest 的 host path 可相对清单目录解析，但必须指向当前源码或打包布局的预期 host。源码模式还检查相邻 `source-launch.json` 的 JSON 结构、command 格式与入口文件、cwd 目录是否存在，不执行启动命令；打包安装模式不要求该源码配置。注册诊断遍历 HKCU/HKLM 的默认、32 位和 64 位视图，并识别 HKCU 开发注册遮蔽 HKLM 安装注册的情况。检查结果只说明本机文件与桥接注册路径，不代表扩展已在 Chrome 加载、启用或连接；不自动改注册表或 Chrome 用户配置，也不安装扩展。
 
 ## 打包与注册
 
@@ -46,6 +51,7 @@ Inno 安装器附带扩展目录和 `com.sookit.browser.json`，在 HKLM 注册 
 ## 验证
 
 - `uv run --no-sync python -X utf8 -m unittest discover -s tests -p test_browser_bridge.py -v`：协议、白名单、分片/畸形帧、实际 Qt 本机通道和跨进程通信、冷启动分支、忙碌和缺失依赖、退出清理。
+- `uv run --no-sync python -X utf8 -m unittest discover -s tests -p test_browser_settings.py -v`：开关默认值/持久化/失败回滚、GUI 与冷启动拒绝、手动嗅探隔离、源码/打包诊断路径、注册遮蔽与设置页引导。
 - `node --test tests/test_browser_extension.cjs`：执行实际扩展脚本，验证来源校验、按钮图文、去重、YouTube SPA 跳转、操作栏重建和旧回执丢弃；使用最小 DOM 适配层，不等同于真实 YouTube 页面验收。
 - 运行仓库全部 Python 回归，验证原有字幕和任务取消流程。
 - 真实 Chrome 手动加载扩展后仍需确认 YouTube 当前布局、Native Messaging 启动和系统通知表现；离线测试无法保证站点 DOM 永久不变。

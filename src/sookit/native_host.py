@@ -55,6 +55,15 @@ def forward_request(request):
     response = send_request(request)
     if response is not None:
         return response
+
+    # 冷启动路径必须在启动 GUI 前读取持久设置；读取异常也失败关闭。
+    from sookit.core.config import load_browser_extension_enabled
+    try:
+        if not load_browser_extension_enabled():
+            return {'ok': False, 'error': '浏览器扩展调用已暂停'}
+    except Exception as exc:
+        return {'ok': False, 'error': f'无法确认浏览器扩展开关：{exc}'}
+
     command, cwd = app_command()
     # 独立于 Chrome host 存活；stdin/stdout 不继承 Native Messaging 管道。
     options = {}

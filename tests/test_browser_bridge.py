@@ -110,6 +110,7 @@ class BridgeTests(unittest.TestCase):
 
     def test_cold_start_waits_for_ready_and_detaches_stdio(self):
         with patch('sookit.core.browser_ipc.send_request', side_effect=[None, None, {'ok': True}]), \
+                patch('sookit.core.config.load_browser_extension_enabled', return_value=True), \
                 patch.object(native_host, 'app_command', return_value=(['Sookit.exe', '--silent'], ROOT)), \
                 patch.object(native_host.subprocess, 'Popen') as launch, \
                 patch.object(native_host.time, 'sleep'):

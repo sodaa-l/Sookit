@@ -13,6 +13,7 @@ from sookit.paths import get_data_dir
 # 配置缓存 + 锁（并发安全）
 _config_cache = None
 _config_cache_dirty = False
+_config_load_error = None
 _config_lock = threading.Lock()
 
 
@@ -25,7 +26,7 @@ def get_config_path():
 
 def load_config():
     """加载完整配置文件（带惰性缓存）"""
-    global _config_cache
+    global _config_cache, _config_load_error
     config_path = get_config_path()
     with _config_lock:
         if _config_cache is not None:
@@ -33,26 +34,81 @@ def load_config():
         try:
             with open(config_path, 'r', encoding='utf-8') as f:
                 _config_cache = json.load(f)
-        except (FileNotFoundError, json.JSONDecodeError):
+            _config_load_error = None
+        except FileNotFoundError:
             _config_cache = {}
+            _config_load_error = None
+        except (json.JSONDecodeError, UnicodeError) as e:
+            _config_cache = {}
+            _config_load_error = f"配置文件损坏，无法读取浏览器扩展开关: {e}"
+        except OSError as e:
+            _config_cache = None
+            _config_load_error = f"读取配置文件失败: {e}"
+            raise RuntimeError(_config_load_error) from e
         return _config_cache
 
 
 def save_config(config):
-    """保存完整配置文件（同步写入并更新缓存）"""
-    global _config_cache, _config_cache_dirty
+    """原子保存完整配置，并在成功后更新惰性缓存"""
+    global _config_cache, _config_cache_dirty, _config_load_error
     config_path = get_config_path()
+    temp_path = f"{config_path}.{os.getpid()}.{threading.get_ident()}.tmp"
     with _config_lock:
-        _config_cache = config
         _config_cache_dirty = True
         try:
             os.makedirs(os.path.dirname(config_path), exist_ok=True)
-            with open(config_path, 'w', encoding='utf-8') as f:
+            with open(temp_path, 'w', encoding='utf-8') as f:
                 json.dump(config, f, indent=4, ensure_ascii=False)
+            os.replace(temp_path, config_path)
+            _config_cache = config
+            _config_load_error = None
             _config_cache_dirty = False
-        except OSError as e:
+        except (OSError, TypeError, ValueError) as e:
             _config_cache_dirty = False
-            raise RuntimeError(f"保存配置文件失败: {e}")
+            try:
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
+            except OSError:
+                pass
+            raise RuntimeError(f"保存配置文件失败: {e}") from e
+
+
+def load_browser_extension_enabled() -> bool:
+    """读取浏览器扩展调用开关；配置不可确认时失败关闭。"""
+    config = load_config()
+    with _config_lock:
+        load_error = _config_load_error
+    if load_error:
+        raise RuntimeError(load_error)
+    if not isinstance(config, dict):
+        raise RuntimeError('配置文件格式无效，无法读取浏览器扩展开关')
+    general = config.get('general', {})
+    if not isinstance(general, dict):
+        raise RuntimeError('配置文件 general 段格式无效，无法读取浏览器扩展开关')
+    enabled = general.get('browser_extension_enabled', True)
+    if not isinstance(enabled, bool):
+        raise RuntimeError('浏览器扩展开关配置值无效')
+    return enabled
+
+
+def save_browser_extension_enabled(enabled: bool):
+    """保存浏览器扩展开关；先复制配置，避免写入失败时污染惰性缓存。"""
+    import copy
+
+    enabled = bool(enabled)
+    config = load_config()
+    with _config_lock:
+        load_error = _config_load_error
+    if load_error:
+        raise RuntimeError(load_error)
+    if not isinstance(config, dict):
+        raise RuntimeError('配置文件格式无效，无法保存浏览器扩展开关')
+    updated = copy.deepcopy(config)
+    general = updated.setdefault('general', {})
+    if not isinstance(general, dict):
+        raise RuntimeError('配置文件 general 段格式无效，无法保存浏览器扩展开关')
+    general['browser_extension_enabled'] = enabled
+    save_config(updated)
 
 
 # ---------- 下载配置 ----------

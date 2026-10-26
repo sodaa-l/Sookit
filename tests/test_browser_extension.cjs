@@ -7,7 +7,7 @@ const vm = require('node:vm');
 const extension = path.join(__dirname, '..', 'browser-extension');
 const URL_A = 'https://www.youtube.com/watch?v=Yb9H5vhWyHg';
 const URL_B = 'https://www.youtube.com/watch?v=aaaaaaaaaaa';
-const ID = 'aonfogehcnacjjmgcedjpbgcjadbegma';
+const ID = 'inplhidhdgncdjkkmbfcocedkabbaghn';
 
 function background(native = async () => ({ok: true})) {
   let receive;
