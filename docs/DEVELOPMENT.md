@@ -226,6 +226,7 @@ flowchart TB
 | 61 | 视频嗅探的字幕与实时评论下载（2026-10-24） | 顶部按「音视频 / 字幕」切换，音视频双视图移到右上按钮（修订决策 47）；字幕逐轨多语言与 SRT/TXT/VTT 多格式，每源仅获取一次；自动字幕默认隐藏，评论独立原格式；绑定嗅探 URL，复用 YTDLP workspace；字幕用 after_video 结构化清单和严格零退出码验收（不套用决策 6），返回完整产物列表 | [61-sniff-subtitle-download.md](decisions/61-sniff-subtitle-download.md) |
 
 | 62 | Chrome 视频页按钮与后台嗅探、接收开关与只读诊断 | MV3 扩展 → Native Messaging → 当前用户/会话的 Qt 本机通道；请求开关默认开，GUI 与冷启动 host 都校验；只读诊断扩展文件、host 清单/程序和 HKCU/HKLM 注册路径 | [62-chrome-background-sniff.md](decisions/62-chrome-background-sniff.md) |
+| 63 | 设置页 Chrome 扩展引导区改版（2026-10-26） | 步骤序号改淡主题色圆底 + 主题色数字（订阅 `themeColorChanged` 重刷）；头部标题 15px/600 + 1px 分隔线，折叠时连分隔线一起隐藏；地址与路径统一为自绘「值条」（圆角 6、极淡底 + 1px 边框，亮暗两套色、订阅 `themeChangedFinished`），值条内嵌透明图标按钮，宽度按内容自适应、上限 820；路径前缀与路径拆成两个标签，`_GuideValueLabel` 重写 `sizeHint`/`minimumSizeHint` 让超长路径省略而值条可收缩；**步骤内容必须包成 `step_content` 再 `addWidget(…, 1)`**，直接嵌套布局会让值条的最大宽度向上传染、把序号挤到中间（实测偏移 84px） | [63-settings-guide-ui.md](decisions/63-settings-guide-ui.md) |
 
 ## 测试
 

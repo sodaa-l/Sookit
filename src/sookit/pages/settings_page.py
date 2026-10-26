@@ -3,15 +3,23 @@
 """
 import os
 import re
+import weakref
 
 from PyQt6.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QWidget, QFrame, QApplication, QSizePolicy,
+    QLabel,
 )
-from PyQt6.QtCore import Qt, QThread, QObject, pyqtSignal, pyqtSlot, QTimer, QUrl
-from PyQt6.QtGui import QDesktopServices
+from PyQt6.QtCore import (
+    Qt, QThread, QObject, pyqtSignal, pyqtSlot, QTimer, QUrl, QRectF, QSize,
+)
+from PyQt6.QtGui import (
+    QColor, QDesktopServices, QFontMetrics, QPainter, QPainterPath, QPen,
+)
 
 import qfluentwidgets as qfw
 from qfluentwidgets import DotInfoBadge, InfoBadgePosition
+from qfluentwidgets.common.config import qconfig
+from qfluentwidgets.common.style_sheet import isDarkTheme, setCustomStyleSheet
 
 from sookit.core.functions import (
     is_ytdlp_available, get_ytdlp_source, build_ytdlp_cmd,
@@ -35,6 +43,188 @@ from sookit.core.utils import set_smooth_scroll_params
 from sookit import APP_NAME, APP_VERSION
 from sookit.widgets.infobar import show_infobar
 from sookit.widgets.elided_label import ElidedLabel
+
+
+# ===== Chrome 扩展安装引导区的小部件 =====
+
+_GUIDE_DETAIL_QSS = "QLabel { color: rgb(96, 96, 96); font: 11px --FontFamilies; }"
+_GUIDE_DETAIL_DARK_QSS = "QLabel { color: rgb(208, 208, 208); font: 11px --FontFamilies; }"
+
+
+def _guide_text_label(text: str, word_wrap: bool = True) -> qfw.BodyLabel:
+    """引导区次要文字：沿用卡片 contentLabel 的 11px 灰字样式（随主题切换）"""
+    label = qfw.BodyLabel(text)
+    label.setObjectName("contentLabel")
+    label.setWordWrap(word_wrap)
+    qfw.FluentStyleSheet.SETTING_CARD.apply(label)
+    return label
+
+
+def _guide_detail_label(text: str, object_name: str) -> qfw.BodyLabel:
+    """步骤说明文字：需要独立 objectName（测试定位），因此单独给 11px 灰字样式"""
+    label = qfw.BodyLabel(text)
+    label.setObjectName(object_name)
+    label.setWordWrap(True)
+    setCustomStyleSheet(label, _GUIDE_DETAIL_QSS, _GUIDE_DETAIL_DARK_QSS)
+    return label
+
+
+def _guide_value_button(icon, text: str, tooltip: str) -> qfw.TransparentPushButton:
+    """值条内的操作按钮：透明底 + 图标，跟随值条高度"""
+    button = qfw.TransparentPushButton(icon, text)
+    button.setToolTip(tooltip)
+    button.setIconSize(QSize(14, 14))
+    button.setFixedHeight(28)
+    return button
+
+
+def _guide_observe(signal, widget, callback=None) -> None:
+    """订阅主题信号后重绘 widget；用弱引用，控件销毁后回调不报错"""
+    ref = weakref.ref(widget)
+
+    def _handler(*_args):
+        target = ref()
+        if target is None:
+            return
+        try:
+            if callback is None:
+                target.update()
+            else:
+                callback(target)
+        except RuntimeError:
+            pass
+
+    signal.connect(_handler)
+
+
+class _GuideHLine(QWidget):
+    """头部与步骤之间的 1px 分隔线（手绘，避免依赖样式表注册）"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedHeight(1)
+        _guide_observe(qconfig.themeChangedFinished, self)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.fillRect(self.rect(),
+                         QColor(255, 255, 255, 38) if isDarkTheme()
+                         else QColor(0, 0, 0, 26))
+
+
+class _GuideValueChip(QWidget):
+    """引导区值条：圆角浅底 + 1px 细边框，内部承载值文本与操作按钮
+
+    宽度按内容自适应（Preferred），只有超过调用方设置的 maximumWidth 时
+    才收缩并触发值文本省略。
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedHeight(32)
+        self.setSizePolicy(QSizePolicy.Policy.Preferred,
+                           QSizePolicy.Policy.Fixed)
+        _guide_observe(qconfig.themeChangedFinished, self)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        rect = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+        path = QPainterPath()
+        path.addRoundedRect(rect, 6, 6)
+        if isDarkTheme():
+            painter.fillPath(path, QColor(255, 255, 255, 18))
+            painter.setPen(QPen(QColor(255, 255, 255, 30), 1))
+        else:
+            painter.fillPath(path, QColor(0, 0, 0, 9))
+            painter.setPen(QPen(QColor(0, 0, 0, 20), 1))
+        painter.drawPath(path)
+
+
+class _GuideStepNumber(qfw.CaptionLabel):
+    """步骤序号：淡主题色圆底 + 主题色数字，主题色变化时重刷"""
+
+    def __init__(self, number: int, parent=None):
+        super().__init__(parent=parent)
+        self.setText(str(number))
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setFixedSize(28, 28)
+        self.apply_theme_color()
+        _guide_observe(qconfig.themeColorChanged, self,
+                       callback=lambda label: label.apply_theme_color())
+
+    def apply_theme_color(self):
+        color = qfw.themeColor()
+        rgb = f"{color.red()}, {color.green()}, {color.blue()}"
+        template = ("QLabel { border-radius: 14px; font-weight: 600; "
+                    "font-size: 12px; color: rgba(%s, 1.00); "
+                    "background: rgba(%s, %s); }")
+        setCustomStyleSheet(
+            self,
+            template % (rgb, rgb, "0.10"),
+            template % (rgb, rgb, "0.20"))
+
+
+class _GuideValueLabel(ElidedLabel):
+    """值条内的长文本标签
+
+    ElidedLabel 的 sizeHint 依赖当前宽度，无法撑开自适应值条；这里按完整
+    文本宽度给出 sizeHint（超过 max_width 封顶），超宽时仍由 ElidedLabel
+    在末行省略，tooltip 保留完整内容。
+    """
+
+    def __init__(self, text: str = "", max_width: int = 640, parent=None):
+        super().__init__(text, max_lines=1, parent=parent)
+        self._max_width = max_width
+        self.setSizePolicy(QSizePolicy.Policy.Preferred,
+                           QSizePolicy.Policy.Fixed)
+
+    def sizeHint(self):
+        metrics = QFontMetrics(self.font())
+        return QSize(
+            min(metrics.horizontalAdvance(self.text()), self._max_width),
+            super().sizeHint().height())
+
+    def minimumSizeHint(self):
+        return QSize(0, super().sizeHint().height())
+
+
+class _ChromeLogo(QWidget):
+    """Chrome 图标（16×16 手绘四色圆标）
+
+    仓库和 qfluentwidgets 都没有 Chrome 官方图标资源，为不引入第三方图片
+    资产，这里用 QPainter 画一个近似的四色圆标，尺寸与 SettingCard 的图标
+    一致（16×16）。
+    """
+
+    #: (起始角度, 颜色)：Qt 角度制 1/16 度、逆时针，0° 在 3 点钟方向
+    _SECTORS = (
+        (30.0, QColor("#EA4335")),   # 上方：红
+        (150.0, QColor("#34A853")),  # 左下：绿
+        (270.0, QColor("#FBBC05")),  # 右下：黄
+    )
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(16, 16)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        rect = QRectF(self.rect())
+        radius = min(rect.width(), rect.height()) / 2.0
+        center = rect.center()
+        circle = QRectF(center.x() - radius, center.y() - radius,
+                        radius * 2, radius * 2)
+        painter.setPen(Qt.PenStyle.NoPen)
+        for start, color in self._SECTORS:
+            painter.setBrush(color)
+            painter.drawPie(circle, int(start * 16), int(120 * 16))
+        # 中心白色圆环 + 蓝色圆心
+        painter.setBrush(QColor(255, 255, 255))
+        painter.drawEllipse(center, radius * 0.46, radius * 0.46)
+        painter.setBrush(QColor("#4285F4"))
+        painter.drawEllipse(center, radius * 0.36, radius * 0.36)
 
 
 class SettingsPage(QWidget):
@@ -179,42 +369,65 @@ class SettingsPage(QWidget):
 
         self.browser_setup_card = qfw.CardWidget(self)
         browser_setup_lay = QVBoxLayout(self.browser_setup_card)
-        browser_setup_lay.setContentsMargins(15, 12, 15, 12)
-        browser_setup_lay.setSpacing(8)
-        browser_setup_header = QHBoxLayout()
+        browser_setup_lay.setContentsMargins(0, 0, 0, 0)
+        browser_setup_lay.setSpacing(0)
+
+        # 头部排版对齐设置页其它卡片（qfw.SettingCard）：70px 高、
+        # 16px 图标 + 16px 间距 + 14px 标题 / 11px 说明，文本块垂直居中。
+        browser_setup_header = QWidget(self.browser_setup_card)
+        browser_setup_header.setFixedHeight(70)
+        browser_setup_header_lay = QHBoxLayout(browser_setup_header)
+        browser_setup_header_lay.setContentsMargins(16, 0, 15, 0)
+        browser_setup_header_lay.setSpacing(0)
+        browser_setup_header_lay.setAlignment(Qt.AlignmentFlag.AlignVCenter)
+        browser_setup_header_lay.addWidget(
+            _ChromeLogo(browser_setup_header), 0, Qt.AlignmentFlag.AlignLeft)
+        browser_setup_header_lay.addSpacing(16)
         browser_setup_text = QVBoxLayout()
-        browser_setup_text.setSpacing(2)
-        browser_setup_text.addWidget(qfw.BodyLabel("Chrome 扩展"))
-        browser_setup_description = qfw.BodyLabel(
-            "扩展已随安装包提供，首次使用需在 Chrome 中手动加载")
-        browser_setup_description.setObjectName("contentLabel")
-        browser_setup_description.setWordWrap(True)
-        qfw.FluentStyleSheet.SETTING_CARD.apply(browser_setup_description)
-        browser_setup_text.addWidget(browser_setup_description)
-        browser_setup_header.addLayout(browser_setup_text, 1)
+        browser_setup_text.setContentsMargins(0, 0, 0, 0)
+        browser_setup_text.setSpacing(0)
+        browser_setup_text.setAlignment(Qt.AlignmentFlag.AlignVCenter)
+        browser_setup_title = QLabel("Chrome 扩展", browser_setup_header)
+        qfw.FluentStyleSheet.SETTING_CARD.apply(browser_setup_title)
+        browser_setup_description = _guide_text_label(
+            "扩展已随安装包提供，首次使用需在 Chrome 中手动加载",
+            word_wrap=False)
+        browser_setup_text.addWidget(browser_setup_title, 0,
+                                     Qt.AlignmentFlag.AlignLeft)
+        browser_setup_text.addWidget(browser_setup_description, 0,
+                                     Qt.AlignmentFlag.AlignLeft)
+        browser_setup_header_lay.addLayout(browser_setup_text)
+        browser_setup_header_lay.addSpacing(16)
+        browser_setup_header_lay.addStretch(1)
         self.browser_install_guide_button = qfw.PrimaryPushButton("安装引导")
-        browser_setup_header.addWidget(self.browser_install_guide_button)
-        browser_setup_lay.addLayout(browser_setup_header)
+        self.browser_install_guide_button.setIcon(qfw.FluentIcon.DOWN)
+        self.browser_install_guide_button.setFixedHeight(32)
+        self.browser_install_guide_button.setMinimumWidth(112)
+        browser_setup_header_lay.addWidget(self.browser_install_guide_button)
+        browser_setup_lay.addWidget(browser_setup_header)
 
-        self.browser_guide_panel = QWidget(self.browser_setup_card)
+        # 引导区整体容器：折叠时连分隔线一起隐藏，卡片底部不留空档
+        self.browser_guide_container = QWidget(self.browser_setup_card)
+        guide_container_lay = QVBoxLayout(self.browser_guide_container)
+        guide_container_lay.setContentsMargins(16, 0, 16, 16)
+        guide_container_lay.setSpacing(0)
+        guide_container_lay.addSpacing(14)
+        self.browser_guide_divider = _GuideHLine(self.browser_guide_container)
+        guide_container_lay.addWidget(self.browser_guide_divider)
+        guide_container_lay.addSpacing(16)
+
+        self.browser_guide_panel = QWidget(self.browser_guide_container)
+        guide_container_lay.addWidget(self.browser_guide_panel)
         browser_guide_lay = QVBoxLayout(self.browser_guide_panel)
-        browser_guide_lay.setContentsMargins(0, 16, 0, 4)
-        browser_guide_lay.setSpacing(20)
+        browser_guide_lay.setContentsMargins(0, 0, 0, 0)
+        browser_guide_lay.setSpacing(16)
 
-        def add_guide_step(number, title, detail, action_button=None):
+        def add_guide_step(number, title, detail):
             row = QHBoxLayout()
-            row.setSpacing(10)
-            number_label = qfw.CaptionLabel(str(number))
+            row.setSpacing(12)
+            number_label = _GuideStepNumber(number, self.browser_guide_panel)
             number_label.setObjectName(f"browserGuideStepNumber{number}")
-            number_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            number_label.setFixedSize(28, 28)
-            badge_style = (
-                "QLabel { border-radius: 14px; font-weight: 600; "
-                "background: %s; color: %s; }")
-            qfw.setCustomStyleSheet(
-                number_label,
-                badge_style % ("rgba(0, 0, 0, 6%)", "#505050"),
-                badge_style % ("rgba(255, 255, 255, 10%)", "#dedede"))
+            self._guide_badges.append(number_label)
             row.addWidget(number_label, 0, Qt.AlignmentFlag.AlignTop)
 
             step_content = QWidget(self.browser_guide_panel)
@@ -229,73 +442,88 @@ class SettingsPage(QWidget):
             title_font.setBold(True)
             title_label.setFont(title_font)
             content.addWidget(title_label)
-
-            detail_row = QHBoxLayout()
-            detail_row.setSpacing(8)
-            detail_label = qfw.CaptionLabel(detail)
-            detail_label.setObjectName(f"browserGuideStepDetail{number}")
-            detail_label.setWordWrap(True)
-            detail_label.setSizePolicy(
-                QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
-            detail_row.addWidget(detail_label, 1 if action_button is None else 0)
-            if action_button is not None:
-                # QLabel 的自动换行 sizeHint 会低估单行宽度；地址应完整展示。
-                detail_label.setMinimumWidth(
-                    detail_label.fontMetrics().horizontalAdvance(detail))
-                detail_row.addWidget(action_button)
-                detail_row.addStretch(1)
-            content.addLayout(detail_row)
+            content.addWidget(_guide_detail_label(
+                detail, f"browserGuideStepDetail{number}"))
+            # 步骤内容必须整体作为一个控件加入行布局：直接嵌套布局时，
+            # 值条的宽度上限会传染到行布局，导致序号与标题被挤到中间。
             row.addWidget(step_content, 1)
             browser_guide_lay.addLayout(row)
             return content
 
-        self.browser_copy_extensions_url_button = qfw.PushButton("复制地址")
-        add_guide_step(
-            1, "打开扩展管理",
-            "在 Chrome 地址栏输入 chrome://extensions/",
-            self.browser_copy_extensions_url_button)
-        add_guide_step(
-            2, "开启开发者模式",
-            "打开页面右上角的开发者模式开关")
-        step3_content = add_guide_step(
-            3, "加载扩展",
-            "点击“加载已解压的扩展程序”，选择扩展目录")
+        def add_value_row(content, prefix_label, value_label, buttons,
+                          max_width=0):
+            row = QHBoxLayout()
+            row.setSpacing(0)
+            chip = _GuideValueChip(self.browser_guide_panel)
+            if max_width:
+                chip.setMaximumWidth(max_width)
+            self._guide_chips.append(chip)
+            chip_lay = QHBoxLayout(chip)
+            chip_lay.setContentsMargins(10, 2, 6, 2)
+            chip_lay.setSpacing(8)
+            if prefix_label is not None:
+                chip_lay.addWidget(prefix_label)
+            chip_lay.addWidget(value_label)
+            for button in buttons:
+                chip_lay.addWidget(button, 0, Qt.AlignmentFlag.AlignVCenter)
+            row.addWidget(chip, 0)
+            row.addStretch(1)
+            content.addLayout(row)
+            return chip
 
-        path_group = qfw.SimpleCardWidget(self.browser_guide_panel)
-        path_group.setMaximumWidth(820)
-        path_row = QHBoxLayout(path_group)
-        path_row.setContentsMargins(12, 10, 10, 10)
-        path_row.setSpacing(8)
-        self.browser_extension_path_label = ElidedLabel(
-            "", max_lines=1, parent=self.browser_guide_panel)
+        self._guide_badges = []
+        self._guide_chips = []
+
+        self.browser_copy_extensions_url_button = _guide_value_button(
+            qfw.FluentIcon.COPY, "复制地址", "复制 Chrome 扩展页地址")
+        content1 = add_guide_step(
+            1, "打开扩展管理", "在 Chrome 地址栏输入下方地址")
+        add_value_row(
+            content1, None,
+            _guide_text_label("chrome://extensions/", word_wrap=False),
+            [self.browser_copy_extensions_url_button])
+
+        add_guide_step(
+            2, "开启开发者模式", "打开页面右上角的开发者模式开关")
+
+        content3 = add_guide_step(
+            3, "加载扩展", "点击“加载已解压的扩展程序”，选择扩展目录")
+        self.browser_extension_path_prefix_label = _guide_text_label("扩展目录")
+        self.browser_extension_path_label = _GuideValueLabel(
+            "", max_width=640, parent=self.browser_guide_panel)
         self.browser_extension_path_label.setObjectName("contentLabel")
-        self.browser_extension_path_label.setSizePolicy(
-            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         self.browser_extension_path_label.setToolTip("")
         qfw.FluentStyleSheet.SETTING_CARD.apply(
             self.browser_extension_path_label)
-        path_row.addWidget(self.browser_extension_path_label, 1)
-        self.browser_copy_folder_button = qfw.PushButton("复制路径")
-        self.browser_guide_open_folder_button = qfw.PushButton("打开文件夹")
-        path_row.addWidget(self.browser_copy_folder_button)
-        path_row.addWidget(self.browser_guide_open_folder_button)
-        step3_content.addWidget(path_group)
+        self.browser_copy_folder_button = _guide_value_button(
+            qfw.FluentIcon.COPY, "复制路径", "复制扩展目录路径")
+        self.browser_guide_open_folder_button = _guide_value_button(
+            qfw.FluentIcon.FOLDER, "打开文件夹", "在文件管理器中打开扩展目录")
+        add_value_row(
+            content3, self.browser_extension_path_prefix_label,
+            self.browser_extension_path_label,
+            [self.browser_copy_folder_button,
+             self.browser_guide_open_folder_button],
+            max_width=820)
 
         add_guide_step(
-            4, "返回 YouTube 验证",
-            "刷新 YouTube 视频页并点击 Sookit")
-        upgrade_note = qfw.CaptionLabel(
-            "扩展更新后，在 Chrome 扩展页重新加载并刷新视频页")
-        upgrade_note.setObjectName("contentLabel")
-        upgrade_note.setWordWrap(True)
-        qfw.FluentStyleSheet.SETTING_CARD.apply(upgrade_note)
+            4, "返回 YouTube 验证", "刷新 YouTube 视频页并点击 Sookit")
+
+        note_icon = QLabel(self.browser_guide_panel)
+        note_icon.setPixmap(
+            qfw.FluentIcon.INFO.icon(color=QColor(128, 128, 128)).pixmap(14, 14))
+        note_icon.setFixedSize(14, 14)
         note_row = QHBoxLayout()
-        note_row.setContentsMargins(38, 0, 0, 0)
-        note_row.addWidget(upgrade_note)
+        note_row.setContentsMargins(40, 4, 0, 0)
+        note_row.setSpacing(6)
+        note_row.addWidget(note_icon, 0, Qt.AlignmentFlag.AlignTop)
+        note_row.addWidget(_guide_text_label(
+            "扩展更新后，在 Chrome 扩展页重新加载并刷新视频页"), 1)
         browser_guide_lay.addLayout(note_row)
+        browser_setup_lay.addWidget(self.browser_guide_container)
         self._browser_guide_expanded = False
+        self.browser_guide_container.setVisible(False)
         self.browser_guide_panel.setVisible(False)
-        browser_setup_lay.addWidget(self.browser_guide_panel)
         layout.addWidget(self.browser_setup_card)
 
         self.browser_components_card = qfw.CardWidget(self)
@@ -560,9 +788,13 @@ class SettingsPage(QWidget):
 
     def _toggle_browser_guide(self):
         self._browser_guide_expanded = not self._browser_guide_expanded
+        self.browser_guide_container.setVisible(self._browser_guide_expanded)
         self.browser_guide_panel.setVisible(self._browser_guide_expanded)
         self.browser_install_guide_button.setText(
             "收起引导" if self._browser_guide_expanded else "安装引导")
+        self.browser_install_guide_button.setIcon(
+            qfw.FluentIcon.UP if self._browser_guide_expanded
+            else qfw.FluentIcon.DOWN)
 
     def _browser_extension_path(self):
         return get_extension_dir()
@@ -594,8 +826,10 @@ class SettingsPage(QWidget):
         """重新读取本机扩展/桥接文件与 Chrome 注册项，不修改系统状态。"""
         extension_dir = self._browser_extension_path()
         if hasattr(self, "browser_extension_path_label"):
-            prefix = "扩展目录：" if extension_dir.is_dir() else "未找到扩展目录："
-            self.browser_extension_path_label.setText(f"{prefix}{extension_dir}")
+            # 前缀「扩展目录」单独成标签，路径只放路径本身，便于超长时省略显示。
+            self.browser_extension_path_prefix_label.setText(
+                "扩展目录" if extension_dir.is_dir() else "未找到扩展目录")
+            self.browser_extension_path_label.setText(str(extension_dir))
             self.browser_extension_path_label.setToolTip(str(extension_dir))
         try:
             result = diagnose_browser_components()

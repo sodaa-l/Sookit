@@ -463,7 +463,7 @@ class BrowserSettingsUiTests(unittest.TestCase):
             for number in range(1, 5)
         ]
         self.assertEqual([label.text() for label in step_details], [
-            '在 Chrome 地址栏输入 chrome://extensions/',
+            '在 Chrome 地址栏输入下方地址',
             '打开页面右上角的开发者模式开关',
             '点击“加载已解压的扩展程序”，选择扩展目录',
             '刷新 YouTube 视频页并点击 Sookit',
@@ -495,11 +495,13 @@ class BrowserSettingsUiTests(unittest.TestCase):
         page.browser_install_guide_button.click()
         self.assertTrue(page._browser_guide_expanded)
         self.assertFalse(page.browser_guide_panel.isHidden())
+        self.assertFalse(page.browser_guide_container.isHidden())
         self.assertTrue(all(not label.isHidden() for label in step_titles))
         self.assertEqual(page.browser_install_guide_button.text(), '收起引导')
         page.browser_install_guide_button.click()
         self.assertFalse(page._browser_guide_expanded)
         self.assertTrue(page.browser_guide_panel.isHidden())
+        self.assertTrue(page.browser_guide_container.isHidden())
         self.assertEqual(page.browser_install_guide_button.text(), '安装引导')
 
         clipboard = MagicMock()
@@ -515,6 +517,41 @@ class BrowserSettingsUiTests(unittest.TestCase):
                 patch('sookit.pages.settings_page.show_infobar'):
             page.browser_copy_folder_button.click()
         self.assertEqual(clipboard.setText.call_args.args[0], directory)
+
+    def test_setup_card_header_matches_setting_card_typography(self):
+        page = self._page()
+        theme_card = next(
+            card for card in page.findChildren(qfw.SettingCard)
+            if card.titleLabel.text() == '应用主题')
+
+        setup_title = next(
+            label for label in page.findChildren(QLabel)
+            if label.text() == 'Chrome 扩展')
+        setup_description = next(
+            label for label in page.findChildren(QLabel)
+            if label.text() == '扩展已随安装包提供，首次使用需在 Chrome 中手动加载')
+
+        # 标题、说明的字号与粗细和 SettingCard 完全一致
+        self.assertEqual(setup_title.font().pixelSize(),
+                         theme_card.titleLabel.font().pixelSize())
+        self.assertEqual(setup_title.font().pixelSize(), 14)
+        self.assertFalse(setup_title.font().bold())
+        self.assertEqual(setup_description.font().pixelSize(),
+                         theme_card.contentLabel.font().pixelSize())
+        self.assertEqual(setup_description.font().pixelSize(), 11)
+        self.assertIn('font: 11px', setup_description.styleSheet())
+
+        # 头部行高与卡片图标尺寸对齐其它设置卡片
+        header = page.browser_setup_card.layout().itemAt(0).widget()
+        self.assertEqual(header.height(), 70)
+        logo = header.layout().itemAt(0).widget()
+        self.assertEqual((logo.width(), logo.height()), (16, 16))
+        icon_x = logo.mapTo(header, logo.rect().topLeft()).x()
+        title_x = setup_title.mapTo(header, setup_title.rect().topLeft()).x()
+        self.assertEqual(icon_x, theme_card.iconLabel.mapTo(
+            theme_card, theme_card.iconLabel.rect().topLeft()).x())
+        self.assertEqual(title_x, theme_card.titleLabel.mapTo(
+            theme_card, theme_card.titleLabel.rect().topLeft()).x())
 
     def test_guide_layout_stays_within_card_and_elides_long_path(self):
         page = self._page()
@@ -601,21 +638,38 @@ class BrowserSettingsUiTests(unittest.TestCase):
                     self.assertGreater(control.width(), 0)
                     self.assertGreaterEqual(point.x(), 0)
                     self.assertLessEqual(point.x() + control.width(), panel.width())
+                # 动作按钮必须紧跟路径文本（间隔来自值条内部间距），不能甩在右侧。
                 self.assertGreaterEqual(
                     control_x[1] - control_x[0] - path_label.width(), 0)
                 self.assertLessEqual(
                     control_x[1] - control_x[0] - path_label.width(), 12)
-
-                step1_detail = panel.findChild(
-                    QLabel, 'browserGuideStepDetail1')
-                step1_detail_x = step1_detail.mapTo(
-                    panel, step1_detail.rect().topLeft()).x()
-                copy_url_x = page.browser_copy_extensions_url_button.mapTo(
-                    panel, page.browser_copy_extensions_url_button.rect().topLeft()).x()
-                self.assertGreaterEqual(
-                    copy_url_x - step1_detail_x - step1_detail.width(), 0)
                 self.assertLessEqual(
-                    copy_url_x - step1_detail_x - step1_detail.width(), 8)
+                    control_x[2],
+                    control_x[1] + page.browser_copy_folder_button.width() + 12)
+
+                # 路径值条本身不能越出引导面板。
+                chip = path_label.parentWidget()
+                chip_left = chip.mapTo(panel, chip.rect().topLeft()).x()
+                self.assertGreaterEqual(chip_left, 0)
+                self.assertLessEqual(chip_left + chip.width(), panel.width())
+                self.assertLessEqual(chip.width(), 820)
+                self.assertEqual(chip.height(), 32)
+
+                # 步骤 1 的地址值条同理：地址在值条内，按钮也在值条内。
+                url_label = next(
+                    label for label in panel.findChildren(QLabel)
+                    if label.text() == 'chrome://extensions/')
+                url_chip = url_label.parentWidget()
+                url_chip_left = url_chip.mapTo(
+                    panel, url_chip.rect().topLeft()).x()
+                self.assertGreaterEqual(url_chip_left, 0)
+                self.assertLessEqual(url_chip_left + url_chip.width(), panel.width())
+                copy_url_point = page.browser_copy_extensions_url_button.mapTo(
+                    panel, page.browser_copy_extensions_url_button.rect().topLeft())
+                self.assertGreaterEqual(copy_url_point.x(), url_chip_left)
+                self.assertLessEqual(
+                    copy_url_point.x() + page.browser_copy_extensions_url_button.width(),
+                    url_chip_left + url_chip.width())
 
                 path_group_start = path_label.mapTo(
                     panel, path_label.rect().topLeft()).x()
