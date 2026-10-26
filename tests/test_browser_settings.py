@@ -548,7 +548,7 @@ class BrowserSettingsUiTests(unittest.TestCase):
         clipboard.setText.assert_called_once_with(str(long_path))
 
         page.show()
-        for width in (966, 1131, 1600):
+        for width in (720, 966, 1131, 1600):
             with self.subTest(width=width):
                 page.resize(width, 731)
                 QApplication.processEvents()
@@ -572,6 +572,14 @@ class BrowserSettingsUiTests(unittest.TestCase):
                     title_x = title_label.mapTo(
                         panel, title_label.rect().topLeft()).x()
                     self.assertLessEqual(number_x, 2)
+                    self.assertEqual(number_label.size().width(), 28)
+                    self.assertEqual(number_label.size().height(), 28)
+                    detail_label = panel.findChild(
+                        QLabel, f'browserGuideStepDetail{number}')
+                    # 说明必须使用足够宽的正文区域，不能因右侧留白挤成多行。
+                    self.assertGreaterEqual(detail_label.width(),
+                                            detail_label.fontMetrics().horizontalAdvance(
+                                                detail_label.text()))
                     self.assertAlmostEqual(
                         title_x - number_x - number_label.width(), 10, delta=2)
 
@@ -643,8 +651,7 @@ class BrowserSettingsUiTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             existing = Path(directory) / 'browser-extension'
             existing.mkdir()
-            for button in (page.browser_open_folder_button,
-                           page.browser_guide_open_folder_button):
+            for button in (page.browser_guide_open_folder_button,):
                 with patch.object(page, '_browser_extension_path', return_value=existing), \
                         patch('sookit.pages.settings_page.QDesktopServices.openUrl',
                               return_value=True) as open_url:

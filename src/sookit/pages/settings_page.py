@@ -193,40 +193,36 @@ class SettingsPage(QWidget):
         browser_setup_text.addWidget(browser_setup_description)
         browser_setup_header.addLayout(browser_setup_text, 1)
         self.browser_install_guide_button = qfw.PrimaryPushButton("安装引导")
-        self.browser_open_folder_button = qfw.PushButton("打开扩展文件夹")
         browser_setup_header.addWidget(self.browser_install_guide_button)
-        browser_setup_header.addWidget(self.browser_open_folder_button)
         browser_setup_lay.addLayout(browser_setup_header)
 
         self.browser_guide_panel = QWidget(self.browser_setup_card)
         browser_guide_lay = QVBoxLayout(self.browser_guide_panel)
-        browser_guide_lay.setContentsMargins(0, 6, 0, 0)
-        browser_guide_lay.setSpacing(8)
-
-        guide_divider = QFrame(self.browser_guide_panel)
-        guide_divider.setFrameShape(QFrame.Shape.HLine)
-        guide_divider.setFrameShadow(QFrame.Shadow.Plain)
-        guide_divider.setLineWidth(1)
-        guide_divider.setMidLineWidth(0)
-        browser_guide_lay.addWidget(guide_divider)
+        browser_guide_lay.setContentsMargins(0, 16, 0, 4)
+        browser_guide_lay.setSpacing(20)
 
         def add_guide_step(number, title, detail, action_button=None):
             row = QHBoxLayout()
             row.setSpacing(10)
             number_label = qfw.CaptionLabel(str(number))
             number_label.setObjectName(f"browserGuideStepNumber{number}")
-            number_label.setAlignment(
-                Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter)
-            number_label.setFixedWidth(20)
-            row.addWidget(number_label)
+            number_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            number_label.setFixedSize(28, 28)
+            badge_style = (
+                "QLabel { border-radius: 14px; font-weight: 600; "
+                "background: %s; color: %s; }")
+            qfw.setCustomStyleSheet(
+                number_label,
+                badge_style % ("rgba(0, 0, 0, 6%)", "#505050"),
+                badge_style % ("rgba(255, 255, 255, 10%)", "#dedede"))
+            row.addWidget(number_label, 0, Qt.AlignmentFlag.AlignTop)
 
             step_content = QWidget(self.browser_guide_panel)
-            step_content.setMaximumWidth(820)
             step_content.setSizePolicy(
                 QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
             content = QVBoxLayout(step_content)
             content.setContentsMargins(0, 0, 0, 0)
-            content.setSpacing(2)
+            content.setSpacing(6)
             title_label = qfw.BodyLabel(title)
             title_label.setObjectName(f"browserGuideStepTitle{number}")
             title_font = title_label.font()
@@ -240,14 +236,16 @@ class SettingsPage(QWidget):
             detail_label.setObjectName(f"browserGuideStepDetail{number}")
             detail_label.setWordWrap(True)
             detail_label.setSizePolicy(
-                QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Preferred)
-            detail_row.addWidget(detail_label)
+                QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
+            detail_row.addWidget(detail_label, 1 if action_button is None else 0)
             if action_button is not None:
+                # QLabel 的自动换行 sizeHint 会低估单行宽度；地址应完整展示。
+                detail_label.setMinimumWidth(
+                    detail_label.fontMetrics().horizontalAdvance(detail))
                 detail_row.addWidget(action_button)
-            detail_row.addStretch(1)
+                detail_row.addStretch(1)
             content.addLayout(detail_row)
             row.addWidget(step_content, 1)
-            row.addStretch(1)
             browser_guide_lay.addLayout(row)
             return content
 
@@ -263,8 +261,11 @@ class SettingsPage(QWidget):
             3, "加载扩展",
             "点击“加载已解压的扩展程序”，选择扩展目录")
 
-        path_row = QHBoxLayout()
-        path_row.setSpacing(6)
+        path_group = qfw.SimpleCardWidget(self.browser_guide_panel)
+        path_group.setMaximumWidth(820)
+        path_row = QHBoxLayout(path_group)
+        path_row.setContentsMargins(12, 10, 10, 10)
+        path_row.setSpacing(8)
         self.browser_extension_path_label = ElidedLabel(
             "", max_lines=1, parent=self.browser_guide_panel)
         self.browser_extension_path_label.setObjectName("contentLabel")
@@ -278,7 +279,7 @@ class SettingsPage(QWidget):
         self.browser_guide_open_folder_button = qfw.PushButton("打开文件夹")
         path_row.addWidget(self.browser_copy_folder_button)
         path_row.addWidget(self.browser_guide_open_folder_button)
-        step3_content.addLayout(path_row)
+        step3_content.addWidget(path_group)
 
         add_guide_step(
             4, "返回 YouTube 验证",
@@ -288,7 +289,10 @@ class SettingsPage(QWidget):
         upgrade_note.setObjectName("contentLabel")
         upgrade_note.setWordWrap(True)
         qfw.FluentStyleSheet.SETTING_CARD.apply(upgrade_note)
-        browser_guide_lay.addWidget(upgrade_note)
+        note_row = QHBoxLayout()
+        note_row.setContentsMargins(38, 0, 0, 0)
+        note_row.addWidget(upgrade_note)
+        browser_guide_lay.addLayout(note_row)
         self._browser_guide_expanded = False
         self.browser_guide_panel.setVisible(False)
         browser_setup_lay.addWidget(self.browser_guide_panel)
@@ -479,7 +483,6 @@ class SettingsPage(QWidget):
         self.browser_extension_switch.checkedChanged.connect(
             self._on_browser_extension_changed)
         self.browser_install_guide_button.clicked.connect(self._toggle_browser_guide)
-        self.browser_open_folder_button.clicked.connect(self._open_browser_extension_folder)
         self.browser_guide_open_folder_button.clicked.connect(
             self._open_browser_extension_folder)
         self.browser_copy_extensions_url_button.clicked.connect(
