@@ -497,11 +497,18 @@ class BrowserSettingsUiTests(unittest.TestCase):
         self.assertFalse(page.browser_guide_panel.isHidden())
         self.assertFalse(page.browser_guide_container.isHidden())
         self.assertTrue(all(not label.isHidden() for label in step_titles))
-        self.assertEqual(page.browser_install_guide_button.text(), '收起引导')
-        page.browser_install_guide_button.click()
+        # 展开后换成次要按钮「收起引导」，主按钮隐藏
+        self.assertTrue(page.browser_install_guide_button.isHidden())
+        self.assertFalse(page.browser_collapse_guide_button.isHidden())
+        self.assertEqual(page.browser_collapse_guide_button.text(), '收起引导')
+        self.assertNotIsInstance(page.browser_collapse_guide_button,
+                                 qfw.PrimaryPushButton)
+        page.browser_collapse_guide_button.click()
         self.assertFalse(page._browser_guide_expanded)
         self.assertTrue(page.browser_guide_panel.isHidden())
         self.assertTrue(page.browser_guide_container.isHidden())
+        self.assertFalse(page.browser_install_guide_button.isHidden())
+        self.assertTrue(page.browser_collapse_guide_button.isHidden())
         self.assertEqual(page.browser_install_guide_button.text(), '安装引导')
 
         clipboard = MagicMock()
@@ -621,11 +628,16 @@ class BrowserSettingsUiTests(unittest.TestCase):
                     self.assertAlmostEqual(
                         title_x - number_x - number_label.width(), 10, delta=2)
 
-                displayed_path = QLabel.text(path_label)
+                # 路径标签只在绘制时省略：text() 是全文，显示文本按控件宽度
+                # 做中间省略，且必须带省略号（不能出现无提示截断）。
+                displayed_path = path_label.elided_text()
                 self.assertEqual(path_label.toolTip(), str(long_path))
-                self.assertIn(str(long_path), path_label.text())
+                self.assertEqual(path_label.text(), str(long_path))
                 self.assertIn('…', displayed_path)
                 self.assertLess(len(displayed_path), len(path_label.text()))
+                self.assertLessEqual(
+                    path_label.fontMetrics().horizontalAdvance(displayed_path),
+                    max(path_label.width(), 1))
 
                 controls = (
                     path_label,
@@ -682,6 +694,26 @@ class BrowserSettingsUiTests(unittest.TestCase):
                 self.assertLessEqual(path_group_width, 840)
                 if width == 1600:
                     self.assertGreaterEqual(path_group_width, 700)
+
+    def test_guide_path_fits_when_short_and_uses_fluent_tooltip(self):
+        page = self._page()
+        page.browser_install_guide_button.click()
+        page.show()
+        page.resize(1600, 731)
+        QApplication.processEvents()
+        short_path = Path('D:/VideoToolBox/browser-extension')
+        with patch.object(page, '_browser_extension_path', return_value=short_path), \
+                patch('sookit.pages.settings_page.diagnose_browser_components',
+                      return_value={'ok': True, 'issues': []}):
+            page._refresh_browser_components()
+        QApplication.processEvents()
+
+        path_label = page.browser_extension_path_label
+        self.assertEqual(path_label.text(), str(short_path))
+        # 空间足够时不能省略（回归：曾出现“被截断又没有省略号”）
+        self.assertEqual(path_label.elided_text(), str(short_path))
+        # tooltip 走 Fluent 风格，不用原生 Qt 提示框
+        self.assertIsNotNone(path_label.findChild(qfw.ToolTipFilter))
 
     def test_switch_success_saves_and_displays_paused_status(self):
         page = self._page()

@@ -10,7 +10,8 @@ from PyQt6.QtWidgets import (
     QLabel,
 )
 from PyQt6.QtCore import (
-    Qt, QThread, QObject, pyqtSignal, pyqtSlot, QTimer, QUrl, QRectF, QSize,
+    Qt, QEvent, QThread, QObject, pyqtSignal, pyqtSlot, QTimer, QUrl, QRectF,
+    QSize,
 )
 from PyQt6.QtGui import (
     QColor, QDesktopServices, QFontMetrics, QPainter, QPainterPath, QPen,
@@ -45,7 +46,6 @@ from sookit.core.utils import set_smooth_scroll_params
 from sookit import APP_NAME, APP_VERSION
 from sookit.paths import get_chrome_logo_path
 from sookit.widgets.infobar import show_infobar
-from sookit.widgets.elided_label import ElidedLabel
 
 
 # ===== Chrome 扩展安装引导区的小部件 =====
@@ -76,9 +76,21 @@ def _guide_value_button(icon, text: str, tooltip: str) -> qfw.TransparentPushBut
     """值条内的操作按钮：透明底 + 图标，跟随值条高度"""
     button = qfw.TransparentPushButton(icon, text)
     button.setToolTip(tooltip)
+    _use_fluent_tooltip(button)
     button.setIconSize(QSize(14, 14))
     button.setFixedHeight(28)
     return button
+
+
+def _use_fluent_tooltip(widget) -> None:
+    """用 Fluent 风格 tooltip 取代原生 Qt tooltip（黄色系统提示框）
+
+    qfw 的 ToolTipFilter 会吞掉原生 ToolTip 事件，改为在悬停后显示圆角深色
+    提示框；filter 以控件为 parent，随控件一起销毁。
+    """
+    widget.installEventFilter(
+        qfw.ToolTipFilter(widget, showDelay=400,
+                          position=qfw.ToolTipPosition.BOTTOM))
 
 
 def _guide_observe(signal, widget, callback=None) -> None:
@@ -168,28 +180,121 @@ class _GuideStepNumber(qfw.CaptionLabel):
             template % (rgb, rgb, "0.20"))
 
 
-class _GuideValueLabel(ElidedLabel):
-    """值条内的长文本标签
+class _GuideValueLabel(QLabel):
+    """值条内的长文本标签：绘制时按实际宽度做「中间省略」（ElideMiddle）
 
-    ElidedLabel 的 sizeHint 依赖当前宽度，无法撑开自适应值条；这里按完整
-    文本宽度给出 sizeHint（超过 max_width 封顶），超宽时仍由 ElidedLabel
-    在末行省略，tooltip 保留完整内容。
+    不用 ElidedLabel 的原因：它按当前宽度重写自己的 text，布局早期按较窄宽度
+    算好的省略结果可能残留，出现「文字被截断、没有省略号、右侧还空一块」的
+    观感。这里 text() 始终是全文，只在 paintEvent 里按控件实际宽度生成显示
+    文本，任何 DPI 与布局时序下都不会出现无提示截断；中间省略会保留路径开头
+    的盘符与结尾的目录名，比尾部省略更好认。
     """
 
     def __init__(self, text: str = "", max_width: int = 640, parent=None):
-        super().__init__(text, max_lines=1, parent=parent)
+        super().__init__(parent)
+        self._full_text = text or ""
         self._max_width = max_width
+        self.setAlignment(Qt.AlignmentFlag.AlignLeft
+                          | Qt.AlignmentFlag.AlignVCenter)
+        self.setContentsMargins(0, 0, 0, 0)
         self.setSizePolicy(QSizePolicy.Policy.Preferred,
                            QSizePolicy.Policy.Fixed)
+        super().setText("")     # 显示文本由 paintEvent 负责
+        _guide_observe(qconfig.themeChangedFinished, self)
+
+    # ---- 公共 API ----
+
+    def text(self) -> str:
+        return self._full_text
+
+    def setText(self, text: str):
+        self._full_text = text or ""
+        self.updateGeometry()
+        self.update()
+
+    def elided_text(self, width=None) -> str:
+        """按 width（默认当前宽度）省略后的显示文本
+
+        路径优先按「层级」省略（保留盘符与末级目录名，如
+        `D:\\VideoToolBox\\…\\browser-extension`），整段路径都放不下时才退化
+        为字符级中间省略。
+        """
+        width = self.width() if width is None else width
+        if width <= 0:
+            return self._full_text
+        metrics = QFontMetrics(self.font())
+        if metrics.horizontalAdvance(self._full_text) <= width:
+            return self._full_text
+        return (self._path_elision(metrics, width)
+                or metrics.elidedText(self._full_text,
+                                      Qt.TextElideMode.ElideMiddle, width))
+
+    def _path_elision(self, metrics, width):
+        """路径省略：末级目录名完整保留，剩下的宽度尽量留给开头
+
+        得到形如 `D:\\VideoToolBox\\…\\browser-extension`（开头放得下就整段保留）
+        或 `D:\\VideoToolBox\\long-folder-na…\\browser-extension`（放不下就从右侧
+        截断开头的最后一段）。整条放不下返回 None，交给字符级中间省略。
+        """
+        parts = re.split(r"([\\/])", self._full_text)
+        if len(parts) < 3:
+            return None
+        sep = parts[1]
+        if any(separator != sep for separator in parts[1::2]):
+            return None
+        segments = parts[0::2]
+        tail = segments[-1]
+        if not tail:
+            return None
+        tail_part = f"{sep}{tail}"
+        head = sep.join(segments[:-1])
+        budget = width - metrics.horizontalAdvance(f"{sep}…{tail_part}")
+        if budget <= 0 or not head:
+            return None
+        if metrics.horizontalAdvance(head) <= budget:
+            return f"{head}{sep}…{tail_part}"
+        head_display = metrics.elidedText(
+            head, Qt.TextElideMode.ElideRight, budget)
+        if not head_display:
+            return None
+        if head_display.endswith("…"):
+            return f"{head_display}{tail_part}"
+        return f"{head_display}…{tail_part}"
+
+    # ---- 尺寸 ----
 
     def sizeHint(self):
         metrics = QFontMetrics(self.font())
-        return QSize(
-            min(metrics.horizontalAdvance(self.text()), self._max_width),
-            super().sizeHint().height())
+        text_width = metrics.horizontalAdvance(self._full_text)
+        width = min(text_width, self._max_width)
+        # 小数倍 DPI 下 fm.horizontalAdvance 与实际绘制宽度可能差 1~3px，
+        # 留一点余量，避免「明明放得下却省略」。
+        if width < self._max_width:
+            width += 4
+        return QSize(width, metrics.height())
 
     def minimumSizeHint(self):
-        return QSize(0, super().sizeHint().height())
+        return QSize(0, self.sizeHint().height())
+
+    # ---- 绘制 ----
+
+    def _text_color(self) -> QColor:
+        return QColor(208, 208, 208) if isDarkTheme() else QColor(96, 96, 96)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setFont(self.font())
+        painter.setPen(self._text_color())
+        painter.drawText(self.rect(),
+                         int(Qt.AlignmentFlag.AlignLeft
+                             | Qt.AlignmentFlag.AlignVCenter),
+                         self.elided_text())
+
+    def changeEvent(self, event):
+        if event.type() == QEvent.Type.FontChange:
+            self.updateGeometry()
+            self.update()
+        super().changeEvent(event)
 
 
 class _ChromeLogo(QWidget):
@@ -414,7 +519,14 @@ class SettingsPage(QWidget):
         self.browser_install_guide_button.setIcon(qfw.FluentIcon.DOWN)
         self.browser_install_guide_button.setFixedHeight(32)
         self.browser_install_guide_button.setMinimumWidth(112)
+        # 展开后换成次要按钮（浅色下白底深字）：收起不是主操作，不该抢主按钮的视觉重量
+        self.browser_collapse_guide_button = qfw.PushButton("收起引导")
+        self.browser_collapse_guide_button.setIcon(qfw.FluentIcon.UP)
+        self.browser_collapse_guide_button.setFixedHeight(32)
+        self.browser_collapse_guide_button.setMinimumWidth(112)
+        self.browser_collapse_guide_button.setVisible(False)
         browser_setup_header_lay.addWidget(self.browser_install_guide_button)
+        browser_setup_header_lay.addWidget(self.browser_collapse_guide_button)
         browser_setup_lay.addWidget(browser_setup_header)
 
         # 引导区整体容器：折叠时连分隔线一起隐藏，卡片底部不留空档
@@ -474,7 +586,8 @@ class SettingsPage(QWidget):
             chip_lay.setSpacing(8)
             if prefix_label is not None:
                 chip_lay.addWidget(prefix_label)
-            chip_lay.addWidget(value_label)
+            # 值标签吃掉值条内的剩余宽度：宽度有富余时不会在文本与按钮之间留空隙
+            chip_lay.addWidget(value_label, 1)
             for button in buttons:
                 chip_lay.addWidget(button, 0, Qt.AlignmentFlag.AlignVCenter)
             row.addWidget(chip, 0)
@@ -499,11 +612,13 @@ class SettingsPage(QWidget):
 
         content3 = add_guide_step(
             3, "加载扩展", "点击“加载已解压的扩展程序”，选择扩展目录")
-        self.browser_extension_path_prefix_label = _guide_text_label("扩展目录")
+        self.browser_extension_path_prefix_label = _guide_text_label(
+            "扩展目录", word_wrap=False)
         self.browser_extension_path_label = _GuideValueLabel(
             "", max_width=640, parent=self.browser_guide_panel)
         self.browser_extension_path_label.setObjectName("contentLabel")
         self.browser_extension_path_label.setToolTip("")
+        _use_fluent_tooltip(self.browser_extension_path_label)
         qfw.FluentStyleSheet.SETTING_CARD.apply(
             self.browser_extension_path_label)
         self.browser_copy_folder_button = _guide_value_button(
@@ -722,6 +837,8 @@ class SettingsPage(QWidget):
         self.browser_extension_switch.checkedChanged.connect(
             self._on_browser_extension_changed)
         self.browser_install_guide_button.clicked.connect(self._toggle_browser_guide)
+        self.browser_collapse_guide_button.clicked.connect(
+            self._toggle_browser_guide)
         self.browser_guide_open_folder_button.clicked.connect(
             self._open_browser_extension_folder)
         self.browser_copy_extensions_url_button.clicked.connect(
@@ -799,13 +916,12 @@ class SettingsPage(QWidget):
 
     def _toggle_browser_guide(self):
         self._browser_guide_expanded = not self._browser_guide_expanded
-        self.browser_guide_container.setVisible(self._browser_guide_expanded)
-        self.browser_guide_panel.setVisible(self._browser_guide_expanded)
-        self.browser_install_guide_button.setText(
-            "收起引导" if self._browser_guide_expanded else "安装引导")
-        self.browser_install_guide_button.setIcon(
-            qfw.FluentIcon.UP if self._browser_guide_expanded
-            else qfw.FluentIcon.DOWN)
+        expanded = self._browser_guide_expanded
+        self.browser_guide_container.setVisible(expanded)
+        self.browser_guide_panel.setVisible(expanded)
+        # 折叠态用主按钮（安装引导），展开态换成次要按钮（收起引导）
+        self.browser_install_guide_button.setVisible(not expanded)
+        self.browser_collapse_guide_button.setVisible(expanded)
 
     def _browser_extension_path(self):
         return get_extension_dir()
@@ -842,6 +958,8 @@ class SettingsPage(QWidget):
                 "扩展目录" if extension_dir.is_dir() else "未找到扩展目录")
             self.browser_extension_path_label.setText(str(extension_dir))
             self.browser_extension_path_label.setToolTip(str(extension_dir))
+            # 文本变化会改变首选宽度，通知值条重新布局，避免残留旧的窄宽度
+            self.browser_extension_path_label.updateGeometry()
         try:
             result = diagnose_browser_components()
         except Exception as exc:
