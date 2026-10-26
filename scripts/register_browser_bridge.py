@@ -36,13 +36,24 @@ def main():
             pass
         print('已移除当前源码目录的 Chrome 本机桥接注册项')
         return
-    # 打包独立的控制台 host：避免依赖 Chrome 对 bat/cmd 启动方式的兼容性。
+    # 直接写 spec：绕过 PyInstaller 6.22.0 的 --hide-console 重复引号问题。
+    # 保留控制台子系统供 Chrome 使用二进制 stdin/stdout，并由 bootloader 隐藏黑窗。
+    directory.mkdir(parents=True, exist_ok=True)
+    spec_path = directory / 'sookit-native-host.spec'
+    spec_path.write_text(
+        '# -*- mode: python ; coding: utf-8 -*-\n'
+        f'a = Analysis([{str(ROOT / "src/sookit/native_host.py")!r}],\n'
+        f'             pathex=[{str(ROOT / "src")!r}])\n'
+        'pyz = PYZ(a.pure)\n'
+        'exe = EXE(pyz, a.scripts, [], exclude_binaries=True,\n'
+        '          name="sookit-native-host", console=True, hide_console="hide-early")\n'
+        'coll = COLLECT(exe, a.binaries, a.datas, name="sookit-native-host")\n',
+        encoding='utf-8',
+    )
     subprocess.run([
-        sys.executable, '-m', 'PyInstaller', '--noconfirm', '--clean', '--onedir',
-        '--console', '--hide-console', 'hide-early', '--name', 'sookit-native-host',
-        '--paths', str(ROOT / 'src'),
+        sys.executable, '-m', 'PyInstaller', '--noconfirm', '--clean',
         '--distpath', str(directory), '--workpath', str(directory / 'work'),
-        '--specpath', str(directory), str(ROOT / 'src/sookit/native_host.py'),
+        str(spec_path),
     ], cwd=str(ROOT), check=True)
     # 源码开发的 host 已冻结，需从配置读取独立的源码启动命令。
     executable = directory / 'sookit-native-host' / 'sookit-native-host.exe'
