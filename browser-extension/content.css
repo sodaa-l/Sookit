@@ -28,6 +28,61 @@
 }
 #sookit-sniff-button:disabled { opacity: .6; cursor: progress; }
 #sookit-sniff-button img { display: block; width: 24px; height: 24px; object-fit: contain; }
+#sookit-sniff-button[aria-expanded='true'] {
+  background: var(--yt-spec-button-chip-background-hover, rgba(0, 0, 0, .1));
+}
+#sookit-action-menu {
+  position: fixed;
+  z-index: 2147483646;
+  box-sizing: border-box;
+  width: 224px;
+  max-width: calc(100vw - 16px);
+  max-height: calc(100vh - 16px);
+  overflow-y: auto;
+  padding: 8px 0;
+  border: 0;
+  border-radius: 12px;
+  background: var(--yt-spec-menu-background, #fff);
+  color: var(--yt-spec-text-primary, #0f0f0f);
+  box-shadow: 0 4px 32px rgba(0, 0, 0, .18);
+  font: 14px/20px 'Roboto', 'Arial', sans-serif;
+  text-align: left;
+}
+#sookit-action-menu > button {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 48px;
+  margin: 0;
+  padding: 12px 20px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: inherit;
+  white-space: nowrap;
+  cursor: pointer;
+}
+#sookit-action-menu > button:hover,
+#sookit-action-menu > button:focus-visible {
+  background: var(--yt-spec-badge-chip-background, rgba(0, 0, 0, .05));
+  outline: none;
+}
+#sookit-action-menu svg {
+  display: block;
+  flex: 0 0 24px;
+  width: 24px;
+  height: 24px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+#sookit-action-menu[hidden] { display: none; }
 #sookit-feedback {
   position: fixed;
   bottom: 28px;

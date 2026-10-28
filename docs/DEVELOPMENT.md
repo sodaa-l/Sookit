@@ -106,6 +106,7 @@ flowchart TB
 | `subtitle_utils.py` | 字幕/评论轨道分类、每轨单次下载、SRT/TXT/VTT 导出、严格清单校验（决策 61） | `build_subtitle_tracks()`, `download_subtitles()`, `download_comments()` |
 | `browser_protocol.py` | 浏览器消息帧、YouTube 单视频白名单、固定扩展 ID（决策 62） | `normalize_video_url()`, `validate_request()`, `encode_message()`, `decode_message()` |
 | `browser_ipc.py` | 当前用户/会话的 Qt 本机通道；GUI 线程分发、退出清理（决策 62） | `BrowserRequestServer`, `send_request()` |
+| `browser_downloads.py` | 浏览器菜单最佳画质选择器、独立封面下载与产物验收（决策 64） | `BEST_VIDEO_FORMAT`, `download_best_cover()` |
 | `browser_diagnostics.py` | 只读核对扩展资源、host 清单/程序与 Chrome 注册路径（决策 62） | `get_extension_dir()`, `get_expected_host_manifest()`, `read_registry_entries()`, `diagnose_browser_components()` |
 | `task_queue.py` | 任务队列单例。进度、workspace 生命周期、active_workspaces registry、JSON 持久化 | `TaskQueueManager`, `Task`, `TaskStatus`, `TaskType`, `_generate_ulid()` |
 | `workers.py` | 后台线程: Worker(通用) / TaskWorker(队列, 含 workspace/进程树清理) / MonitorWorker(直播轮询) | `TaskWorker`, `MonitorWorker`, `_kill_process_tree()` |
@@ -227,6 +228,7 @@ flowchart TB
 
 | 62 | Chrome 视频页按钮与后台嗅探、接收开关与只读诊断 | MV3 扩展 → Native Messaging → 当前用户/会话的 Qt 本机通道；请求开关默认开，GUI 与冷启动 host 都校验；只读诊断扩展文件、host 清单/程序和 HKCU/HKLM 注册路径 | [62-chrome-background-sniff.md](decisions/62-chrome-background-sniff.md) |
 | 63 | 设置页 Chrome 扩展引导区改版（2026-10-26） | 步骤序号改淡主题色圆底 + 主题色数字（订阅 `themeColorChanged` 重刷）；头部标题 15px/600 + 1px 分隔线，折叠时连分隔线一起隐藏；地址与路径统一为自绘「值条」（圆角 6、极淡底 + 1px 边框，亮暗两套色、订阅 `themeChangedFinished`），值条内嵌透明图标按钮，宽度按内容自适应、上限 820；路径前缀与路径拆成两个标签，`_GuideValueLabel` 重写 `sizeHint`/`minimumSizeHint` 让超长路径省略而值条可收缩；**步骤内容必须包成 `step_content` 再 `addWidget(…, 1)`**，直接嵌套布局会让值条的最大宽度向上传染、把序号挤到中间（实测偏移 84px） | [63-settings-guide-ui.md](decisions/63-settings-guide-ui.md) |
+| 64 | Chrome 视频菜单与直接后台下载（2026-10-28） | 三项官方风格菜单；嗅探保持原流程，最佳画质与封面独立入既有队列，不覆盖嗅探状态；最佳画质用 `bestvideo*+bestaudio/best`，封面保留最佳可用原图；扩展和 host 协议白名单同步更新 | [64-chrome-video-actions.md](decisions/64-chrome-video-actions.md) |
 
 ## 测试
 
@@ -238,7 +240,7 @@ uv run --no-sync python -X utf8 -m unittest discover -s tests -p 'test_*.py' -v
 
 字幕功能本轮 76 条通过；真实平台验证、测试边界及独立联网探针命令见[决策 61](decisions/61-sniff-subtitle-download.md#验证与边界)。测试临时文件自动清理，不修改用户配置、任务记录或通知设置。
 
-浏览器按钮与消息分发另运行 `node --test tests/test_browser_extension.cjs`；桥接架构、源码注册、打包和真实 Chrome 验收边界见[决策 62](decisions/62-chrome-background-sniff.md)。
+浏览器按钮与消息分发另运行 `node --test tests/test_browser_extension.cjs`；桥接架构、源码注册、打包和真实 Chrome 验收边界见[决策 62](decisions/62-chrome-background-sniff.md)。三项菜单及本机真实下载验证见[决策 64](decisions/64-chrome-video-actions.md)，针对性命令为 `uv run --no-sync python -X utf8 -m unittest discover -s tests -p test_browser_downloads.py -v`。
 
 ## AI 编码约定
 

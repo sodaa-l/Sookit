@@ -47,9 +47,12 @@ class ProtocolTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     normalize_video_url(url)
 
-    def test_only_sniff_action_and_url_forwarded(self):
-        self.assertEqual(validate_request(dict(REQUEST, command='evil')), REQUEST)
-        for value in ([], {}, {'action': 'exec', 'url': URL}):
+    def test_only_allowed_actions_and_url_forwarded(self):
+        for action in ('sniff', 'download_best', 'download_cover'):
+            request = {'action': action, 'url': URL}
+            self.assertEqual(validate_request(dict(request, command='evil')), request)
+        for value in ([], {}, {'action': 'exec', 'url': URL},
+                      {'action': [], 'url': URL}, {'action': None, 'url': URL}):
             with self.assertRaises(ValueError):
                 validate_request(value)
 

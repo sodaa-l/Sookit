@@ -73,7 +73,14 @@ test('未注册本机桥接时给出操作提示，忙碌响应原样返回', as
 
 function page(sendMessage = async () => ({ok: true, message: '已在后台开始嗅探'}), href = URL_A) {
   class Element {
-    constructor(tag) { this.tagName = tag; this.children = []; this.dataset = {}; this.attributes = {}; this.events = {}; }
+    constructor(tag) {
+      this.tagName = tag; this.children = []; this.dataset = {}; this.attributes = {}; this.events = {};
+      this.style = {}; this.offsetWidth = 224; this.offsetHeight = 160; this.hidden = false;
+    }
+    get isConnected() { return this === root || Boolean(this.parentElement?.isConnected); }
+    contains(node) { return this === node || this.children.some(child => child.contains(node)); }
+    focus() { document.activeElement = this; }
+    getBoundingClientRect() { return rect; }
     append(...elements) {
       for (const child of elements) { child.remove(); this.children.push(child); child.parentElement = this; }
     }
@@ -88,6 +95,7 @@ function page(sendMessage = async () => ({ok: true, message: '已在后台开始
     removeAttribute(key) { delete this.attributes[key]; }
     addEventListener(event, listener) { this.events[event] = listener; }
   }
+  const rect = {top: 100, bottom: 140, right: 800};
   const root = new Element('html');
   const head = new Element('head');
   const body = new Element('body');
@@ -99,12 +107,14 @@ function page(sendMessage = async () => ({ok: true, message: '已在后台开始
   const walk = node => [node, ...node.children.flatMap(walk)];
   const document = {documentElement: root, head, body,
     createElement: tag => new Element(tag),
+    createElementNS: (_ns, tag) => new Element(tag),
     getElementById: id => walk(root).find(node => node.id === id),
     querySelector: () => target,
     addEventListener: (name, listener) => { documentEvents[name] = listener; }
   };
   const location = {href};
-  const window = {addEventListener(name, listener) { windowEvents[name] = listener; }};
+  const window = {innerWidth: 1024, innerHeight: 768,
+    addEventListener(name, listener) { windowEvents[name] = listener; }};
   window.top = window;
   const frames = [];
   const observers = [];
@@ -123,7 +133,14 @@ function page(sendMessage = async () => ({ok: true, message: '已在后台开始
   vm.runInContext(source, context);
   const flush = () => { for (const fn of frames.splice(0)) fn(); };
   flush();
-  return {document, requests, flush, frames,
+  return {document, requests, flush, frames, rect, window,
+    documentEvent(name, event) { documentEvents[name]?.(event); },
+    windowEvent(name) { windowEvents[name]?.(); },
+    get menu() { return document.getElementById('sookit-action-menu'); },
+    choose(action = 'sniff') {
+      if (!this.menu || this.menu.hidden) this.button.events.click();
+      return this.menu.children.find(item => item.dataset.action === action).events.click();
+    },
     get button() { return document.getElementById('sookit-sniff-button'); },
     get feedback() { return document.getElementById('sookit-feedback'); },
     mutate() { observers.forEach(fn => fn()); },
@@ -150,12 +167,20 @@ test('视频操作栏只生成一个图标加 Sookit 文字的按钮', () => {
   assert.equal(button.parentElement.tagName, 'actions');
 });
 
-test('单次点击发送当前视频，等待期间重复点击不重复提交', async () => {
+test('点击只展开三项菜单，选择后发送且等待时不重复提交', async () => {
   let finish;
   const site = page(() => new Promise(resolve => { finish = resolve; }));
   const button = site.button;
-  const first = button.events.click();
-  await button.events.click();
+  button.events.click();
+  assert.equal(site.requests.length, 0);
+  assert.equal(site.menu.hidden, false);
+  assert.equal(button.attributes['aria-expanded'], 'true');
+  assert.deepEqual(site.menu.children.map(item => item.children[1].textContent),
+    ['嗅探视频', '下载最佳画质', '下载封面']);
+  assert.equal(site.document.activeElement, site.menu.children[0]);
+  const first = site.choose();
+  await site.choose('download_best');
+  assert.equal(site.menu.hidden, true);
   assert.equal(button.disabled, true);
   assert.equal(site.requests.length, 1);
   assert.equal(site.requests[0].url, URL_A);
@@ -166,36 +191,110 @@ test('单次点击发送当前视频，等待期间重复点击不重复提交',
   assert.equal(site.feedback.dataset.error, 'false');
 });
 
-test('YouTube 站内导航使用新视频链接，离开视频页即移除按钮', async () => {
+test('三种菜单选项分别传递动作和当前视频，不提前嗅探', async () => {
+  const site = page(async () => ({ok: true}));
+  for (const action of ['sniff', 'download_best', 'download_cover']) {
+    await site.choose(action);
+    assert.equal(site.requests.at(-1).action, action);
+    assert.equal(site.requests.at(-1).url, URL_A);
+  }
+  assert.equal(site.requests.length, 3);
+  assert.match(site.feedback.textContent, /封面下载/);
+});
+
+test('YouTube 站内导航关闭菜单，使用新链接并在离开视频页时移除按钮', async () => {
   const site = page();
+  site.button.events.click();
   site.navigate(URL_B + '&t=10');
-  await site.button.events.click();
+  assert.equal(site.menu.hidden, true);
+  await site.choose('download_cover');
   assert.equal(site.requests[0].url, URL_B);
   site.navigate('https://www.youtube.com/results?search_query=Sookit');
   assert.equal(site.button, undefined);
   assert.equal(site.feedback.hidden, true);
+  assert.equal(site.menu.hidden, true);
   site.navigate(URL_A);
   assert.ok(site.button);
   assert.equal(page(undefined, 'https://www.youtube.com/').button, undefined);
 });
 
-test('切换视频后抛弃旧视频的异步回执', async () => {
-  let finish;
-  const site = page(() => new Promise(resolve => { finish = resolve; }));
-  const sent = site.button.events.click();
-  site.navigate(URL_B);
-  finish({ok: true, message: '旧视频的回执'});
-  await sent;
-  assert.equal(site.feedback, undefined);
-  assert.equal(site.button.disabled, false);
+test('切换视频后抛弃旧回执，返回同一视频也不会显示过期消息', async () => {
+  for (const returnToOriginal of [false, true]) {
+    let finish;
+    const site = page(() => new Promise(resolve => { finish = resolve; }));
+    const sent = site.choose();
+    site.navigate(URL_B);
+    if (returnToOriginal) site.navigate(URL_A);
+    finish({ok: true, message: '旧视频的回执'});
+    await sent;
+    assert.equal(site.feedback, undefined);
+    assert.equal(site.button.disabled, false);
+  }
 });
 
 test('连接失败显示错误，恢复按钮并允许重试', async () => {
   const site = page(async () => { throw new Error('本机桥接未注册'); });
-  await site.button.events.click();
+  await site.choose();
   assert.equal(site.feedback.dataset.error, 'true');
   assert.match(site.feedback.textContent, /未注册/);
   assert.equal(site.button.disabled, false);
-  await site.button.events.click();
+  await site.choose('download_best');
   assert.equal(site.requests.length, 2);
+});
+
+test('再次点击、点外部、Esc、焦点离开和操作栏重建都关闭菜单', () => {
+  const site = page();
+  const open = () => site.button.events.click();
+  open(); open();
+  assert.equal(site.menu.hidden, true);
+  open();
+  site.documentEvent('pointerdown', {target: site.menu.children[1]});
+  assert.equal(site.menu.hidden, false);
+  site.documentEvent('pointerdown', {target: site.document.body});
+  assert.equal(site.menu.hidden, true);
+  open();
+  let prevented = false;
+  site.documentEvent('keydown', {key: 'Escape', preventDefault() { prevented = true; }, stopPropagation() {}});
+  assert.equal(prevented, true);
+  assert.equal(site.document.activeElement, site.button);
+  assert.equal(site.menu.hidden, true);
+  open();
+  site.documentEvent('focusin', {target: site.document.body});
+  assert.equal(site.menu.hidden, true);
+  open(); site.replaceActions();
+  assert.equal(site.menu.hidden, true);
+  assert.equal(site.requests.length, 0);
+});
+
+test('菜单支持上下键、首尾键和 Tab，定位不会超出视口', () => {
+  const site = page();
+  const key = key => ({key, preventDefault() {}, stopPropagation() {}});
+  site.button.events.keydown(key('ArrowUp'));
+  assert.equal(site.document.activeElement, site.menu.children[2]);
+  site.menu.events.keydown(key('ArrowDown'));
+  assert.equal(site.document.activeElement, site.menu.children[0]);
+  site.menu.events.keydown(key('End'));
+  assert.equal(site.document.activeElement, site.menu.children[2]);
+  site.menu.events.keydown(key('Home'));
+  assert.equal(site.document.activeElement, site.menu.children[0]);
+  site.rect.right = 40;
+  site.rect.top = 700;
+  site.rect.bottom = 740;
+  site.windowEvent('resize');
+  assert.equal(site.menu.style.left, '8px');
+  assert.equal(site.menu.style.top, '532px');
+  site.menu.events.keydown(key('Tab'));
+  assert.equal(site.menu.hidden, true);
+  assert.equal(site.requests.length, 0);
+});
+
+test('后台的两种下载复用来源验证且只转发动作和链接', async () => {
+  const bridge = background();
+  for (const action of ['download_best', 'download_cover']) {
+    assert.equal((await bridge.send({action, url: URL_A, output_dir: 'ignored'})).ok, true);
+    assert.equal(JSON.stringify(bridge.calls.at(-1).request), JSON.stringify({action, url: URL_A}));
+    assert.equal((await bridge.send({action, url: URL_B})).ok, false);
+    assert.equal((await bridge.send({action, url: URL_A}, {...bridge.sender, frameId: 1})).ok, false);
+  }
+  assert.equal(bridge.calls.length, 2);
 });

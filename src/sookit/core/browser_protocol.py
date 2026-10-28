@@ -8,6 +8,7 @@ HOST_NAME = 'com.sookit.browser'
 EXTENSION_ID = 'inplhidhdgncdjkkmbfcocedkabbaghn'
 EXTENSION_ORIGIN = f'chrome-extension://{EXTENSION_ID}/'
 MAX_MESSAGE_BYTES = 16 * 1024
+BROWSER_ACTIONS = frozenset({'sniff', 'download_best', 'download_cover'})
 
 
 def normalize_video_url(value: str) -> str:
@@ -40,9 +41,10 @@ def normalize_video_url(value: str) -> str:
 
 
 def validate_request(message: object) -> dict:
-    if not isinstance(message, dict) or message.get('action') != 'sniff':
+    if (not isinstance(message, dict) or not isinstance(message.get('action'), str)
+            or message['action'] not in BROWSER_ACTIONS):
         raise ValueError('不支持的浏览器请求')
-    return {'action': 'sniff', 'url': normalize_video_url(message.get('url'))}
+    return {'action': message['action'], 'url': normalize_video_url(message.get('url'))}
 
 
 def encode_message(message: dict) -> bytes:

@@ -135,10 +135,15 @@ class MainWindow(qfw.FluentWindow):
                 return {'ok': False, 'error': '浏览器扩展调用已暂停'}
         except Exception as exc:
             return {'ok': False, 'error': f'无法确认浏览器扩展开关：{exc}'}
-        response = self.youtube_page.sniff_from_browser(request['url'])
-        if response.get('ok'):
-            self.switchTo(self.youtube_page)
-        return response
+        action = request['action']
+        if action == 'sniff':
+            response = self.youtube_page.sniff_from_browser(request['url'])
+            if response.get('ok'):
+                self.switchTo(self.youtube_page)
+            return response
+        if action in ('download_best', 'download_cover'):
+            return self.youtube_page.download_from_browser(request['url'], action)
+        return {'ok': False, 'error': '不支持的浏览器请求'}
 
     # ========== 系统通知（决策 40） ==========
 

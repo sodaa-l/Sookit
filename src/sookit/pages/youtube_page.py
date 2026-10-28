@@ -633,6 +633,41 @@ class YouTubePage(PageBase):
         self.do_sniff()
         return {'ok': True, 'message': 'Sookit 已在后台开始嗅探'}
 
+    def download_from_browser(self, url, action):
+        """浏览器下载使用自己的 URL 和任务参数，不读取当前嗅探结果。"""
+        from sookit.core.browser_protocol import normalize_video_url
+        from sookit.core.browser_downloads import BEST_VIDEO_FORMAT, download_best_cover
+        url = normalize_video_url(url)
+        if action not in ('download_best', 'download_cover'):
+            return {'ok': False, 'error': '不支持的浏览器下载请求'}
+        if not is_ytdlp_available():
+            return {'ok': False, 'error': 'Sookit 尚未安装 yt-dlp，请到设置页下载安装'}
+        out_dir = self.read_path(self.out_dir) or DEFAULT_OUTPUT_DIR
+        remote = self.remote_cb.isChecked()
+        video_id = extract_youtube_id(url)
+        label = '最佳画质下载' if action == 'download_best' else '封面下载'
+        metadata = {
+            'url': url, 'out_dir': out_dir, 'browser_action': action,
+            'cover_url': build_thumbnails(video_id)[0]['url'],
+        }
+        if action == 'download_best':
+            config = load_download_config()
+            func = Functions.download_youtube
+            args = (url, BEST_VIDEO_FORMAT, out_dir, remote,
+                    config['concurrent_fragments'], config['use_aria2c'],
+                    config['aria2c_connections'])
+            kwargs = {'extra_args': ['--ignore-config', '--no-playlist']}
+            metadata['format_spec'] = BEST_VIDEO_FORMAT
+        else:
+            func = download_best_cover
+            args = (url, out_dir, remote)
+            kwargs = None
+        task_id = self.run_queued_task(
+            func=func, args=args, task_type=TaskType.YTDLP,
+            title=f'{label} - {video_id}', metadata=metadata, kwargs=kwargs)
+        return {'ok': True, 'task_id': task_id,
+                'message': f'{label}已加入 Sookit 任务队列'}
+
     def do_sniff(self):
         self._invalidate_subtitles()
         if hasattr(self, '_sniff_timer') and self._sniff_timer:

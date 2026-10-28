@@ -1,5 +1,6 @@
 /* 页面脚本只传递链接；本机调用始终经过扩展后台。 */
 const HOST = 'com.sookit.browser';
+const ACTIONS = new Set(['sniff', 'download_best', 'download_cover']);
 const ALLOWED_HOSTS = new Set(['www.youtube.com', 'youtube.com', 'm.youtube.com', 'youtu.be']);
 
 function videoUrl(value) {
@@ -17,7 +18,7 @@ function videoUrl(value) {
 }
 
 chrome.runtime.onMessage.addListener((message, sender, reply) => {
-  if (message?.action !== 'sniff') return false;
+  if (!ACTIONS.has(message?.action)) return false;
   (async () => {
     if (sender.id !== chrome.runtime.id || !sender.tab || sender.frameId !== 0) {
       throw new Error('请求来源无效');
@@ -25,7 +26,7 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
     const url = videoUrl(message.url);
     if (videoUrl(sender.url) !== url) throw new Error('页面已切换，请重试');
     try {
-      return await chrome.runtime.sendNativeMessage(HOST, {action: 'sniff', url});
+      return await chrome.runtime.sendNativeMessage(HOST, {action: message.action, url});
     } catch (error) {
       const detail = String(error?.message || error);
       if (/not found|not registered|forbidden|Access to the specified native/i.test(detail)) {
