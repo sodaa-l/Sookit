@@ -22,6 +22,35 @@
 #sookit-sniff-button:hover {
   background: var(--yt-spec-button-chip-background-hover, rgba(0, 0, 0, .1));
 }
+#sookit-sniff-button[data-short-form='true'] {
+  flex-direction: column;
+  gap: 4px;
+  width: 64px;
+  height: auto;
+  min-height: 0;
+  margin: 0 0 8px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--yt-spec-text-primary, #0f0f0f);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 16px;
+  text-align: center;
+}
+#sookit-sniff-button[data-short-form='true']:hover { background: transparent; }
+#sookit-sniff-button[data-short-form='true'] img {
+  box-sizing: border-box;
+  width: 48px;
+  height: 48px;
+  padding: 12px;
+  border-radius: 50%;
+  background: var(--yt-spec-badge-chip-background, rgba(0, 0, 0, .05));
+}
+#sookit-sniff-button[data-short-form='true']:hover img {
+  background: var(--yt-spec-button-chip-background-hover, rgba(0, 0, 0, .1));
+}
 #sookit-sniff-button:focus-visible {
   outline: 2px solid var(--yt-spec-call-to-action, #065fd4);
   outline-offset: 2px;

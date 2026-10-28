@@ -33,6 +33,7 @@ class ProtocolTests(unittest.TestCase):
     def test_normalizes_video_links_without_playlist_or_time(self):
         for url in (URL + '&list=PLtest&t=12', 'https://youtu.be/Yb9H5vhWyHg',
                     'https://m.youtube.com/shorts/Yb9H5vhWyHg',
+                    'https://www.youtube.com/shorts/Yb9H5vhWyHg',
                     'https://www.youtube.com/live/Yb9H5vhWyHg'):
             with self.subTest(url=url):
                 self.assertEqual(normalize_video_url(url), URL)
@@ -43,7 +44,8 @@ class ProtocolTests(unittest.TestCase):
                     'https://youtube.com@evil.test/watch?v=Yb9H5vhWyHg',
                     'https://www.youtube.com:444/watch?v=Yb9H5vhWyHg',
                     'https://www.youtube.com/playlist?list=PLtest', URL + '&v=aaaaaaaaaaa',
-                    'https://www.youtube.com/watch?v=--exec', 'x' * 4097):
+                    'https://www.youtube.com/watch?v=--exec',
+                    'https://www.youtube.com/shorts/not-an-id', 'x' * 4097):
             with self.subTest(url=url):
                 with self.assertRaises(ValueError):
                     normalize_video_url(url)

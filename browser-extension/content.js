@@ -25,8 +25,101 @@
   function currentVideoUrl() {
     const url = new URL(location.href);
     const id = url.searchParams.get('v');
-    return url.pathname === '/watch' && /^[A-Za-z0-9_-]{11}$/.test(id || '')
-      ? `https://www.youtube.com/watch?v=${id}` : null;
+    if (url.pathname === '/watch' && /^[A-Za-z0-9_-]{11}$/.test(id || '')) {
+      return `https://www.youtube.com/watch?v=${id}`;
+    }
+    const short = url.pathname.match(/^\/shorts\/([A-Za-z0-9_-]{11})\/?$/);
+    return short ? `https://www.youtube.com/watch?v=${short[1]}` : null;
+  }
+
+  function isShortsPage() {
+    return /^\/shorts\/[A-Za-z0-9_-]{11}\/?$/.test(new URL(location.href).pathname);
+  }
+
+  function getShortsRendererVideoIds(renderer) {
+    const identities = new Set();
+    const attributeVideoId = renderer.getAttribute('video-id');
+    if (/^[A-Za-z0-9_-]{11}$/.test(attributeVideoId || '')) identities.add(attributeVideoId);
+
+    const links = [...renderer.querySelectorAll("a[href*='/shorts/']")];
+    const playerLinks = links.filter(link => link.matches("a.ytp-title-link[href*='/shorts/']"));
+    for (const link of playerLinks.length ? playerLinks : links) {
+      try {
+        const href = link.getAttribute('href');
+        const videoId = href && new URL(href, location.href).pathname.match(/^\/shorts\/([A-Za-z0-9_-]{11})\/?$/)?.[1];
+        if (videoId) identities.add(videoId);
+      } catch {
+        // Ignore malformed or incomplete links while YouTube hydrates a reel.
+      }
+    }
+    return identities;
+  }
+
+  function intersectsViewport(element) {
+    const rect = element.getBoundingClientRect();
+    const height = window.innerHeight || document.documentElement.clientHeight;
+    const width = window.innerWidth || document.documentElement.clientWidth;
+    return rect.width > 0 && rect.height > 0 && rect.bottom > 0 && rect.right > 0
+      && rect.top < height && rect.left < width;
+  }
+
+  function isActuallyVisible(element) {
+    if (!element) return false;
+    if (typeof element.checkVisibility === 'function') {
+      try {
+        return element.checkVisibility({checkOpacity: true, checkVisibilityCSS: true});
+      } catch {
+        // Older implementations may expose checkVisibility without its options.
+      }
+    }
+
+    if (['hidden', 'collapse'].includes(getComputedStyle(element).visibility)) return false;
+    for (let ancestor = element; ancestor; ancestor = ancestor.parentElement) {
+      const style = getComputedStyle(ancestor);
+      if (style.display === 'none' || Number(style.opacity) <= 0) return false;
+    }
+    return true;
+  }
+
+  function isFullyInViewport(element) {
+    const rect = element.getBoundingClientRect();
+    const height = window.innerHeight || document.documentElement.clientHeight;
+    const width = window.innerWidth || document.documentElement.clientWidth;
+    return rect.width > 0 && rect.height > 0 && rect.top >= 0 && rect.left >= 0
+      && rect.bottom <= height && rect.right <= width;
+  }
+
+  function shortsActionBar(renderer) {
+    return renderer.querySelector('reel-action-bar-view-model') || renderer.querySelector('#actions');
+  }
+
+  function hasConflictingShortButton(actionBar, videoId) {
+    const existing = actionBar.querySelector('#sookit-sniff-button');
+    return Boolean(existing?.dataset.shortVideoId && existing.dataset.shortVideoId !== videoId);
+  }
+
+  function findShortsActionBar(url) {
+    const videoId = new URL(url).searchParams.get('v');
+    if (!/^[A-Za-z0-9_-]{11}$/.test(videoId || '')) return null;
+
+    const renderers = [...document.querySelectorAll('ytd-reel-video-renderer')]
+      .filter(renderer => intersectsViewport(renderer) && isActuallyVisible(renderer))
+      .map(renderer => ({renderer, actionBar: shortsActionBar(renderer), videoIds: getShortsRendererVideoIds(renderer)}))
+      .filter(candidate => !candidate.actionBar || isActuallyVisible(candidate.actionBar));
+    const matching = renderers.filter(candidate => candidate.videoIds.size === 1
+      && candidate.videoIds.has(videoId));
+    if (matching.length === 1) return matching[0].actionBar;
+    if (matching.length > 1) return null;
+
+    const identityless = renderers.filter(candidate => candidate.videoIds.size === 0
+      && (!candidate.actionBar || !hasConflictingShortButton(candidate.actionBar, videoId)));
+    const active = identityless.filter(candidate => candidate.renderer.getAttribute('is-active') !== null);
+    if (active.length === 1) return active[0].actionBar;
+    if (renderers.some(candidate => candidate.videoIds.size > 0)) return null;
+    if (identityless.length === 1) return identityless[0].actionBar;
+
+    const fullyVisible = identityless.filter(candidate => isFullyInViewport(candidate.renderer));
+    return fullyVisible.length === 1 ? fullyVisible[0].actionBar : null;
   }
 
   function tell(text, error = false) {
@@ -198,20 +291,28 @@
     if (!url) {
       closeMenu();
       button?.remove();
+      if (button) delete button.dataset.shortVideoId;
       return;
     }
-    // 新旧 YouTube 操作栏均支持；不抓播放器菜单或评论区的同名节点。
-    const target = document.querySelector('ytd-watch-metadata #actions #top-level-buttons-computed')
-      || document.querySelector('ytd-watch-metadata #actions ytd-menu-renderer #top-level-buttons-computed')
-      || document.querySelector('#info #menu-container #top-level-buttons-computed');
+    const shorts = isShortsPage();
+    const videoId = shorts ? new URL(url).searchParams.get('v') : null;
+    if (!shorts && button) delete button.dataset.shortVideoId;
+    const target = shorts ? findShortsActionBar(url)
+      : document.querySelector('ytd-watch-metadata #actions #top-level-buttons-computed')
+        || document.querySelector('ytd-watch-metadata #actions ytd-menu-renderer #top-level-buttons-computed')
+        || document.querySelector('#info #menu-container #top-level-buttons-computed');
     if (!target) {
       closeMenu();
+      button?.remove();
       return;
     }
     if (!button) button = createButton();
-    if (button.parentElement !== target) {
+    button.setAttribute('data-short-form', String(shorts));
+    if (shorts) button.dataset.shortVideoId = videoId;
+    if (button.parentElement !== target || (shorts && target.firstElementChild !== button)) {
       closeMenu();
-      target.append(button);
+      if (shorts) target.prepend(button);
+      else target.append(button);
     }
     button.disabled = busy;
   }
@@ -221,6 +322,16 @@
       scheduled = true;
       requestAnimationFrame(mount);
     }
+  }
+
+  function relevantMutation(records) {
+    if (!records.length || records.some(record => record.type !== 'attributes'
+      || !['class', 'style'].includes(record.attributeName))) return true;
+    return records.some(record => {
+      const target = record.target;
+      return Boolean(target.closest('ytd-reel-video-renderer')
+        || target.querySelector('ytd-reel-video-renderer'));
+    });
   }
   document.addEventListener('pointerdown', event => {
     if (menu && !menu.hidden && !menu.contains(event.target) && !button.contains(event.target)) closeMenu();
@@ -235,9 +346,14 @@
       closeMenu(true);
     }
   }, true);
-  window.addEventListener('resize', positionMenu);
-  window.addEventListener('scroll', positionMenu, true);
-  new MutationObserver(scheduleMount).observe(document.documentElement, {childList: true, subtree: true});
+  window.addEventListener('resize', () => { positionMenu(); scheduleMount(); });
+  window.addEventListener('scroll', () => { positionMenu(); scheduleMount(); }, true);
+  new MutationObserver(records => {
+    if (relevantMutation(records)) scheduleMount();
+  }).observe(document.documentElement, {
+    childList: true, subtree: true, attributes: true,
+    attributeFilter: ['is-active', 'video-id', 'href', 'class', 'style']
+  });
   document.addEventListener('yt-navigate-start', () => {
     pageGeneration += 1;
     closeMenu();

@@ -4,7 +4,7 @@
 
 在 YouTube 桌面版视频操作栏加入 36px 圆角按钮，显示现有 Sookit 图标和 `Sookit` 字样，接近 DownSub 按钮的大小与间距。使用 YouTube 颜色变量适应亮暗主题，不更改站点原有按钮。
 
-Chrome Manifest V3 扩展位于 `browser-extension/`。内容脚本监听 YouTube 的 `yt-navigate-finish`、浏览器返回和 DOM 操作栏重建，复用单个按钮；离开 `/watch?v=...` 视频页移除按钮。点击期间禁用并去重，异步回执属于旧视频时丢弃。
+Chrome Manifest V3 扩展位于 `browser-extension/`。内容脚本监听 YouTube 的 `yt-navigate-finish`、浏览器返回、DOM 操作栏重建、Shorts 滚动及身份属性和相关 `class`/`style` 变化，复用单个按钮；Shorts 优先按当前 URL 视频 ID 唯一匹配处于视口且 CSS 可见的 `ytd-reel-video-renderer` 的 `video-id` 或规范播放器 Shorts 链接，并挂到 CSS 可见的 `reel-action-bar-view-model`。旧布局兼容 renderer 内 `#actions`。URL ID 无唯一匹配时，只在唯一 `is-active` 身份不明 renderer 上回退；其他身份不明候选仅在没有已知身份的可视 renderer 时按唯一候选或唯一完整可见项回退，歧义时等待 DOM 水合。离开 `/watch?v=...` 或 `/shorts/<11位ID>` 视频页移除按钮。点击期间禁用并去重，异步回执属于旧视频时丢弃。
 
 ## 通信选择
 
@@ -20,7 +20,7 @@ YouTube 操作栏按钮 → 扩展后台 → sookit-native-host.exe
 
 - 扩展只需 `nativeMessaging` 权限；在 `https://www.youtube.com/*` 注入。不提取页面 Cookie，不读剪贴板，也不转发播放器请求。
 - 后台核对发送扩展 ID、顶层视频页和请求视频 ID；host 再核对 Chrome 传入的扩展 origin，Qt 接收端再次验证请求。
-- 仅允许 `sniff` 动作和 HTTPS YouTube 单视频，统一成 `https://www.youtube.com/watch?v=<11位ID>`；剥离时间、播放列表等参数。Shorts、live 和短链可由协议层规范化，但本轮按钮仅覆盖桌面 `/watch` 页面。
+- 仅允许 `sniff` 动作和 HTTPS YouTube 单视频，统一成 `https://www.youtube.com/watch?v=<11位ID>`；剥离时间、播放列表等参数。协议层接受 Shorts、live 和短链并统一为标准 watch URL；桌面按钮覆盖 `/watch` 与 Shorts。Shorts 优先按标准 watch URL 的视频 ID 唯一定位处于视口且 CSS 可见的 renderer，再挂载到 CSS 可见的现代 `reel-action-bar-view-model`；可见性优先用原生 `checkVisibility`（检查 opacity 和 CSS visibility），否则检查目标及祖先的计算样式；相关 renderer 子树或祖先的 `class`/`style` 变更会合并调度重检。video ID 取 renderer 的 `video-id` 或规范播放器 Shorts 链接。兼容旧 renderer 内 `#actions`，对身份缺失仅采用唯一活动项，或在无已知身份时采用唯一候选/唯一完整可见项回退，歧义时不注入。现代操作栏与身份选择参考[维护中的 Return YouTube Dislike 桌面 Shorts 实现](https://update.greasyfork.org/scripts/436115/Return%20YouTube%20Dislike.user.js)，旧结构参考[公开 Shorts DOM 示例](https://mathewsachin.github.io/blog/2026/03/21/youtube-shorts-sniper.html)和[桌面 Shorts 操作区脚本](https://gist.github.com/calcarlson/371ba0c694ae0dce2281d5ca42a72e17/bddbb892ac7e43e9406f172c70118bb97eb8531e)。
 - `core/browser_protocol.py` 不依赖 Qt。Native Messaging 和本机通道均使用 4 字节小端长度加 UTF-8 JSON，单帧上限 16KiB。
 - 扩展清单固定公钥，对应 ID `inplhidhdgncdjkkmbfcocedkabbaghn`。安装目录变动不会改变 ID；不得单独更换公钥，否则必须同步 host 的 `allowed_origins` 和协议常量。该值以 `core/browser_protocol.py` 与打包 host 清单为准。
 
@@ -54,6 +54,6 @@ Inno 安装器附带扩展目录和 `com.sookit.browser.json`，在 HKLM 注册 
 
 - `uv run --no-sync python -X utf8 -m unittest discover -s tests -p test_browser_bridge.py -v`：协议、白名单、分片/畸形帧、实际 Qt 本机通道和跨进程通信、冷启动分支、忙碌和缺失依赖、退出清理。
 - `uv run --no-sync python -X utf8 -m unittest discover -s tests -p test_browser_settings.py -v`：开关默认值/持久化/失败回滚、GUI 与冷启动拒绝、手动嗅探隔离、源码/打包诊断路径、注册遮蔽与设置页引导。
-- `node --test tests/test_browser_extension.cjs`：执行实际扩展脚本，验证来源校验、按钮图文、去重、YouTube SPA 跳转、操作栏重建和旧回执丢弃；使用最小 DOM 适配层，不等同于真实 YouTube 页面验收。
+- `node --test tests/test_browser_extension.cjs`：执行实际扩展脚本，验证来源校验、按钮图文、去重、YouTube SPA 跳转、操作栏重建、现代 `reel-action-bar-view-model` 与旧 `#actions`、视频身份链接、延迟水合/操作栏、Shorts 预加载与滚动切换、CSS 隐藏和恢复、无关样式变更过滤、歧义保护及旧回执丢弃。使用轻量 DOM 适配层，不等同于真实 YouTube 页面验收。
 - 运行仓库全部 Python 回归，验证原有字幕和任务取消流程。
 - 真实 Chrome 手动加载扩展后仍需确认 YouTube 当前布局、Native Messaging 启动和系统通知表现；离线测试无法保证站点 DOM 永久不变。

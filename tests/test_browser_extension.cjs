@@ -7,6 +7,8 @@ const vm = require('node:vm');
 const extension = path.join(__dirname, '..', 'browser-extension');
 const URL_A = 'https://www.youtube.com/watch?v=Yb9H5vhWyHg';
 const URL_B = 'https://www.youtube.com/watch?v=aaaaaaaaaaa';
+const SHORT_URL = 'https://www.youtube.com/shorts/Yb9H5vhWyHg';
+const SHORT_URL_B = 'https://www.youtube.com/shorts/aaaaaaaaaaa';
 const ID = 'inplhidhdgncdjkkmbfcocedkabbaghn';
 
 function background(native = async () => ({ok: true}), getTab = async () => ({url: URL_A})) {
@@ -108,7 +110,7 @@ test('未注册本机桥接时给出操作提示，忙碌响应原样返回', as
   assert.match((await busy.send({action: 'sniff', url: URL_A})).error, /正在嗅探/);
 });
 
-function page(sendMessage = async () => ({ok: true, message: '已在后台开始嗅探'}), href = URL_A) {
+function page(sendMessage = async () => ({ok: true, message: '已在后台开始嗅探'}), href = URL_A, options = {}) {
   class Element {
     constructor(tag) {
       this.tagName = tag; this.children = []; this.dataset = {}; this.attributes = {}; this.events = {};
@@ -116,10 +118,47 @@ function page(sendMessage = async () => ({ok: true, message: '已在后台开始
     }
     get isConnected() { return this === root || Boolean(this.parentElement?.isConnected); }
     contains(node) { return this === node || this.children.some(child => child.contains(node)); }
+    closest(selector) {
+      for (let element = this; element; element = element.parentElement) {
+        if (element.matches(selector)) return element;
+      }
+      return null;
+    }
+    get firstElementChild() { return this.children[0] || null; }
+    getAttribute(key) { return this.attributes[key] ?? null; }
+    hasAttribute(key) { return this.attributes[key] !== undefined; }
+    matches(selector) {
+      if (selector.startsWith('#')) return this.id === selector.slice(1);
+      if (selector === "a[href*='/shorts/']") {
+        return this.tagName === 'a' && String(this.getAttribute('href') || '').includes('/shorts/');
+      }
+      if (selector === "a.ytp-title-link[href*='/shorts/']") {
+        return this.tagName === 'a' && String(this.className || '').split(/\s+/).includes('ytp-title-link')
+          && String(this.getAttribute('href') || '').includes('/shorts/');
+      }
+      return this.tagName === selector;
+    }
+    querySelector(selector) { return this.querySelectorAll(selector)[0] || null; }
+    querySelectorAll(selector) {
+      const results = [];
+      const visit = node => {
+        for (const child of node.children) {
+          if (child.matches(selector)) results.push(child);
+          visit(child);
+        }
+      };
+      visit(this);
+      return results;
+    }
     focus() { document.activeElement = this; }
-    getBoundingClientRect() { return rect; }
+    getBoundingClientRect() { return this.rect || rect; }
     append(...elements) {
       for (const child of elements) { child.remove(); this.children.push(child); child.parentElement = this; }
+    }
+    prepend(...elements) {
+      for (const child of [...elements].reverse()) {
+        child.remove(); this.children.unshift(child); child.parentElement = this;
+      }
     }
     remove() {
       if (this.parentElement) {
@@ -132,7 +171,7 @@ function page(sendMessage = async () => ({ok: true, message: '已在后台开始
     removeAttribute(key) { delete this.attributes[key]; }
     addEventListener(event, listener) { this.events[event] = listener; }
   }
-  const rect = {top: 100, bottom: 140, right: 800};
+  const rect = {top: 40, bottom: 700, left: 300, right: 620, width: 320, height: 660};
   const root = new Element('html');
   const head = new Element('head');
   const body = new Element('body');
@@ -141,12 +180,56 @@ function page(sendMessage = async () => ({ok: true, message: '已在后台开始
   const windowEvents = {};
   let target = new Element('actions');
   body.append(target);
+  const reels = [];
+  const attachActionBar = reel => {
+    const actions = new Element(options.structure === 'legacy' ? 'div' : 'reel-action-bar-view-model');
+    if (options.structure === 'legacy') actions.id = 'actions';
+    const like = new Element('button'); like.id = 'like-button';
+    actions.append(like); reel.renderer.append(actions);
+    reel.actions = actions;
+    reel.like = like;
+  };
+  const renderReels = url => {
+    for (const reel of reels) reel.renderer.remove();
+    reels.length = 0;
+    if (!new URL(url).pathname.startsWith('/shorts/')) return;
+    for (const [index, id] of ['Yb9H5vhWyHg', 'aaaaaaaaaaa'].entries()) {
+      const renderer = new Element('ytd-reel-video-renderer');
+      renderer.rect = options.rects?.[index] || rect;
+      if (options.activeIndex === index || (options.activeIndex === undefined
+        && options.structure === 'legacy' && index === 0)) renderer.setAttribute('is-active', '');
+      if (index === options.hiddenRendererIndex) renderer.style.opacity = '0';
+      if (index === options.semanticHiddenIndex) {
+        renderer.setAttribute('aria-hidden', 'true'); renderer.setAttribute('inert', '');
+      }
+      const reel = {renderer, actions: null, like: null, id};
+      if (!options.deferIdentity) {
+        if (options.identityByLink) {
+          const titleLink = new Element('a');
+          titleLink.className = 'ytp-title-link';
+          titleLink.setAttribute('href', '/shorts/' + id);
+          renderer.append(titleLink);
+        } else if (!options.identityless && options.identitylessIndex !== index) renderer.setAttribute('video-id', id);
+      }
+      if (!options.deferActionBars) attachActionBar(reel);
+      if (index === options.hiddenActionBarIndex) reel.actions.style.visibility = 'hidden';
+      body.append(renderer);
+      reels.push(reel);
+    }
+  };
+  renderReels(href);
   const walk = node => [node, ...node.children.flatMap(walk)];
   const document = {documentElement: root, head, body,
     createElement: tag => new Element(tag),
     createElementNS: (_ns, tag) => new Element(tag),
     getElementById: id => walk(root).find(node => node.id === id),
-    querySelector: () => target,
+    querySelector: selector => {
+      if (selector === 'ytd-reel-video-renderer[is-active]') {
+        return reels.find(reel => reel.renderer.hasAttribute('is-active'))?.renderer || null;
+      }
+      return target;
+    },
+    querySelectorAll: selector => root.querySelectorAll(selector),
     addEventListener: (name, listener) => { documentEvents[name] = listener; }
   };
   const location = {href};
@@ -155,6 +238,7 @@ function page(sendMessage = async () => ({ok: true, message: '已在后台开始
   window.top = window;
   const frames = [];
   const observers = [];
+  const observerConfigs = [];
   const timers = new Map();
   let timerId = 0;
   const requests = [];
@@ -162,7 +246,17 @@ function page(sendMessage = async () => ({ok: true, message: '已在后台开始
     requestAnimationFrame: fn => frames.push(fn),
     setTimeout: fn => { timers.set(++timerId, fn); return timerId; },
     clearTimeout: id => timers.delete(id),
-    MutationObserver: class { constructor(fn) { observers.push(fn); } observe() {} },
+    getComputedStyle: element => {
+      let visibility = 'visible';
+      for (let ancestor = element; ancestor; ancestor = ancestor.parentElement) {
+        if (ancestor.style.visibility) { visibility = ancestor.style.visibility; break; }
+      }
+      return {display: element.style.display || '', visibility, opacity: element.style.opacity ?? '1'};
+    },
+    MutationObserver: class {
+      constructor(fn) { observers.push(fn); }
+      observe(_target, config) { observerConfigs.push(config); }
+    },
     chrome: {runtime: {getURL: file => `chrome-extension://${ID}/${file}`,
       sendMessage(message) { requests.push(message); return sendMessage(message); }}}
   });
@@ -170,7 +264,31 @@ function page(sendMessage = async () => ({ok: true, message: '已在后台开始
   vm.runInContext(source, context);
   const flush = () => { for (const fn of frames.splice(0)) fn(); };
   flush();
-  return {document, requests, flush, frames, rect, window,
+  return {document, requests, flush, frames, rect, window, reels, observerConfigs,
+    activateReel(index, url) {
+      if (options.structure === 'legacy') {
+        for (const reel of reels) reel.renderer.removeAttribute('is-active');
+        reels[index].renderer.setAttribute('is-active', '');
+      }
+      location.href = url;
+      this.windowEvent('scroll'); this.mutate(); this.flush();
+    },
+    hydrateVideoId(index, id = reels[index].id) {
+      reels[index].renderer.setAttribute('video-id', id);
+      this.mutate(); this.flush();
+    },
+    hydrateCanonicalLink(index, id = reels[index].id) {
+      const link = new Element('a'); link.className = 'ytp-title-link';
+      link.setAttribute('href', '/shorts/' + id); reels[index].renderer.append(link);
+      this.mutate(); this.flush();
+    },
+    setActiveReel(index) {
+      for (const reel of reels) reel.renderer.removeAttribute('is-active');
+      reels[index].renderer.setAttribute('is-active', '');
+      this.mutate(); this.flush();
+    },
+    addActionBar(index) { attachActionBar(reels[index]); this.mutate(); this.flush(); },
+    setReelRect(index, bounds) { reels[index].renderer.rect = bounds; this.windowEvent('scroll'); this.flush(); },
     documentEvent(name, event) { documentEvents[name]?.(event); },
     windowEvent(name) { windowEvents[name]?.(); },
     get menu() { return document.getElementById('sookit-action-menu'); },
@@ -180,9 +298,14 @@ function page(sendMessage = async () => ({ok: true, message: '已在后台开始
     },
     get button() { return document.getElementById('sookit-sniff-button'); },
     get feedback() { return document.getElementById('sookit-feedback'); },
-    mutate() { observers.forEach(fn => fn()); },
+    mutate(target, attributeName) {
+      const records = target ? [{type: 'attributes', target, attributeName}]
+        : [{type: 'childList', target: body}];
+      observers.forEach(fn => fn(records));
+    },
     reinject() { vm.runInContext(source, context); flush(); },
-    navigate(url) { location.href = url; documentEvents['yt-navigate-finish'](); flush(); },
+    navigate(url) { location.href = url; renderReels(url); documentEvents['yt-navigate-finish'](); flush(); },
+    popstate(url) { location.href = url; renderReels(url); windowEvents.popstate(); flush(); },
     replaceActions() { target.remove(); target = new Element('actions'); body.append(target); this.mutate(); flush(); }
   };
 }
@@ -202,6 +325,153 @@ test('视频操作栏只生成一个图标加 Sookit 文字的按钮', () => {
   site.replaceActions();
   assert.equal(site.button, button);
   assert.equal(button.parentElement.tagName, 'actions');
+});
+
+test('现代 Shorts 操作栏按视频身份切换，传递当前视频并清理旧状态', async () => {
+  let finishFirst;
+  const site = page(() => site.requests.length === 1
+    ? new Promise(resolve => { finishFirst = resolve; })
+    : Promise.resolve({ok: true}), SHORT_URL);
+  const button = site.button;
+  const [first, second] = site.reels;
+  assert.ok(button);
+  assert.equal(button.parentElement, first.actions);
+  assert.equal(first.actions.firstElementChild, button);
+  assert.equal(first.actions.children[1], first.like);
+  assert.equal(second.actions.children.some(child => child.id === 'sookit-sniff-button'), false);
+  assert.equal(first.renderer.hasAttribute('is-active'), false);
+  assert.equal(second.renderer.hasAttribute('is-active'), false);
+  assert.equal(first.actions.tagName, 'reel-action-bar-view-model');
+
+  const oldRequest = site.choose('sniff');
+  assert.equal(site.requests[0].url, URL_A);
+  site.activateReel(1, SHORT_URL_B);
+  assert.equal(site.button, button);
+  assert.equal(button.parentElement, second.actions);
+  assert.equal(second.actions.firstElementChild, button);
+  assert.equal(first.actions.children.includes(button), false);
+  assert.equal([...site.reels.flatMap(reel => reel.actions.children)]
+    .filter(child => child.id === 'sookit-sniff-button').length, 1);
+
+  finishFirst({ok: true, message: '旧视频的回执'});
+  await oldRequest;
+  assert.equal(site.feedback, undefined);
+  await site.choose('sniff');
+  assert.deepEqual(site.requests.map(request => request.url), [URL_A, URL_B]);
+  site.navigate(URL_A);
+  assert.equal(site.button.parentElement, site.document.body.children[0]);
+  assert.equal(site.button.attributes['data-short-form'], 'false');
+  site.popstate(SHORT_URL);
+  assert.equal(site.button.parentElement, site.reels[0].actions);
+  assert.equal(site.button.attributes['data-short-form'], 'true');
+  site.popstate(URL_A);
+  assert.equal(site.button.parentElement, site.document.body.children[0]);
+  site.navigate('https://www.youtube.com/');
+  assert.equal(site.button, undefined);
+});
+
+test('现代 Shorts 用规范播放器链接识别多个预加载 reel', () => {
+  const site = page(undefined, SHORT_URL_B, {identityByLink: true});
+  assert.ok(site.button);
+  assert.equal(site.button.parentElement, site.reels[1].actions);
+  assert.equal(site.button.parentElement.firstElementChild, site.button);
+  assert.ok(site.reels.every(reel => !reel.renderer.hasAttribute('is-active')));
+});
+
+test('视频身份晚水合时等待唯一匹配，不误挂到预加载项目', () => {
+  const site = page(undefined, SHORT_URL, {deferIdentity: true});
+  assert.equal(site.button, undefined);
+  site.hydrateVideoId(0);
+  assert.ok(site.button);
+  assert.equal(site.button.parentElement, site.reels[0].actions);
+});
+
+test('现代 Shorts 操作栏晚加载时补挂按钮', () => {
+  const site = page(undefined, SHORT_URL, {deferActionBars: true});
+  assert.equal(site.button, undefined);
+  site.addActionBar(0);
+  assert.ok(site.button);
+  assert.equal(site.button.parentElement, site.reels[0].actions);
+});
+
+test('身份不明的 reel 不覆盖已识别的预加载视频', () => {
+  const site = page(undefined, SHORT_URL, {identitylessIndex: 0});
+  assert.equal(site.button, undefined);
+  site.setActiveReel(0);
+  assert.ok(site.button);
+  assert.equal(site.button.parentElement, site.reels[0].actions);
+});
+
+test('身份缺失且操作栏延迟时只在唯一 active 项出现后挂载', () => {
+  const site = page(undefined, SHORT_URL, {deferIdentity: true, deferActionBars: true});
+  assert.equal(site.button, undefined);
+  site.addActionBar(1);
+  assert.equal(site.button, undefined);
+  site.setActiveReel(1);
+  assert.ok(site.button);
+  assert.equal(site.button.parentElement, site.reels[1].actions);
+});
+
+test('旧 renderer 的唯一 is-active 与 #actions 仍兼容', () => {
+  const site = page(undefined, SHORT_URL, {structure: 'legacy'});
+  assert.ok(site.button);
+  assert.equal(site.button.parentElement, site.reels[0].actions);
+  assert.equal(site.button.parentElement.firstElementChild, site.button);
+});
+
+test('CSS 隐藏的 Shorts renderer 和现代操作栏跳过匹配，恢复后挂到爱心前', () => {
+  const hiddenRenderer = page(undefined, SHORT_URL, {hiddenRendererIndex: 0});
+  assert.equal(hiddenRenderer.button, undefined);
+  const renderer = hiddenRenderer.reels[0].renderer;
+  renderer.style.opacity = '1';
+  hiddenRenderer.mutate(renderer, 'style');
+  assert.equal(hiddenRenderer.frames.length, 1);
+  hiddenRenderer.flush();
+  assert.equal(hiddenRenderer.button.parentElement, hiddenRenderer.reels[0].actions);
+  assert.equal(hiddenRenderer.reels[0].actions.firstElementChild, hiddenRenderer.button);
+  assert.equal(hiddenRenderer.reels[0].actions.children[1], hiddenRenderer.reels[0].like);
+
+  const hiddenActionBar = page(undefined, SHORT_URL, {hiddenActionBarIndex: 0});
+  assert.equal(hiddenActionBar.button, undefined);
+  const actionBar = hiddenActionBar.reels[0].actions;
+  actionBar.style.visibility = 'visible';
+  hiddenActionBar.mutate(actionBar, 'style');
+  hiddenActionBar.flush();
+  assert.equal(hiddenActionBar.button.parentElement, actionBar);
+  assert.equal(actionBar.firstElementChild, hiddenActionBar.button);
+  assert.equal(actionBar.children[1], hiddenActionBar.reels[0].like);
+});
+
+test('检查 ancestor 可见性但不把 aria-hidden 或 inert 当作视觉隐藏', () => {
+  const site = page(undefined, SHORT_URL, {semanticHiddenIndex: 0});
+  assert.ok(site.button);
+  assert.equal(site.button.parentElement, site.reels[0].actions);
+  assert.ok(site.observerConfigs[0].attributeFilter.includes('class'));
+  assert.ok(site.observerConfigs[0].attributeFilter.includes('style'));
+
+  const unrelated = site.document.createElement('div');
+  site.document.body.append(unrelated);
+  site.mutate(unrelated, 'class');
+  assert.equal(site.frames.length, 0);
+
+  site.document.body.style.visibility = 'hidden';
+  site.mutate(site.document.body, 'style');
+  site.flush();
+  assert.equal(site.button, undefined);
+  site.document.body.style.visibility = 'visible';
+  site.mutate(site.document.body, 'class');
+  site.flush();
+  assert.equal(site.button.parentElement, site.reels[0].actions);
+});
+
+test('滚出视口时移除旧项按钮，切到可见视频后重新定位', () => {
+  const site = page(undefined, SHORT_URL);
+  const button = site.button;
+  site.setReelRect(0, {top: 800, bottom: 1400, left: 300, right: 620, width: 320, height: 600});
+  assert.equal(site.button, undefined);
+  site.activateReel(1, SHORT_URL_B);
+  assert.equal(site.button, button);
+  assert.equal(button.parentElement, site.reels[1].actions);
 });
 
 test('点击只展开三项菜单，选择后发送且等待时不重复提交', async () => {
