@@ -149,8 +149,6 @@ def main():
     # 决策 62：浏览器仅发送单视频链接，不改变窗口焦点。
     from sookit.core.browser_ipc import BrowserRequestServer
     window._browser_server = BrowserRequestServer(window.handle_browser_request, window)
-    if not window._browser_server.listen():
-        logging.getLogger('Sookit').warning('浏览器本机请求通道监听失败')
     app.aboutToQuit.connect(window._browser_server.close)
     app.setQuitOnLastWindowClosed(False)
 
@@ -198,6 +196,8 @@ def main():
     else:
         splash.close()
 
+    # 启动准备完成后才安排监听，确保通道可连接时主事件循环已运行。
+    window._browser_server.listen_after_event_loop_starts()
     sys.exit(app.exec())
 
 

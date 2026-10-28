@@ -42,6 +42,14 @@ class BrowserRequestServer(QObject):
     def listen(self) -> bool:
         return self._server.listen(self.name)
 
+    def listen_after_event_loop_starts(self):
+        """仅在主事件循环开始处理事件后开放本机通道。"""
+        QTimer.singleShot(0, self._listen)
+
+    def _listen(self):
+        if not self.listen():
+            logger.warning('浏览器本机请求通道监听失败')
+
     def close(self):
         self._server.close()
         for socket in list(self._connections):

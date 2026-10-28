@@ -26,7 +26,7 @@ YouTube 操作栏按钮 → 扩展后台 → sookit-native-host.exe
 
 ## 生命周期
 
-`core/browser_ipc.py` 使用 `QLocalServer/QLocalSocket`（Windows 命名管道），名字包含当前用户摘要和 Windows 会话号，设置 `UserAccessOption`。服务在 `MainWindow` 初始化完成后监听，回调在 GUI 线程执行；不完整连接 5 秒后断开，退出时关闭监听与连接。
+`core/browser_ipc.py` 使用 `QLocalServer/QLocalSocket`（Windows 命名管道），名字包含当前用户摘要和 Windows 会话号，设置 `UserAccessOption`。服务对象在 `MainWindow` 初始化完成后创建，并在全部启动准备完成后，以零延时定时器安排在 Qt 主事件循环开始处理事件后监听，避免 host 已连接但 handler 尚不能执行；回调在 GUI 线程执行，不完整连接 5 秒后断开，退出时关闭监听与连接。
 
 host 优先向现有实例发送；只有无法建立连接才用独立进程启动 `Sookit.exe --silent`，随后最多等待 30 秒就绪。已建立连接但回执超时不自动重发，以免同一请求被执行两次。沿用决策 12 的 `Local\Sookit` 互斥体；`--silent` 重复启动不再弹“已在运行”提示。
 

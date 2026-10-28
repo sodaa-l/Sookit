@@ -13,6 +13,7 @@ import unittest
 from unittest.mock import MagicMock, patch
 import uuid
 
+from PyQt6.QtCore import QEventLoop, QTimer
 from PyQt6.QtNetwork import QLocalSocket
 from PyQt6.QtWidgets import QApplication
 
@@ -112,7 +113,7 @@ class BridgeTests(unittest.TestCase):
             launch.assert_not_called()
 
     def test_cold_start_waits_for_ready_and_detaches_stdio(self):
-        with patch('sookit.core.browser_ipc.send_request', side_effect=[None, None, {'ok': True}]), \
+        with patch('sookit.core.browser_ipc.send_request', side_effect=[None, None, {'ok': True}]) as send, \
                 patch('sookit.core.config.load_browser_extension_enabled', return_value=True), \
                 patch.object(native_host, 'app_command', return_value=(['Sookit.exe', '--silent'], ROOT)), \
                 patch.object(native_host.subprocess, 'Popen') as launch, \
@@ -123,13 +124,38 @@ class BridgeTests(unittest.TestCase):
             self.assertEqual(launch.call_args.kwargs['stdin'], subprocess.DEVNULL)
             self.assertEqual(launch.call_args.kwargs['stdout'], subprocess.DEVNULL)
             self.assertNotIn('shell', launch.call_args.kwargs)
+            self.assertEqual(send.call_count, 3)
+
+    def test_cold_start_timeout_reports_failure_without_retrying_launch(self):
+        with patch('sookit.core.browser_ipc.send_request', side_effect=[None, None]) as send, \
+                patch('sookit.core.config.load_browser_extension_enabled', return_value=True), \
+                patch.object(native_host, 'app_command', return_value=(['Sookit.exe', '--silent'], ROOT)), \
+                patch.object(native_host.subprocess, 'Popen') as launch, \
+                patch.object(native_host.time, 'monotonic', side_effect=[0, 0, 30]), \
+                patch.object(native_host.time, 'sleep') as sleep:
+            with self.assertRaisesRegex(TimeoutError, 'Sookit 启动超时'):
+                native_host.forward_request(REQUEST)
+            self.assertEqual(send.call_count, 2)
+            launch.assert_called_once()
+            sleep.assert_called_once_with(0.15)
 
     def test_connected_timeout_is_not_retried_or_started_twice(self):
-        with patch('sookit.core.browser_ipc.send_request', side_effect=TimeoutError('未确认')), \
+        with patch('sookit.core.browser_ipc.send_request', side_effect=TimeoutError('未确认')) as send, \
                 patch.object(native_host.subprocess, 'Popen') as launch:
             with self.assertRaises(TimeoutError):
                 native_host.forward_request(REQUEST)
+            send.assert_called_once_with(REQUEST)
             launch.assert_not_called()
+
+    def test_cold_start_connected_timeout_is_not_retried(self):
+        with patch('sookit.core.browser_ipc.send_request', side_effect=[None, TimeoutError('未确认')]) as send, \
+                patch('sookit.core.config.load_browser_extension_enabled', return_value=True), \
+                patch.object(native_host, 'app_command', return_value=(['Sookit.exe', '--silent'], ROOT)), \
+                patch.object(native_host.subprocess, 'Popen') as launch:
+            with self.assertRaisesRegex(TimeoutError, '未确认'):
+                native_host.forward_request(REQUEST)
+            self.assertEqual(send.call_count, 2)
+            launch.assert_called_once()
 
     def test_busy_response_is_preserved_without_restarting(self):
         response = {'ok': False, 'error': '忙'}
@@ -205,6 +231,32 @@ class LocalChannelTests(unittest.TestCase):
                 'print(json.dumps(send_request(json.loads(sys.argv[2]), name=sys.argv[1])))')
         process = subprocess.Popen([sys.executable, '-c', code, self.name, json.dumps(REQUEST)],
                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=str(ROOT))
+        self.addCleanup(lambda: process.kill() if process.poll() is None else None)
+        self.settle_until(lambda: process.poll() is not None, 5)
+        stdout, stderr = process.communicate(timeout=2)
+        self.assertEqual(process.returncode, 0, stderr)
+        self.assertTrue(json.loads(stdout)['ok'])
+        self.handler.assert_called_once_with(REQUEST)
+
+    def test_deferred_listener_starts_with_event_loop_and_receives_once(self):
+        name = self.name + '.deferred'
+        server = BrowserRequestServer(self.handler, name=name)
+        self.addCleanup(server.close)
+        server.listen_after_event_loop_starts()
+        self.assertFalse(server._server.isListening())
+
+        loop = QEventLoop()
+        QTimer.singleShot(20, loop.quit)
+        loop.exec()
+        self.assertTrue(server._server.isListening())
+
+        code = ('from PyQt6.QtCore import QCoreApplication; '
+                'from sookit.core.browser_ipc import send_request; '
+                'import json,sys; app=QCoreApplication([]); '
+                'print(json.dumps(send_request(json.loads(sys.argv[2]), name=sys.argv[1])))')
+        process = subprocess.Popen(
+            [sys.executable, '-c', code, name, json.dumps(REQUEST)],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=str(ROOT))
         self.addCleanup(lambda: process.kill() if process.poll() is None else None)
         self.settle_until(lambda: process.poll() is not None, 5)
         stdout, stderr = process.communicate(timeout=2)
