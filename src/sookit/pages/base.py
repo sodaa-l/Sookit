@@ -76,7 +76,8 @@ class PageBase(QWidget):
             win.switchTo(win.settings_page)
 
     def log(self, msg):
-        print(msg)
+        # 冷启动没有可用控制台；stdout 的 GBK 编码错误不能打断已受理的任务。
+        # 入口已配置控制台/UTF-8 文件 handler，由 logging 统一输出。
         logger.info(msg)
 
     @staticmethod

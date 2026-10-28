@@ -229,6 +229,7 @@ flowchart TB
 | 62 | Chrome 视频页按钮与后台嗅探、接收开关与只读诊断 | MV3 扩展 → Native Messaging → 当前用户/会话的 Qt 本机通道；请求开关默认开，GUI 与冷启动 host 都校验；只读诊断扩展文件、host 清单/程序和 HKCU/HKLM 注册路径 | [62-chrome-background-sniff.md](decisions/62-chrome-background-sniff.md) |
 | 63 | 设置页 Chrome 扩展引导区改版（2026-10-26） | 步骤序号改淡主题色圆底 + 主题色数字（订阅 `themeColorChanged` 重刷）；头部标题 15px/600 + 1px 分隔线，折叠时连分隔线一起隐藏；地址与路径统一为自绘「值条」（圆角 6、极淡底 + 1px 边框，亮暗两套色、订阅 `themeChangedFinished`），值条内嵌透明图标按钮，宽度按内容自适应、上限 820；路径前缀与路径拆成两个标签，`_GuideValueLabel` 重写 `sizeHint`/`minimumSizeHint` 让超长路径省略而值条可收缩；**步骤内容必须包成 `step_content` 再 `addWidget(…, 1)`**，直接嵌套布局会让值条的最大宽度向上传染、把序号挤到中间（实测偏移 84px） | [63-settings-guide-ui.md](decisions/63-settings-guide-ui.md) |
 | 64 | Chrome 视频菜单与直接后台下载（2026-10-28） | 三项官方风格菜单；嗅探保持原流程，最佳画质与封面独立入既有队列，不覆盖嗅探状态；最佳画质用 `bestvideo*+bestaudio/best`，封面保留最佳可用原图；扩展和 host 协议白名单同步更新 | [64-chrome-video-actions.md](decisions/64-chrome-video-actions.md) |
+| 65 | 浏览器静默冷启动的日志、首次窗口尺寸与提示定位（2026-10-28） | 页面日志统一走 logger，避免 GBK stdout 抛异常造成嗅探假失败和计时器缺失；首次显示恢复 1131×731 并居中，后续保留用户手动尺寸；长短 InfoBar 在显示和尺寸变化后统一重排并更新运行中的动画终点 | [65-browser-cold-start.md](decisions/65-browser-cold-start.md) |
 
 ## 测试
 
@@ -329,7 +330,8 @@ class MyNewPage(PageBase):
   3. 换行后需同步 `bar.content = wrapped`：窗口 resize 时库的 `_adjustText` 会用 TextWrap 重排 `self.content`，其对含 `\n` 文本逐行处理不破坏已有换行（已从源码确认 + resize 实测）；**title 同理**（`bar.title = wrapped`），否则 resize 会把标题 TextWrap 回单行；
   4. **只判 content 会漏掉长标题**（2026-10-07 实测）：任务失败条的 title 是整条推文文本（渲染宽 1092px），而 content 仅 336px，旧判定放行走原生单行版 → 条宽 1539px **比页面 1082px 还宽**，横跨页面顶部把「进行中/已完成」segment 遮住；现在 title/content 一起判定、一起折行，条宽收敛到 663px 落在右上角。
 - 初始宽度可能偏大（QSS 字体 polish 前的 sizeHint 偏大，实测 679 → 557），封装内已加事件循环后二次 `adjustSize` 收缩（`_settle`，singleShot 0/100ms）。
-- **宽度收缩后必须重算位置**：`InfoBarManager` 在 `show()` 瞬间按当时偏大的宽度算定 x（`parentW - barW - margin`），此后 InfoBar 自身宽度变化**不会**触发重定位（库只在父窗口 resize / 其他条关闭时重算），右侧会出现「收缩量 + margin」的大段空隙（实测 146px，期望 24px）。`_settle` 在收缩后经 `InfoBarManager.make(bar.position)._pos(bar)` 重算位置；滑入动画（200ms）运行中须改 `slideAni` 的 endValue 而非直接 `move`（会被动画逐帧覆盖）。
+- **宽度收缩后必须重算位置**：`InfoBarManager` 在 `show()` 瞬间按当时偏大的宽度算定 x（`parentW - barW - margin`），此后 InfoBar 自身宽度变化**不会**触发重定位（库只在父窗口 resize / 其他条关闭时重算），右侧会出现「收缩量 + margin」的大段空隙（实测 146px，期望 24px）。`_settle` 在收缩后经 `InfoBarManager.make(bar.position)._pos(bar)` 重算位置；滑入或收拢动画运行中须改 `slideAni` / `dropAni` 的 endValue 而非直接 `move`（会被动画逐帧覆盖）。
+- **隐藏期间创建的长短提示均须在显示后校正**（决策 65）：冷启动时子控件显示处理可能先于主窗口尺寸恢复，滑入动画按旧窗口宽度创建；仅在创建后 0/100ms 校正可能早已在隐藏期间执行完。统一封装通过随条销毁的事件过滤器监听提示条及父控件的显示、尺寸、布局和窗口状态变化，用单次 0ms 定时器合并事件；布局完成后重排同组全部提示，并更新正在运行的动画终点。
 - 换行分支会 `replace("\n", "")` 后按标点重新断行，故长文案中 `\n` 不产生换行、**标点才是断点**——需要在此处断行时（如安装器路径后）确保文案里有标点。
 - **任务失败提示按发起页过滤**（2026-10-07）：`task_failed` 是全局信号，回调里必须先判 `task.task_id in self._owned_task_ids`（`PageBase.run_queued_task` 自动登记），否则**别的页面的任务失败会在本页弹条**（实测动图任务失败同时在嗅探页弹出）。`youtube_page` / `gif_page` 均按此过滤，`queue_page` 作为全局视图有意不过滤，`monitor_page` 另有 `_monitor_id_by_queue` 映射过滤。
 

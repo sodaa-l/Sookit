@@ -1,6 +1,6 @@
 """
 widgets/infobar.py
-InfoBar 统一入口：长文案自动换行限宽，短文案保持原生行为。
+InfoBar 统一入口：长文案自动换行限宽，长短提示统一同步定位。
 
 背景：qfluentwidgets InfoBar 内置换行（_adjustText）按"父窗口宽/9"的字符数
 硬换行（上限 120 字符），按字符数而非显示宽度计算；中文字符显示宽度约为
@@ -18,7 +18,7 @@ layout 天然上下排列，title 与 content 不会再挤在同一行。
 """
 import re
 
-from PyQt6.QtCore import Qt, QTimer, QPropertyAnimation
+from PyQt6.QtCore import Qt, QEvent, QObject, QTimer, QPropertyAnimation
 from PyQt6.QtWidgets import QLabel
 import qfluentwidgets as qfw
 
@@ -32,7 +32,8 @@ def show_infobar(parent, severity: str, title: str, content: str,
     """创建 InfoBar 的统一入口，返回实例（可继续 addWidget 添加自定义控件）。
 
     content 实际渲染宽度超过 wrap_max_width 时自动转为竖排换行版
-    （wordWrap 按像素宽换行 + 限宽 + 补足高度），否则与原生 InfoBar 一致。
+    （wordWrap 按像素宽换行 + 限宽 + 补足高度），否则保留原生单行布局。
+    所有提示在显示或尺寸变化后同步位置与动画终点。
 
     severity: 'error' / 'warning' / 'info' / 'success'
     """
@@ -40,17 +41,36 @@ def show_infobar(parent, severity: str, title: str, content: str,
     bar = factory(parent=parent, title=title, content=content,
                   orient=Qt.Orientation.Horizontal, isClosable=closable,
                   duration=duration)
-    if not _needs_wrap(bar, title, content, wrap_max_width):
-        return bar  # 短文案：原生行为即可
-
-    # 长文案：同调用栈内 close + 重建（无中间绘制，不会闪烁）
-    bar.close()
-    bar.deleteLater()
-    bar = factory(parent=parent, title=title, content=content,
-                  orient=Qt.Orientation.Vertical, isClosable=closable,
-                  duration=duration)
-    _apply_wrap(bar, wrap_max_width)
+    if _needs_wrap(bar, title, content, wrap_max_width):
+        # 长文案：同调用栈内 close + 重建（无中间绘制，不会闪烁）
+        bar.close()
+        bar.deleteLater()
+        bar = factory(parent=parent, title=title, content=content,
+                      orient=Qt.Orientation.Vertical, isClosable=closable,
+                      duration=duration)
+        _apply_wrap(bar, wrap_max_width)
+    bar._position_sync = _InfoBarPositionSync(bar)
     return bar
+
+
+class _InfoBarPositionSync(QObject):
+    """等父窗口和提示条布局完成后，统一校正位置与动画终点。"""
+
+    def __init__(self, bar: qfw.InfoBar):
+        super().__init__(bar)
+        self.timer = QTimer(self)
+        self.timer.setSingleShot(True)
+        self.timer.timeout.connect(lambda: _settle(bar))
+        bar.installEventFilter(self)
+        if bar.parent():
+            bar.parent().installEventFilter(self)
+        self.timer.start(0)
+
+    def eventFilter(self, obj, event):
+        if event.type() in (QEvent.Type.Show, QEvent.Type.Resize,
+                            QEvent.Type.LayoutRequest, QEvent.Type.WindowStateChange):
+            self.timer.start(0)
+        return super().eventFilter(obj, event)
 
 
 def _needs_wrap(bar: qfw.InfoBar, title: str, content: str,
@@ -148,6 +168,8 @@ def _settle(bar: qfw.InfoBar):
     manager 在 show 瞬间按当时偏大的宽度算好 x（parentW - barW - margin），
     之后宽度收缩不会触发重定位（库只在父窗口 resize/其他条关闭时重算），
     导致右侧出现「宽度收缩量 + margin」的大段空隙，故收缩后需手动重算。
+    静默冷启动时父窗口在首次 showEvent 恢复尺寸，滑入动画可能仍持有旧终点；
+    因此长短提示都需在显示、布局或尺寸变化后同步，堆叠条也要一起重排。
 
     纯尽力而为：条已关闭/父对象已回收/C++ 对象已销毁时直接放弃，不影响功能。
     注意 manager 的 `infoBars` 是 WeakKeyDictionary，查不到父对象时 `_pos` 抛的是
@@ -159,11 +181,17 @@ def _settle(bar: qfw.InfoBar):
         bar.adjustSize()
         if not bar.parent():
             return
-        pos = qfw.InfoBarManager.make(bar.position)._pos(bar)
-        ani = bar.property('slideAni')
-        if ani and ani.state() == QPropertyAnimation.State.Running:
-            ani.setEndValue(pos)  # 滑入动画（200ms）未结束，直接 move 会被逐帧覆盖
-        else:
-            bar.move(pos)
+        manager = qfw.InfoBarManager.make(bar.position)
+        # 高度变化也会影响后续提示条的堆叠位置；统一更新同一父控件下的条。
+        for sibling in manager.infoBars.get(bar.parent(), []):
+            pos = manager._pos(sibling)
+            animating = False
+            for name in ('slideAni', 'dropAni'):
+                ani = sibling.property(name)
+                if ani and ani.state() == QPropertyAnimation.State.Running:
+                    ani.setEndValue(pos)
+                    animating = True
+            if not animating:
+                sibling.move(pos)
     except (KeyError, ValueError, RuntimeError):
         return  # 已从 manager 移除 / 父对象已回收 / 控件已销毁

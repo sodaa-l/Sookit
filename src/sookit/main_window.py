@@ -54,10 +54,13 @@ _logger_mw = logging.getLogger("Sookit.main_window")
 
 # ========== 主窗口 ==========
 class MainWindow(qfw.FluentWindow):
+    INITIAL_SIZE = (1131, 731)
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle(f"{APP_NAME} {APP_VERSION}")
-        self.resize(1131, 731)
+        self.resize(*self.INITIAL_SIZE)
+        self._initial_show_pending = True
         self.setMinimumSize(966, 644)
 
         # 设置窗口图标
@@ -277,8 +280,17 @@ class MainWindow(qfw.FluentWindow):
         if not self._window_focused():
             notify_update_notice("yt-dlp 更新完毕", "yt-dlp/Deno 已更新到最新版本。")
 
+    def showEvent(self, event):
+        # Windows 无边框组件会在隐藏期间处理旧的 500×500 原生尺寸事件。
+        # 首次真正显示时恢复应用尺寸；之后隐藏/显示保留用户调整后的大小。
+        if getattr(self, '_initial_show_pending', False):
+            self._initial_show_pending = False
+            self.resize(*self.INITIAL_SIZE)
+            self._center_on_screen()
+        super().showEvent(event)
+
     def _center_on_screen(self):
-        """在 show() 之前居中，用 width/height 而非 frameGeometry"""
+        """按逻辑窗口尺寸在主屏可用区域居中。"""
         screen = QApplication.primaryScreen()
         if not screen:
             return
