@@ -9,17 +9,21 @@ const URL_A = 'https://www.youtube.com/watch?v=Yb9H5vhWyHg';
 const URL_B = 'https://www.youtube.com/watch?v=aaaaaaaaaaa';
 const ID = 'inplhidhdgncdjkkmbfcocedkabbaghn';
 
-function background(native = async () => ({ok: true})) {
+function background(native = async () => ({ok: true}), getTab = async () => ({url: URL_A})) {
   let receive;
   const calls = [];
-  const context = vm.createContext({URL, chrome: {runtime: {
-    id: ID,
-    onMessage: {addListener(listener) { receive = listener; }},
-    async sendNativeMessage(host, request) { calls.push({host, request}); return native(request); }
-  }}});
+  const tabQueries = [];
+  const context = vm.createContext({URL, chrome: {
+    tabs: {async get(id) { tabQueries.push(id); return getTab(id); }},
+    runtime: {
+      id: ID,
+      onMessage: {addListener(listener) { receive = listener; }},
+      async sendNativeMessage(host, request) { calls.push({host, request}); return native(request); }
+    }
+  }});
   vm.runInContext(fs.readFileSync(path.join(extension, 'background.js'), 'utf8'), context);
   const sender = {id: ID, frameId: 0, tab: {id: 1}, url: URL_A};
-  return {calls, sender, send(message, source = sender) {
+  return {calls, tabQueries, sender, send(message, source = sender) {
     return new Promise(resolve => {
       const pending = receive(message, source, resolve);
       if (!pending) resolve(undefined);
@@ -59,6 +63,39 @@ test('后台支持短链、Shorts 和直播的单视频标准化', async () => {
     'https://www.youtube.com/shorts/Yb9H5vhWyHg', 'https://www.youtube.com/live/Yb9H5vhWyHg']) {
     assert.equal((await bridge.send({action: 'sniff', url}, {...bridge.sender, url})).ok, true);
     assert.equal(bridge.calls.at(-1).request.url, URL_A);
+  }
+});
+
+test('站内导航后按当前标签页校验，不把内容脚本的旧地址当成当前视频', async () => {
+  const current = 'https://www.youtube.com/watch?v=XFl4d3Ya9t4';
+  for (const original of ['https://www.youtube.com/',
+    'https://www.youtube.com/results?search_query=cover', URL_A]) {
+    const bridge = background(undefined, async () => ({url: current + '&t=10'}));
+    const sender = {...bridge.sender, url: original};
+    for (const action of ['sniff', 'download_best', 'download_cover']) {
+      const result = await bridge.send({action, url: current}, sender);
+      assert.equal(result.ok, true, result.error);
+      assert.equal(bridge.calls.at(-1).request.url, current);
+    }
+    assert.deepEqual(bridge.tabQueries, [1, 1, 1]);
+  }
+});
+
+test('当前标签页已切换、正在导航、已关闭或无法读取时不发送本机请求', async () => {
+  for (const getTab of [
+    async () => ({url: URL_B}),
+    async () => ({url: 'https://www.youtube.com/'}),
+    async () => ({url: 'https://evil.test/'}),
+    async () => ({url: URL_A, pendingUrl: URL_B}),
+    async () => ({url: URL_A, pendingUrl: 'https://evil.test/'}),
+    async () => ({}),
+    async () => { throw new Error('No tab with id: 1.'); }
+  ]) {
+    const bridge = background(undefined, getTab);
+    const result = await bridge.send({action: 'sniff', url: URL_A});
+    assert.equal(result.ok, false);
+    assert.match(result.error, /页面|视频/);
+    assert.equal(bridge.calls.length, 0);
   }
 });
 
@@ -216,6 +253,25 @@ test('YouTube 站内导航关闭菜单，使用新链接并在离开视频页时
   site.navigate(URL_A);
   assert.ok(site.button);
   assert.equal(page(undefined, 'https://www.youtube.com/').button, undefined);
+});
+
+test('从首页进入视频再切换视频，页面菜单与后台按当前链接联动', async () => {
+  let current = 'https://www.youtube.com/';
+  const bridge = background(undefined, async () => ({url: current}));
+  const sender = {...bridge.sender, url: current};
+  const site = page(message => bridge.send(message, sender), current);
+  assert.equal(site.button, undefined);
+  for (const url of ['https://www.youtube.com/watch?v=XFl4d3Ya9t4', URL_A]) {
+    current = url;
+    site.navigate(url);
+    for (const action of ['sniff', 'download_best', 'download_cover']) {
+      await site.choose(action);
+      assert.equal(site.feedback.dataset.error, 'false');
+      assert.equal(bridge.calls.at(-1).request.url, url);
+      assert.equal(bridge.calls.at(-1).request.action, action);
+    }
+  }
+  assert.equal(bridge.calls.length, 6);
 });
 
 test('切换视频后抛弃旧回执，返回同一视频也不会显示过期消息', async () => {

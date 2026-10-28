@@ -3,12 +3,17 @@ const HOST = 'com.sookit.browser';
 const ACTIONS = new Set(['sniff', 'download_best', 'download_cover']);
 const ALLOWED_HOSTS = new Set(['www.youtube.com', 'youtube.com', 'm.youtube.com', 'youtu.be']);
 
-function videoUrl(value) {
+function youtubeUrl(value) {
   const url = new URL(value);
   if (url.protocol !== 'https:' || !ALLOWED_HOSTS.has(url.hostname)
       || url.username || url.password || (url.port && url.port !== '443')) {
     throw new Error('仅支持 HTTPS YouTube 视频链接');
   }
+  return url;
+}
+
+function videoUrl(value) {
+  const url = youtubeUrl(value);
   let id = '';
   if (url.hostname === 'youtu.be') id = url.pathname.slice(1);
   else if (url.pathname === '/watch' && url.searchParams.getAll('v').length === 1) id = url.searchParams.get('v');
@@ -23,8 +28,20 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
     if (sender.id !== chrome.runtime.id || !sender.tab || sender.frameId !== 0) {
       throw new Error('请求来源无效');
     }
+    youtubeUrl(sender.url);
     const url = videoUrl(message.url);
-    if (videoUrl(sender.url) !== url) throw new Error('页面已切换，请重试');
+    // YouTube 站内导航复用文档，sender.url 可能仍是注入时的首页或旧视频。
+    let currentUrl;
+    try {
+      const tab = await chrome.tabs.get(sender.tab.id);
+      currentUrl = videoUrl(tab.url);
+      if (tab.pendingUrl && videoUrl(tab.pendingUrl) !== currentUrl) {
+        throw new Error('页面正在切换');
+      }
+    } catch {
+      throw new Error('无法确认当前视频页面，请刷新页面后重试');
+    }
+    if (currentUrl !== url) throw new Error('页面已切换，请重试');
     try {
       return await chrome.runtime.sendNativeMessage(HOST, {action: message.action, url});
     } catch (error) {
