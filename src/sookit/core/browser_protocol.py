@@ -71,7 +71,7 @@ def validate_request(message: object) -> dict:
             or message['action'] not in BROWSER_ACTIONS):
         raise ValueError('不支持的浏览器请求')
     request = {'action': message['action'], 'url': normalize_video_url(message.get('url'))}
-    if request['action'] == 'download_best':
+    if request['action'] in ('download_best', 'download_cover'):
         metadata = _validated_video_metadata(message.get('video_metadata'))
         if metadata:
             request['video_metadata'] = metadata

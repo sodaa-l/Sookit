@@ -33,7 +33,7 @@ from sookit.core.utils import set_smooth_scroll_params
 from sookit.widgets.cover_image import CoverImageWidget
 from sookit.widgets.combo_box import StaticComboBox
 from sookit.widgets.infobar import show_infobar
-from sookit.widgets.notifier import notify_result_notice
+from sookit.widgets.notifier import browser_video_metadata_summary, notify_result_notice
 from sookit.widgets.option_grid import OptionFlowLayout
 from sookit.widgets.option_row import OptionRow
 from sookit.widgets.subtitle_panel import SubtitlePanel, CommentDownloadDialog
@@ -154,6 +154,7 @@ class YouTubePage(PageBase):
         self._sniff_seq = 0
         self._cover_loader_worker = None
         self._cover_download_workers = set()
+        self._cover_download_metadata_by_path = {}
         self._cover_data = None  # 封面原始字节数据（供任务队列复用）
         self._cover_data_seq = None  # 字幕任务只复用同一轮嗅探的封面
         self._sniff_thumbs = []  # 嗅探得到的封面列表（_populate_cover_combo 有效分支时保存，供入队复用）
@@ -680,9 +681,24 @@ class YouTubePage(PageBase):
         cover_urls = [thumbnail['url'] for thumbnail in thumbnails if thumbnail.get('url')]
         if not cover_urls:
             return {'ok': False, 'error': '无法获取该视频的封面链接'}
-        filename = f'{video_id}_cover{self._cover_extension(cover_urls[0])}'
+        display_metadata = video_metadata if isinstance(video_metadata, dict) else {}
+        video_title = display_metadata.get('title')
+        if not isinstance(video_title, str) or not video_title.strip():
+            video_title = video_id
+        else:
+            video_title = video_title.strip()
+        cover_metadata = {'title': video_title}
+        channel = display_metadata.get('channel')
+        if isinstance(channel, str) and channel.strip():
+            cover_metadata['channel'] = channel.strip()
+        duration = display_metadata.get('duration')
+        if type(duration) is int and 0 < duration <= MAX_VIDEO_DURATION_SECONDS:
+            cover_metadata['duration'] = duration
+
+        filename_base = self._cover_filename_base(video_title, video_id)
+        filename = f'{filename_base}_cover{self._cover_extension(cover_urls[0])}'
         path = self._next_cover_download_path(out_dir, filename)
-        self._start_cover_download(cover_urls, path)
+        self._start_cover_download(cover_urls, path, display_metadata=cover_metadata)
         return {'ok': True, 'message': '封面下载已开始；高分辨率不可用时会自动尝试下一档，完成后请查看 Sookit'}
 
     def do_sniff(self):
@@ -1306,6 +1322,14 @@ class YouTubePage(PageBase):
         self._start_cover_download(cover_url, path)
 
     @staticmethod
+    def _cover_filename_base(title, fallback):
+        title = title if isinstance(title, str) else ''
+        safe_base = ''.join(
+            char if char.isalnum() or char in ' _-.,()[]' else ' ' for char in title)
+        safe_base = ' '.join(safe_base.split()).strip(' .')[:120].rstrip(' .')
+        return safe_base or fallback or 'cover'
+
+    @staticmethod
     def _cover_extension(cover_url):
         ext = os.path.splitext(urlparse(cover_url).path)[1].lower()
         return ext if ext in ('.jpg', '.jpeg', '.png', '.webp', '.avif') else '.jpg'
@@ -1325,8 +1349,11 @@ class YouTubePage(PageBase):
                 return path
             counter += 1
 
-    def _start_cover_download(self, urls, path):
+    def _start_cover_download(self, urls, path, display_metadata=None):
         worker = self.CoverDownloadWorker(urls, path)
+        if isinstance(display_metadata, dict) and display_metadata:
+            key = os.path.normcase(os.path.abspath(path))
+            self._cover_download_metadata_by_path[key] = dict(display_metadata)
         worker.log_signal.connect(self.log)
         worker.download_finished.connect(self._on_cover_download_done, Qt.ConnectionType.QueuedConnection)
         worker.finished.connect(self._on_cover_download_worker_finished, Qt.ConnectionType.QueuedConnection)
@@ -1344,18 +1371,27 @@ class YouTubePage(PageBase):
 
     def _on_cover_download_done(self, success, path):
         """封面下载完成回调"""
+        key = os.path.normcase(os.path.abspath(path))
+        metadata_by_path = getattr(self, '_cover_download_metadata_by_path', {})
+        display_metadata = metadata_by_path.pop(key, {})
+        notification_title = display_metadata.get('title')
+        if not isinstance(notification_title, str) or not notification_title.strip():
+            notification_title = os.path.basename(path)
+        else:
+            notification_title = notification_title.strip()
+        metadata_summary = browser_video_metadata_summary(display_metadata)
         if success:
             # 实测分辨率弥补下拉框无宽高档位的信息缺失（QPixmap 读图头，开销可忽略）
             pixmap = QPixmap(path)
             size_info = f"（实际分辨率 {pixmap.width()}x{pixmap.height()}）" if not pixmap.isNull() else ""
             self.log(f"✓ 封面下载完成: {path}{size_info}")
-            notify_result_notice("封面下载完成", os.path.basename(path))
+            notify_result_notice("封面下载完成", notification_title, metadata_summary)
             show_infobar(self, "success", title="封面下载完成",
                          content=f"已保存到: {os.path.basename(path)}", duration=3000)
         else:
             self.log("✗ 封面下载失败")
-            notify_result_notice("封面下载失败", os.path.basename(path),
-                                 "请检查网络连接或链接是否有效")
+            details = [part for part in (metadata_summary, "请检查网络连接或链接是否有效") if part]
+            notify_result_notice("封面下载失败", notification_title, " · ".join(details))
             show_infobar(self, "error", title="封面下载失败",
                          content="请检查网络连接或链接是否有效")
 

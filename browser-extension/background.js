@@ -62,7 +62,7 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
     if (currentUrl !== url) throw new Error('页面已切换，请重试');
     try {
       const nativeMessage = {action: message.action, url};
-      if (message.action === 'download_best') {
+      if (message.action === 'download_best' || message.action === 'download_cover') {
         const metadata = videoMetadata(message.video_metadata);
         if (metadata) nativeMessage.video_metadata = metadata;
       }

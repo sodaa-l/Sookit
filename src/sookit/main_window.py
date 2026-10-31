@@ -146,7 +146,9 @@ class MainWindow(qfw.FluentWindow):
                 self.switchTo(self.youtube_page)
             return response
         if action in ('download_best', 'download_cover'):
-            video_metadata = request.get('video_metadata') if action == 'download_best' else None
+            video_metadata = request.get('video_metadata')
+            if video_metadata is None:
+                return self.youtube_page.download_from_browser(request['url'], action)
             return self.youtube_page.download_from_browser(
                 request['url'], action, video_metadata=video_metadata)
         return {'ok': False, 'error': '不支持的浏览器请求'}

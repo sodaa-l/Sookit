@@ -9,9 +9,9 @@
 ## 决策
 
 - 浏览器请求开关及 YouTube URL 校验通过后，封面动作提取 video ID，按 `build_thumbnails(video_id)` 返回顺序将 URL 列表交给 `YouTubePage.CoverDownloadWorker`。每档调用 `Functions.download_thumbnail`；当前档失败或没有生成非空文件时，清理部分文件并尝试下一档。全部失败后复用现有封面失败提示。
-- 输出文件按 `<视频ID>_cover.<URL扩展名>` 命名。已存在或被运行中 worker 占用的名称都视为冲突，依次追加 `_1`、`_2` 等序号。浏览器动作使用请求本身的视频 ID，不依赖嗅探页的当前视频状态。
-- `_cover_download_workers` 持有所有并发 worker，并在 QThread 自带的 `finished` 信号后释放引用。下载结果用单独的 `download_finished(success, path)` 信号回到页面，复用 `_on_cover_download_done` 的成功/失败 InfoBar 与系统结果通知；通知遵循现有开关和主窗口失焦规则。
-- 浏览器封面直接下载，不进入 `TaskType.YTDLP` 队列。扩展提示封面下载已开始，高分辨率不可用时会自动尝试下一档；完成或失败由共享回调提供 InfoBar 与系统结果通知。
+- 浏览器扩展封面文件优先按安全清理并截短后的视频标题命名为 `<标题>_cover.<URL扩展名>`；标题缺失时回退到该请求的视频 ID，不读取嗅探页状态。已存在或被运行中 worker 占用的名称都视为冲突，依次追加 `_1`、`_2` 等序号。手动封面下载的既有命名保持不变。
+- `_cover_download_workers` 持有所有并发 worker，并在 QThread 自带的 `finished` 信号后释放引用。下载结果继续通过 `download_finished(success, path)` 信号回到页面；扩展封面的展示元数据按规范化输出路径关联到对应 worker，保持双参数信号接口，避免并发下载串扰。共享回调的成功/失败系统结果通知显示视频标题及可用频道、时长，遵循现有开关和主窗口失焦规则。
+- 浏览器封面直接下载，不进入 `TaskType.YTDLP` 队列。扩展菜单项显示“下载最佳封面”；点击时读取可用的标题、频道和时长，完成或失败通知显示这些字段，文件名以标题为主。高分辨率不可用时自动尝试下一档，结果仍由共享回调提供 InfoBar 与系统通知。
 - `download_best` 保持决策 64 的既有实现：使用 `BEST_VIDEO_FORMAT`，仍经 yt-dlp 任务队列下载。扩展任务在 Worker 启动时发送开始系统通知，完成/失败沿用任务队列通知。`browser_downloads.py` 只保留该格式常量，不再负责封面下载。
 
 ## 验证覆盖

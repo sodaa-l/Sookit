@@ -160,13 +160,12 @@ def _dispatch_activation(bridge: _ToastSignalBridge, args, open_dir: str):
         bridge.activate_requested.emit()
 
 
-def browser_task_metadata_summary(task) -> str:
-    """格式化浏览器最佳画质任务的频道、时长信息。"""
-    metadata = getattr(task, "metadata", None) or {}
-    if metadata.get("browser_action") != "download_best":
+def browser_video_metadata_summary(metadata) -> str:
+    """格式化浏览器视频元数据中的频道和时长。"""
+    if not isinstance(metadata, dict):
         return ""
-    channel = metadata.get("channel") or getattr(task, "channel", "") or ""
-    duration = metadata.get("duration") or getattr(task, "duration", None)
+    channel = metadata.get("channel") or ""
+    duration = metadata.get("duration")
     parts = []
     if isinstance(channel, str) and channel.strip():
         parts.append(f"频道: {channel.strip()[:80]}")
@@ -174,6 +173,19 @@ def browser_task_metadata_summary(task) -> str:
         from sookit.core.ffmpeg_utils import format_duration
         parts.append(f"时长: {format_duration(duration)}")
     return " · ".join(parts)
+
+
+def browser_task_metadata_summary(task) -> str:
+    """格式化浏览器最佳画质任务的频道、时长信息。"""
+    metadata = getattr(task, "metadata", None) or {}
+    if metadata.get("browser_action") != "download_best":
+        return ""
+    display_metadata = dict(metadata)
+    display_metadata["channel"] = (
+        display_metadata.get("channel") or getattr(task, "channel", "") or "")
+    display_metadata["duration"] = (
+        display_metadata.get("duration") or getattr(task, "duration", None))
+    return browser_video_metadata_summary(display_metadata)
 
 
 def _show_task_toast(task, ok: bool) -> bool:
