@@ -193,6 +193,7 @@ class TaskQueueManager(QObject):
     # 信号
     task_added = pyqtSignal(object)        # 新任务添加 (Task)
     task_updated = pyqtSignal(object)      # 任务状态/进度更新 (Task)
+    task_started = pyqtSignal(object)      # Worker 启动 (Task)
     task_completed = pyqtSignal(object)    # 任务完成 (Task)
     task_failed = pyqtSignal(object)       # 任务失败 (Task)
     task_removed = pyqtSignal(str)         # 任务移除 (task_id)
@@ -306,6 +307,7 @@ class TaskQueueManager(QObject):
         worker.finished_signal.connect(lambda ok: self._on_finished(task_id, ok))
         
         worker.start()
+        self.task_started.emit(task)
     
     def _ensure_workspace(self, task):
         """为 yt-dlp 下载任务创建独立 workspace：output_dir/._sookit_tmp_<ULID>/。

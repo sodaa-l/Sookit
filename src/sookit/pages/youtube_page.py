@@ -1337,10 +1337,13 @@ class YouTubePage(PageBase):
             pixmap = QPixmap(path)
             size_info = f"（实际分辨率 {pixmap.width()}x{pixmap.height()}）" if not pixmap.isNull() else ""
             self.log(f"✓ 封面下载完成: {path}{size_info}")
+            notify_result_notice("封面下载完成", os.path.basename(path))
             show_infobar(self, "success", title="封面下载完成",
                          content=f"已保存到: {os.path.basename(path)}", duration=3000)
         else:
             self.log("✗ 封面下载失败")
+            notify_result_notice("封面下载失败", os.path.basename(path),
+                                 "请检查网络连接或链接是否有效")
             show_infobar(self, "error", title="封面下载失败",
                          content="请检查网络连接或链接是否有效")
 

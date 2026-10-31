@@ -42,4 +42,4 @@ YouTube 站内导航复用同一份页面文档，内容脚本消息的 `sender.
 
 ## 封面路径修订（2026-10-31，见决策 66）
 
-本决策第 23、25、29、31 行记录的是原始实现：浏览器封面通过 yt-dlp 下载并进入任务队列。该封面方案现由决策 66 修订。扩展的 `download_cover` 现在复用 `YouTubePage.CoverDownloadWorker`，按 `build_thumbnails(video_id)` 的优先级逐档直接下载，失败时清除部分文件后继续尝试；文件使用 `<视频ID>_cover.<扩展名>`，冲突追加序号。封面不再依赖 yt-dlp、不进入任务队列，也不发送任务队列系统通知，成功/失败沿用嗅探页现有封面提示。`download_best` 仍按本决策原样使用 yt-dlp 任务队列。
+本决策第 23、25、29、31 行记录的是原始实现：浏览器封面通过 yt-dlp 下载并进入任务队列。该封面方案现由决策 66 修订。扩展的 `download_cover` 现在复用 `YouTubePage.CoverDownloadWorker`，按 `build_thumbnails(video_id)` 的优先级逐档直接下载，失败时清除部分文件后继续尝试；文件使用 `<视频ID>_cover.<扩展名>`，冲突追加序号。封面不再依赖 yt-dlp、不进入任务队列；扩展回执仍只表示已开始，完成/失败由共享封面回调发送 InfoBar 与系统结果通知（通知遵循现有开关和主窗口失焦规则），手动封面下载也使用这条结果通知。`download_best` 仍使用 yt-dlp 任务队列；扩展任务在 Worker 实际启动时发送开始系统通知，完成/失败沿用既有任务队列通知。

@@ -22,7 +22,7 @@ from sookit.core.config import load_browser_extension_enabled
 # ---------- 从 widgets 导入自定义控件 ----------
 from sookit.widgets.infobar import show_infobar
 from sookit.widgets.notifier import notify_task_completed, notify_task_failed, \
-    notify_update_notice, get_toast_bridge, set_main_window
+    notify_result_notice, notify_update_notice, get_toast_bridge, set_main_window
 
 # ---------- 从 core.functions 导入工具函数 ----------
 from sookit.core.functions import (
@@ -151,19 +151,28 @@ class MainWindow(qfw.FluentWindow):
     # ========== 系统通知（决策 40） ==========
 
     def _setup_task_toast(self):
-        """连接任务完成/失败信号与 WinRT 回调桥（回调线程 → 主线程），并注册焦点闸门基准"""
+        """连接任务开始/完成/失败信号与 WinRT 回调桥（回调线程 → 主线程），并注册焦点闸门基准"""
         set_main_window(self)
         bridge = get_toast_bridge()
         bridge.open_path_requested.connect(self._open_path_from_toast)
         bridge.activate_requested.connect(self._activate_from_toast)
         from sookit.core.task_queue import TaskQueueManager
         mgr = TaskQueueManager.instance()
+        mgr.task_started.connect(self._on_task_started_toast)
         mgr.task_completed.connect(self._on_task_completed_toast)
         mgr.task_failed.connect(self._on_task_failed_toast)
 
     def _window_focused(self) -> bool:
         """主窗口是否拥有焦点（隐藏/最小化/被其他窗口遮挡均视为不焦点）"""
         return QApplication.activeWindow() is self
+
+    def _on_task_started_toast(self, task):
+        metadata = getattr(task, "metadata", None) or {}
+        if metadata.get("browser_action") != "download_best":
+            return
+        if not self._window_focused():
+            notify_result_notice("下载已开始", getattr(task, "title", "最佳画质下载"),
+                                 "最佳画质视频已开始下载")
 
     def _on_task_completed_toast(self, task):
         if not self._window_focused():

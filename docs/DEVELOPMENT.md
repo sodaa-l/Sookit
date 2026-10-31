@@ -228,9 +228,9 @@ flowchart TB
 
 | 62 | Chrome 视频页按钮与后台嗅探、接收开关与只读诊断 | MV3 扩展 → Native Messaging → 当前用户/会话的 Qt 本机通道；请求开关默认开，GUI 与冷启动 host 都校验；只读诊断扩展文件、host 清单/程序和 HKCU/HKLM 注册路径 | [62-chrome-background-sniff.md](decisions/62-chrome-background-sniff.md) |
 | 63 | 设置页 Chrome 扩展引导区改版（2026-10-26） | 步骤序号改淡主题色圆底 + 主题色数字（订阅 `themeColorChanged` 重刷）；头部标题 15px/600 + 1px 分隔线，折叠时连分隔线一起隐藏；地址与路径统一为自绘「值条」（圆角 6、极淡底 + 1px 边框，亮暗两套色、订阅 `themeChangedFinished`），值条内嵌透明图标按钮，宽度按内容自适应、上限 820；路径前缀与路径拆成两个标签，`_GuideValueLabel` 重写 `sizeHint`/`minimumSizeHint` 让超长路径省略而值条可收缩；**步骤内容必须包成 `step_content` 再 `addWidget(…, 1)`**，直接嵌套布局会让值条的最大宽度向上传染、把序号挤到中间（实测偏移 84px） | [63-settings-guide-ui.md](decisions/63-settings-guide-ui.md) |
-| 64 | Chrome 视频菜单与直接后台下载（2026-10-28，封面路径由决策 66 修订） | 三项官方风格菜单；嗅探保持原流程，最佳画质使用 `bestvideo*+bestaudio/best` 并入既有队列；封面原 yt-dlp 队列方案已由决策 66 修订为嗅探页 worker 直下；扩展和 host 协议白名单同步更新 | [64-chrome-video-actions.md](decisions/64-chrome-video-actions.md) |
+| 64 | Chrome 视频菜单与直接后台下载（2026-10-28，封面路径由决策 66 修订） | 三项官方风格菜单；嗅探保持原流程，最佳画质使用 `bestvideo*+bestaudio/best` 并入既有队列，扩展任务在 Worker 启动时发开始通知、完成/失败沿用队列通知；封面原 yt-dlp 队列方案已由决策 66 修订为嗅探页 worker 直下；扩展和 host 协议白名单同步更新 | [64-chrome-video-actions.md](decisions/64-chrome-video-actions.md) |
 | 65 | 浏览器静默冷启动的日志、首次窗口尺寸与提示定位（2026-10-28） | 页面日志统一走 logger，避免 GBK stdout 抛异常造成嗅探假失败和计时器缺失；首次显示恢复 1131×731 并居中，后续保留用户手动尺寸；长短 InfoBar 在显示和尺寸变化后统一重排并更新运行中的动画终点 | [65-browser-cold-start.md](decisions/65-browser-cold-start.md) |
-| 66 | 浏览器封面逐档直接下载（2026-10-31） | 扩展封面复用 `YouTubePage.CoverDownloadWorker`，按 `build_thumbnails(video_id)` 优先级失败回退并清理残留；文件按 `<视频ID>_cover` 命名并冲突加序号，不入任务队列、不发队列系统通知；最佳画质仍走 yt-dlp 队列 | [66-browser-cover-worker.md](decisions/66-browser-cover-worker.md) |
+| 66 | 浏览器封面逐档直接下载（2026-10-31） | 扩展封面复用 `YouTubePage.CoverDownloadWorker`，按 `build_thumbnails(video_id)` 优先级失败回退并清理残留；文件按 `<视频ID>_cover` 命名并冲突加序号，不入任务队列，完成/失败由共享回调发结果系统通知；最佳画质仍走 yt-dlp 队列（扩展开工通知，完成/失败沿用队列通知） | [66-browser-cover-worker.md](decisions/66-browser-cover-worker.md) |
 
 ## 测试
 
