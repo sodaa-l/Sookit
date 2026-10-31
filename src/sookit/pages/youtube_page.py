@@ -633,9 +633,9 @@ class YouTubePage(PageBase):
         self.do_sniff()
         return {'ok': True, 'message': 'Sookit 已在后台开始嗅探'}
 
-    def download_from_browser(self, url, action):
+    def download_from_browser(self, url, action, video_metadata=None):
         """浏览器下载使用自己的 URL；最佳画质入队，封面直接走专用下载线程。"""
-        from sookit.core.browser_protocol import normalize_video_url
+        from sookit.core.browser_protocol import MAX_VIDEO_DURATION_SECONDS, normalize_video_url
         from sookit.core.browser_downloads import BEST_VIDEO_FORMAT
         url = normalize_video_url(url)
         if action not in ('download_best', 'download_cover'):
@@ -648,18 +648,30 @@ class YouTubePage(PageBase):
                 return {'ok': False, 'error': 'Sookit 尚未安装 yt-dlp，请到设置页下载安装'}
             remote = self.remote_cb.isChecked()
             config = load_download_config()
+            display_metadata = video_metadata if isinstance(video_metadata, dict) else {}
+            video_title = display_metadata.get('title')
+            if not isinstance(video_title, str) or not video_title.strip():
+                video_title = video_id
+            else:
+                video_title = video_title.strip()
             metadata = {
                 'url': url, 'out_dir': out_dir, 'browser_action': action,
                 'cover_url': build_thumbnails(video_id)[0]['url'],
                 'format_spec': BEST_VIDEO_FORMAT,
             }
+            channel = display_metadata.get('channel')
+            if isinstance(channel, str) and channel.strip():
+                metadata['channel'] = channel.strip()
+            duration = display_metadata.get('duration')
+            if type(duration) is int and 0 < duration <= MAX_VIDEO_DURATION_SECONDS:
+                metadata['duration'] = duration
             task_id = self.run_queued_task(
                 func=Functions.download_youtube,
                 args=(url, BEST_VIDEO_FORMAT, out_dir, remote,
                       config['concurrent_fragments'], config['use_aria2c'],
                       config['aria2c_connections']),
                 task_type=TaskType.YTDLP,
-                title=f'最佳画质下载 - {video_id}', metadata=metadata,
+                title=video_title, metadata=metadata,
                 kwargs={'extra_args': ['--ignore-config', '--no-playlist']})
             return {'ok': True, 'task_id': task_id,
                     'message': '最佳画质下载已加入 Sookit 任务队列'}

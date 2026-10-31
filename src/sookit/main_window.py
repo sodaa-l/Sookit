@@ -22,7 +22,8 @@ from sookit.core.config import load_browser_extension_enabled
 # ---------- 从 widgets 导入自定义控件 ----------
 from sookit.widgets.infobar import show_infobar
 from sookit.widgets.notifier import notify_task_completed, notify_task_failed, \
-    notify_result_notice, notify_update_notice, get_toast_bridge, set_main_window
+    notify_result_notice, notify_update_notice, browser_task_metadata_summary, \
+    get_toast_bridge, set_main_window
 
 # ---------- 从 core.functions 导入工具函数 ----------
 from sookit.core.functions import (
@@ -145,7 +146,9 @@ class MainWindow(qfw.FluentWindow):
                 self.switchTo(self.youtube_page)
             return response
         if action in ('download_best', 'download_cover'):
-            return self.youtube_page.download_from_browser(request['url'], action)
+            video_metadata = request.get('video_metadata') if action == 'download_best' else None
+            return self.youtube_page.download_from_browser(
+                request['url'], action, video_metadata=video_metadata)
         return {'ok': False, 'error': '不支持的浏览器请求'}
 
     # ========== 系统通知（决策 40） ==========
@@ -171,8 +174,11 @@ class MainWindow(qfw.FluentWindow):
         if metadata.get("browser_action") != "download_best":
             return
         if not self._window_focused():
-            notify_result_notice("下载已开始", getattr(task, "title", "最佳画质下载"),
-                                 "最佳画质视频已开始下载")
+            detail = "最佳画质视频已开始下载"
+            metadata_summary = browser_task_metadata_summary(task)
+            if metadata_summary:
+                detail = f"{detail} · {metadata_summary}"
+            notify_result_notice("下载已开始", getattr(task, "title", "最佳画质下载"), detail)
 
     def _on_task_completed_toast(self, task):
         if not self._window_focused():

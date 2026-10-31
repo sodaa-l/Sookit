@@ -8,6 +8,9 @@ HOST_NAME = 'com.sookit.browser'
 EXTENSION_ID = 'inplhidhdgncdjkkmbfcocedkabbaghn'
 EXTENSION_ORIGIN = f'chrome-extension://{EXTENSION_ID}/'
 MAX_MESSAGE_BYTES = 16 * 1024
+MAX_VIDEO_TITLE_LENGTH = 500
+MAX_VIDEO_CHANNEL_LENGTH = 200
+MAX_VIDEO_DURATION_SECONDS = 7 * 24 * 60 * 60
 BROWSER_ACTIONS = frozenset({'sniff', 'download_best', 'download_cover'})
 
 
@@ -40,11 +43,39 @@ def normalize_video_url(value: str) -> str:
     return f'https://www.youtube.com/watch?v={video_id}'
 
 
+def _clean_display_text(value: object, max_length: int) -> str:
+    if not isinstance(value, str):
+        return ''
+    value = re.sub(r'[\x00-\x1f\x7f]', ' ', value)
+    return ' '.join(value.split())[:max_length]
+
+
+def _validated_video_metadata(value: object) -> dict:
+    if not isinstance(value, dict):
+        return {}
+    metadata = {}
+    title = _clean_display_text(value.get('title'), MAX_VIDEO_TITLE_LENGTH)
+    channel = _clean_display_text(value.get('channel'), MAX_VIDEO_CHANNEL_LENGTH)
+    if title:
+        metadata['title'] = title
+    if channel:
+        metadata['channel'] = channel
+    duration = value.get('duration')
+    if type(duration) is int and 0 < duration <= MAX_VIDEO_DURATION_SECONDS:
+        metadata['duration'] = duration
+    return metadata
+
+
 def validate_request(message: object) -> dict:
     if (not isinstance(message, dict) or not isinstance(message.get('action'), str)
             or message['action'] not in BROWSER_ACTIONS):
         raise ValueError('不支持的浏览器请求')
-    return {'action': message['action'], 'url': normalize_video_url(message.get('url'))}
+    request = {'action': message['action'], 'url': normalize_video_url(message.get('url'))}
+    if request['action'] == 'download_best':
+        metadata = _validated_video_metadata(message.get('video_metadata'))
+        if metadata:
+            request['video_metadata'] = metadata
+    return request
 
 
 def encode_message(message: dict) -> bytes:

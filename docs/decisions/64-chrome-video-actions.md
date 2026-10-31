@@ -8,7 +8,7 @@
 
 ## 分发与隔离
 
-沿用 Native Messaging 与 Qt 本机通道，不增加端口或服务。扩展后台及 Python 协议层只允许 `sniff`、`download_best`、`download_cover`；仍只转发标准化的 YouTube 单视频链接，所有动作服从浏览器请求接收开关。
+沿用 Native Messaging 与 Qt 本机通道，不增加端口或服务。扩展后台及 Python 协议层只允许 `sniff`、`download_best`、`download_cover`；仍只转发标准化的 YouTube 单视频链接，所有动作服从浏览器请求接收开关。仅 `download_best` 附带从当前 YouTube 页面读取的可选标题、频道和时长；页面字段未就绪时最多等待 2 秒，并校验等待期间视频未切换。后台与 Python 协议层都限制字段类型和长度，元数据只用于展示，不改变下载参数。
 
 ### 站内导航后的当前视频校验（2026-10-28 修复）
 
@@ -19,10 +19,10 @@ YouTube 站内导航复用同一份页面文档，内容脚本消息的 `sender.
 为读取 `Tab.url` 和 `Tab.pendingUrl`，清单新增且仅新增 `https://www.youtube.com/*` 的 `host_permissions`，范围与内容脚本注入站点一致，不申请全局 `tabs` 权限。[Chrome 官方 Tabs 权限文档](https://github.com/GoogleChrome/developer.chrome.com/blob/main/site/en/docs/extensions/reference/tabs/index.md#permissions--perms-)说明匹配站点的 host permission 可读取这些字段。此处修订决策 62 原先直接比较消息来源视频 ID 的做法。
 
 - `sniff`：保持决策 62 的后台嗅探、忙碌拒绝、导航切换和结果通知。
-- `download_best`：直接以 `bestvideo*+bestaudio/best` 调用既有 `Functions.download_youtube`，由 yt-dlp 选择最佳视频及音轨并按需合并。复用下载并发、aria2c、远程组件选项和 FFmpeg 定位，显式使用 `--ignore-config --no-playlist`，避免外部配置改变一键下载的语义。
+- `download_best`：直接以 `bestvideo*+bestaudio/best` 调用既有 `Functions.download_youtube`，由 yt-dlp 选择最佳视频及音轨并按需合并。复用下载并发、aria2c、远程组件选项和 FFmpeg 定位，显式使用 `--ignore-config --no-playlist`，避免外部配置改变一键下载的语义。任务标题优先采用扩展传来的真实视频标题，缺失时回退到视频 ID；任务卡与系统通知附显示可用的频道和时长。
 - `download_cover`：`core/browser_downloads.py` 使用 yt-dlp 的 `--skip-download --write-thumbnail --no-simulate` 下载最佳可用封面，最高档返回错误时由下载器尝试下一档，保留原图格式。`--ignore-config` 避免外部配置启用全部缩略图；不传实际下载器不支持的 `--no-write-all-thumbnails`。
 
-两个下载动作独立加入既有 `TaskType.YTDLP` 队列，不读取或覆盖正在嗅探的视频、格式、标题和封面，不切换应用页面或抢占焦点。输出目录取嗅探页当前所选目录，未设置时使用现有系统下载目录。网页提示仅代表已入队，完成/失败沿用任务队列的通知与管理。
+`download_best` 独立加入既有 `TaskType.YTDLP` 队列，不读取或覆盖正在嗅探的视频、格式、标题和封面，不切换应用页面或抢占焦点。输出目录取嗅探页当前所选目录，未设置时使用现有系统下载目录。网页提示仅代表已入队；任务在 Worker 实际启动时发送开始通知，完成/失败沿用队列通知。三类通知均遵循决策 40 的开关与主窗口失焦规则。封面当前由决策 66 的专用 worker 直接下载，不进入任务队列。
 
 ## 产物与生命周期
 

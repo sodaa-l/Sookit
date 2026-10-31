@@ -36,6 +36,57 @@
     return /^\/shorts\/[A-Za-z0-9_-]{11}\/?$/.test(new URL(location.href).pathname);
   }
 
+  function cleanDisplayText(value, maxLength) {
+    if (typeof value !== 'string') return '';
+    return value.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, maxLength);
+  }
+
+  function readVideoMetadata() {
+    const title = cleanDisplayText(
+      document.querySelector('meta[name="title"]')?.content
+        || document.querySelector('meta[property="og:title"]')?.content
+        || document.querySelector('ytd-watch-metadata h1')?.textContent
+        || document.title.replace(/\s*-\s*YouTube\s*$/i, ''),
+      500,
+    );
+    const author = document.querySelector('[itemprop="author"] [itemprop="name"]');
+    const channel = cleanDisplayText(
+      author?.getAttribute('content') || author?.textContent
+        || document.querySelector('ytd-reel-video-renderer[is-active] #channel-name')?.textContent
+        || document.querySelector('ytd-watch-metadata #owner #channel-name')?.textContent,
+      200,
+    );
+    const durationElement = document.querySelector('[itemprop="duration"]');
+    const durationValue = durationElement?.getAttribute('content') || durationElement?.textContent || '';
+    const match = /^PT(?:(\d+(?:\.\d+)?)H)?(?:(\d+(?:\.\d+)?)M)?(?:(\d+(?:\.\d+)?)S)?$/i.exec(durationValue.trim());
+    let duration = null;
+    if (match && match.slice(1).some(Boolean)) {
+      duration = Math.round(Number(match[1] || 0) * 3600
+        + Number(match[2] || 0) * 60 + Number(match[3] || 0));
+    }
+    if (!duration) {
+      const videoDuration = document.querySelector('video.html5-main-video')?.duration;
+      if (Number.isFinite(videoDuration) && videoDuration > 0) duration = Math.round(videoDuration);
+    }
+    const metadata = {};
+    if (title && title.toLowerCase() !== 'youtube') metadata.title = title;
+    if (channel) metadata.channel = channel;
+    if (Number.isSafeInteger(duration) && duration > 0 && duration <= 604800) metadata.duration = duration;
+    return metadata;
+  }
+
+  async function readVideoMetadataWhenReady(url, generation) {
+    const metadata = {};
+    const deadline = Date.now() + 2000;
+    while (true) {
+      if (currentVideoUrl() !== url || generation !== pageGeneration) return {};
+      Object.assign(metadata, readVideoMetadata());
+      if (metadata.title && metadata.channel && metadata.duration) return metadata;
+      if (Date.now() >= deadline) return metadata;
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+  }
+
   function getShortsRendererVideoIds(renderer) {
     const identities = new Set();
     const attributeVideoId = renderer.getAttribute('video-id');
@@ -177,7 +228,12 @@
     button.setAttribute('aria-busy', 'true');
     button.title = '正在发送到 Sookit…';
     try {
-      const response = await chrome.runtime.sendMessage({action: action.id, url});
+      const message = {action: action.id, url};
+      if (action.id === 'download_best') {
+        message.video_metadata = await readVideoMetadataWhenReady(url, generation);
+      }
+      if (currentVideoUrl() !== url || generation !== pageGeneration) return;
+      const response = await chrome.runtime.sendMessage(message);
       if (currentVideoUrl() !== url || generation !== pageGeneration) return;
       if (!response?.ok) throw new Error(response?.error || 'Sookit 未确认接收请求');
       tell(response.message || action.message);

@@ -1,4 +1,4 @@
-/* 页面脚本只传递链接；本机调用始终经过扩展后台。 */
+/* 页面脚本只传递视频链接和受限展示信息；本机调用始终经过扩展后台。 */
 const HOST = 'com.sookit.browser';
 const ACTIONS = new Set(['sniff', 'download_best', 'download_cover']);
 const ALLOWED_HOSTS = new Set(['www.youtube.com', 'youtube.com', 'm.youtube.com', 'youtu.be']);
@@ -22,6 +22,24 @@ function videoUrl(value) {
   return `https://www.youtube.com/watch?v=${id}`;
 }
 
+function cleanDisplayText(value, maxLength) {
+  if (typeof value !== 'string') return '';
+  return value.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, maxLength);
+}
+
+function videoMetadata(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const result = {};
+  const title = cleanDisplayText(value.title, 500);
+  const channel = cleanDisplayText(value.channel, 200);
+  if (title) result.title = title;
+  if (channel) result.channel = channel;
+  if (Number.isSafeInteger(value.duration) && value.duration > 0 && value.duration <= 604800) {
+    result.duration = value.duration;
+  }
+  return Object.keys(result).length ? result : null;
+}
+
 chrome.runtime.onMessage.addListener((message, sender, reply) => {
   if (!ACTIONS.has(message?.action)) return false;
   (async () => {
@@ -43,7 +61,12 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
     }
     if (currentUrl !== url) throw new Error('页面已切换，请重试');
     try {
-      return await chrome.runtime.sendNativeMessage(HOST, {action: message.action, url});
+      const nativeMessage = {action: message.action, url};
+      if (message.action === 'download_best') {
+        const metadata = videoMetadata(message.video_metadata);
+        if (metadata) nativeMessage.video_metadata = metadata;
+      }
+      return await chrome.runtime.sendNativeMessage(HOST, nativeMessage);
     } catch (error) {
       const detail = String(error?.message || error);
       if (/not found|not registered|forbidden|Access to the specified native/i.test(detail)) {

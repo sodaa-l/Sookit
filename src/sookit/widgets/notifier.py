@@ -160,6 +160,22 @@ def _dispatch_activation(bridge: _ToastSignalBridge, args, open_dir: str):
         bridge.activate_requested.emit()
 
 
+def browser_task_metadata_summary(task) -> str:
+    """格式化浏览器最佳画质任务的频道、时长信息。"""
+    metadata = getattr(task, "metadata", None) or {}
+    if metadata.get("browser_action") != "download_best":
+        return ""
+    channel = metadata.get("channel") or getattr(task, "channel", "") or ""
+    duration = metadata.get("duration") or getattr(task, "duration", None)
+    parts = []
+    if isinstance(channel, str) and channel.strip():
+        parts.append(f"频道: {channel.strip()[:80]}")
+    if type(duration) is int and duration > 0:
+        from sookit.core.ffmpeg_utils import format_duration
+        parts.append(f"时长: {format_duration(duration)}")
+    return " · ".join(parts)
+
+
 def _show_task_toast(task, ok: bool) -> bool:
     """弹任务结果通知。返回是否已弹出（开关关闭/初始化失败/发送异常均返回 False）"""
     if not load_toast_notification_enabled():
@@ -173,10 +189,13 @@ def _show_task_toast(task, ok: bool) -> bool:
             return False
 
         text_fields = ["任务完成" if ok else "任务失败", title]
+        detail = browser_task_metadata_summary(task)
         if not ok:
             err = (getattr(task, "error", "") or "").strip()
             if err:
-                text_fields.append(err[:200])
+                detail = f"{detail} · {err}" if detail else err
+        if detail:
+            text_fields.append(detail[:200])
 
         # 仅成功时带「打开文件夹」按钮（失败现场可能是已清理的 workspace/空目录）
         actions = []
