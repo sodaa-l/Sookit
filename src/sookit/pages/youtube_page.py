@@ -622,8 +622,8 @@ class YouTubePage(PageBase):
     # -------- 嗅探 --------
     def sniff_from_browser(self, url):
         """外部请求不打断已有嗅探，也不显示或激活窗口（决策 62）。"""
-        from sookit.core.browser_protocol import normalize_video_url
-        url = normalize_video_url(url)
+        from sookit.core.browser_protocol import normalize_browser_url
+        url = normalize_browser_url(url, 'sniff')
         timer = getattr(self, '_sniff_timer', None)
         if ((timer is not None and timer.isActive())
                 or (self._sniff_worker is not None and self._sniff_worker.isRunning())):
@@ -636,9 +636,9 @@ class YouTubePage(PageBase):
 
     def download_from_browser(self, url, action, video_metadata=None):
         """浏览器下载使用自己的 URL；最佳画质入队，封面直接走专用下载线程。"""
-        from sookit.core.browser_protocol import MAX_VIDEO_DURATION_SECONDS, normalize_video_url
+        from sookit.core.browser_protocol import MAX_VIDEO_DURATION_SECONDS, normalize_browser_url
         from sookit.core.browser_downloads import BEST_VIDEO_FORMAT
-        url = normalize_video_url(url)
+        url = normalize_browser_url(url, action)
         if action not in ('download_best', 'download_cover'):
             return {'ok': False, 'error': '不支持的浏览器下载请求'}
 
@@ -652,14 +652,18 @@ class YouTubePage(PageBase):
             display_metadata = video_metadata if isinstance(video_metadata, dict) else {}
             video_title = display_metadata.get('title')
             if not isinstance(video_title, str) or not video_title.strip():
-                video_title = video_id
+                status_id = url.rstrip('/').rsplit('/', 1)[-1]
+                video_title = video_id or f'X 视频 {status_id}'
             else:
                 video_title = video_title.strip()
             metadata = {
                 'url': url, 'out_dir': out_dir, 'browser_action': action,
-                'cover_url': build_thumbnails(video_id)[0]['url'],
                 'format_spec': BEST_VIDEO_FORMAT,
             }
+            if video_id:
+                thumbnails = build_thumbnails(video_id)
+                if thumbnails and thumbnails[0].get('url'):
+                    metadata['cover_url'] = thumbnails[0]['url']
             channel = display_metadata.get('channel')
             if isinstance(channel, str) and channel.strip():
                 metadata['channel'] = channel.strip()

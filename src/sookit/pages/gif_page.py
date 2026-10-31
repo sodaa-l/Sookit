@@ -702,6 +702,18 @@ class GifPage(PageBase):
 
     # -------- 解析 --------
 
+    def parse_from_browser(self, url):
+        """接收扩展的 X 状态链接并复用现有异步解析流程。"""
+        from sookit.core.browser_protocol import normalize_x_status_url
+
+        try:
+            url = normalize_x_status_url(url)
+        except ValueError as exc:
+            return {'ok': False, 'error': str(exc)}
+        self.url_input.setText(url)
+        self._start_parse()
+        return {'ok': True, 'message': '已在 Sookit 动图页开始解析'}
+
     def _start_parse(self):
         url = self.url_input.text().strip()
         if not url:

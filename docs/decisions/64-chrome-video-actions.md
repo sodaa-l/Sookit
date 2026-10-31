@@ -6,20 +6,27 @@
 
 菜单定位在按钮下方，底部空间不足时向上展开，并限制在视口内。再次点击按钮、点外部、Esc、焦点离开、站内导航和操作栏重建时关闭；支持上下键、Home/End 和 Tab。请求发送期间禁用按钮，旧页面的异步回执不显示。
 
+### X 视频帖
+
+X/Twitter 视频帖在 `article[data-testid="tweet"]` 内依据视频播放器、status permalink 与 Grok 操作按钮识别。只有帖子含视频、状态链接可规范化且找到 Grok 按钮时才注入入口；按钮复制 Grok 按钮样式并读取其尺寸，放在 Grok 左侧且右侧留 8px 间距。站点 DOM 选择器仅作识别线索，需容忍 X 改版。
+
+X 菜单按 X 原生下拉菜单的视觉参数自绘，不打开、不克隆也不修改 X 自身的 More 菜单：16px 圆角、12px 上下内边距、至少 260px 宽、15px/700 字重、48px 菜单项、12px 项内边距和 X 风格投影。文字色取自当前帖子文本，背景色与亮暗主题从页面背景推导，避免与 X 主题冲突。列出「嗅探视频」「下载最佳画质」「解析动图」，不提供封面动作。支持键盘操作、点外、失焦、Escape 关闭与滚动时重新定位。菜单状态、帖子复用和异步回执按当前状态链接校验，避免 DOM 重用后显示旧结果。
+
 ## 分发与隔离
 
-沿用 Native Messaging 与 Qt 本机通道，不增加端口或服务。扩展后台及 Python 协议层只允许 `sniff`、`download_best`、`download_cover`；仍只转发标准化的 YouTube 单视频链接，所有动作服从浏览器请求接收开关。`download_best` 与 `download_cover` 均附带从当前 YouTube 页面读取的可选标题、频道和时长；页面字段未就绪时最多等待 2 秒，并校验等待期间视频未切换。后台与 Python 协议层都限制字段类型和长度；元数据用于最佳画质任务展示、封面结果通知和封面文件命名，不改变下载参数。
+沿用 Native Messaging 与 Qt 本机通道，不增加端口或服务。扩展后台及 Python 协议层按站点限制动作：YouTube 允许 `sniff`、`download_best`、`download_cover`，X/Twitter 允许 `sniff`、`download_best`、`parse_gif`；所有动作服从浏览器请求接收开关。`download_best` 与 `download_cover` 的 YouTube 请求可附带从当前页面读取的标题、频道和时长；页面字段未就绪时最多等待 2 秒，并校验等待期间视频未切换。X feed 中的状态链接规范化为 HTTPS `x.com` status URL，支持 `/video/N`、`/photo/N` 后缀；X 请求不附 YouTube 页面元数据。后台与 Python 协议层都限制字段类型和长度；元数据用于最佳画质任务展示、封面结果通知和封面文件命名，不改变下载参数。
 
 ### 站内导航后的当前视频校验（2026-10-28 修复）
 
 YouTube 站内导航复用同一份页面文档，内容脚本消息的 `sender.url` 可能仍是注入时的首页、搜索页或旧视频。把它当作当前视频提取 ID，会在视频正常播放时误报「没有找到有效的 YouTube 视频 ID」，或错误提示页面已切换。
 
-后台保留扩展 ID、顶层 frame 和 HTTPS YouTube 来源检查，`sender.url` 只校验站点；通过 `chrome.tabs.get(sender.tab.id)` 读取发起请求的标签页当前地址，再规范化并核对请求视频。标签页已关闭、地址不可读、当前已不是视频页或可见的 `pendingUrl` 指向另一视频/站点时拒绝请求，不发送给本机应用。
+YouTube 请求保留扩展 ID、顶层 frame 和 HTTPS 来源检查，`sender.url` 只校验站点；通过 `chrome.tabs.get(sender.tab.id)` 读取发起请求的标签页当前地址，再规范化并核对请求视频。标签页已关闭、地址不可读、当前已不是视频页或可见的 `pendingUrl` 指向另一视频/站点时拒绝请求。X 请求同样核对扩展 ID、顶层 frame、sender/tab/pending 的站点；feed 帖子的状态链接可能与当前标签页不同，因此来源域有效即可，只有标签页本身是 status 页才核对状态 ID。拒绝的请求均不发送给本机应用。
 
-为读取 `Tab.url` 和 `Tab.pendingUrl`，清单新增且仅新增 `https://www.youtube.com/*` 的 `host_permissions`，范围与内容脚本注入站点一致，不申请全局 `tabs` 权限。[Chrome 官方 Tabs 权限文档](https://github.com/GoogleChrome/developer.chrome.com/blob/main/site/en/docs/extensions/reference/tabs/index.md#permissions--perms-)说明匹配站点的 host permission 可读取这些字段。此处修订决策 62 原先直接比较消息来源视频 ID 的做法。
+为读取 `Tab.url` 和 `Tab.pendingUrl`，YouTube 清单新增 `https://www.youtube.com/*`；X 扩展新增 `https://x.com/*`、`https://www.x.com/*`、`https://twitter.com/*`、`https://www.twitter.com/*`。host permissions 与脚本注入域一致，不申请全局 `tabs` 权限。[Chrome 官方 Tabs 权限文档](https://github.com/GoogleChrome/developer.chrome.com/blob/main/site/en/docs/extensions/reference/tabs/index.md#permissions--perms-)说明匹配站点的 host permission 可读取这些字段。YouTube 仍比对当前视频 ID；X feed 的帖子链接可能不同于标签页 URL，因此先验站点来源，标签页本身为 status 页时才比对状态 ID。
 
-- `sniff`：保持决策 62 的后台嗅探、忙碌拒绝、导航切换和结果通知。
-- `download_best`：直接以 `bestvideo*+bestaudio/best` 调用既有 `Functions.download_youtube`，由 yt-dlp 选择最佳视频及音轨并按需合并。复用下载并发、aria2c、远程组件选项和 FFmpeg 定位，显式使用 `--ignore-config --no-playlist`，避免外部配置改变一键下载的语义。任务标题优先采用扩展传来的真实视频标题，缺失时回退到视频 ID；任务卡与系统通知附显示可用的频道和时长。
+- `sniff`：YouTube 保持决策 62 的后台嗅探、忙碌拒绝、导航切换和结果通知；X 复用同一嗅探流程。
+- `download_best`：直接以 `bestvideo*+bestaudio/best` 调用既有 `Functions.download_youtube`，由 yt-dlp 选择最佳视频及音轨并按需合并。复用下载并发、aria2c、远程组件选项和 FFmpeg 定位，显式使用 `--ignore-config --no-playlist`，避免外部配置改变一键下载的语义。YouTube 任务标题优先采用扩展传来的真实视频标题，缺失时回退到视频 ID；X 无页面元数据时回退到状态 ID。任务卡与系统通知显示可用的标题、频道和时长。
+- `parse_gif`：仅限 X/Twitter status URL，路由到 `GifPage` 既有异步解析。成功、无结果和失败沿用现有系统结果通知，并遵循决策 40 的通知开关与主窗口失焦规则。
 - `download_cover`：`core/browser_downloads.py` 使用 yt-dlp 的 `--skip-download --write-thumbnail --no-simulate` 下载最佳可用封面，最高档返回错误时由下载器尝试下一档，保留原图格式。`--ignore-config` 避免外部配置启用全部缩略图；不传实际下载器不支持的 `--no-write-all-thumbnails`。
 
 `download_best` 独立加入既有 `TaskType.YTDLP` 队列，不读取或覆盖正在嗅探的视频、格式、标题和封面，不切换应用页面或抢占焦点。输出目录取嗅探页当前所选目录，未设置时使用现有系统下载目录。网页提示仅代表已入队；任务在 Worker 实际启动时发送开始通知，完成/失败沿用队列通知。三类通知均遵循决策 40 的开关与主窗口失焦规则。封面当前由决策 66 的专用 worker 直接下载，不进入任务队列。
@@ -38,7 +45,7 @@ YouTube 站内导航复用同一份页面文档，内容脚本消息的 `sender.
 
 此次站内导航校验修复只涉及扩展：在 `chrome://extensions` 重新加载 Sookit，确认其 YouTube 站点访问权限，再刷新已打开的 YouTube 页面即可；无需重建 host 或重启桌面应用。
 
-更新扩展后需在 Chrome 扩展页重新加载，并刷新 YouTube 视频页。Native Messaging host 包含协议白名单，也必须使用本次源码重新构建；源码环境重新运行 `uv run --no-sync python scripts/register_browser_bridge.py`，安装版随新包更新。已运行的桌面应用需重启。离线测试不代替真实 Chrome 的 YouTube 布局和完整本机桥接验收。
+更新扩展后需在 Chrome 扩展页重新加载，并刷新 YouTube 视频页和 X 视频帖。Native Messaging host 包含协议白名单，也必须使用本次源码重新构建；源码环境重新运行 `uv run --no-sync python scripts/register_browser_bridge.py`，安装版随新包更新。已运行的桌面应用需重启。离线测试不代替真实 Chrome 的 YouTube/X 布局和完整本机桥接验收。
 
 ## 封面路径修订（2026-10-31，见决策 66）
 

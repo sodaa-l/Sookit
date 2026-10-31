@@ -12,6 +12,13 @@
     {id: 'download_cover', label: '下载最佳封面', icon: 'M3 3h18v18H3ZM3 17l6-6 4 4 3-3 5 5M8 7h.01',
       message: '封面下载已开始；高分辨率不可用时会自动尝试下一档，完成后请查看 Sookit'}
   ];
+  const xActions = [
+    actions[0],
+    actions[1],
+    {id: 'parse_gif', label: '解析动图', icon: 'M4 4h16v16H4zM9 8l6 4-6 4z',
+      message: '已在 Sookit 动图页开始解析'}
+  ];
+  const xHosts = new Set(['x.com', 'www.x.com', 'twitter.com', 'www.twitter.com']);
   let button;
   let menu;
   let menuUrl = '';
@@ -21,6 +28,12 @@
   let busy = false;
   let scheduled = false;
   let feedbackTimer;
+  let xMenu;
+  let xMenuButton;
+  let xMenuUrl = '';
+  let xMenuArticle;
+  let xButtonSequence = 0;
+  let xPageUrl = location.href;
 
   function currentVideoUrl() {
     const url = new URL(location.href);
@@ -34,6 +47,47 @@
 
   function isShortsPage() {
     return /^\/shorts\/[A-Za-z0-9_-]{11}\/?$/.test(new URL(location.href).pathname);
+  }
+
+  function isXSite() {
+    return xHosts.has(location.hostname.toLowerCase());
+  }
+
+  function normalizeXStatusUrl(value) {
+    try {
+      const url = new URL(value, location.href);
+      if (url.protocol !== 'https:' || !xHosts.has(url.hostname.toLowerCase())
+          || url.username || url.password || (url.port && url.port !== '443')) return null;
+      if (!/^\/(?:[^/]+\/status\/|i\/web\/status\/)\d+(?:\/(?:video|photo)\/\d+)?\/?$/.test(url.pathname)) return null;
+      const path = url.pathname.replace(/\/(?:video|photo)\/\d+\/?$/, '').replace(/\/+$/, '');
+      return 'https://x.com' + path;
+    } catch {
+      return null;
+    }
+  }
+
+  function getXStatusUrl(article) {
+    const links = [...article.querySelectorAll('a[href*="/status/"]')]
+      .filter(link => link.closest('article[data-testid="tweet"]') === article)
+      .sort((left, right) => Number(Boolean(right.querySelector('time')))
+        - Number(Boolean(left.querySelector('time'))));
+    for (const link of links) {
+      const url = normalizeXStatusUrl(link.href);
+      if (url) return url;
+    }
+    return null;
+  }
+
+  function tweetHasVideo(article) {
+    return [...article.querySelectorAll('video, [data-testid="videoPlayer"]')]
+      .some(media => media.closest('article[data-testid="tweet"]') === article);
+  }
+
+  function findGrokButton(article) {
+    return [...article.querySelectorAll('button[aria-label], button[data-testid]')]
+      .find(candidate => candidate.closest('article[data-testid="tweet"]') === article
+        && /grok/i.test((candidate.getAttribute('aria-label') || '') + ' '
+          + (candidate.getAttribute('data-testid') || '')));
   }
 
   function cleanDisplayText(value, maxLength) {
@@ -335,6 +389,259 @@
     return element;
   }
 
+  function closeXMenu(restoreFocus = false) {
+    if (xMenu) xMenu.hidden = true;
+    const trigger = xMenuButton;
+    trigger?.setAttribute('aria-expanded', 'false');
+    xMenuButton = null;
+    xMenuUrl = '';
+    xMenuArticle = null;
+    if (restoreFocus && trigger?.isConnected) trigger.focus();
+  }
+
+  function positionXMenu() {
+    if (!xMenu || xMenu.hidden) return;
+    if (!xMenuButton?.isConnected || !xMenuArticle?.isConnected || !isXSite()
+        || getXStatusUrl(xMenuArticle) !== xMenuUrl
+        || xMenuButton.dataset.xStatusUrl !== xMenuUrl) {
+      closeXMenu();
+      return;
+    }
+    const rect = xMenuButton.getBoundingClientRect();
+    if (rect.bottom < 0 || rect.top > window.innerHeight) {
+      closeXMenu();
+      return;
+    }
+    const width = xMenu.offsetWidth;
+    const height = xMenu.offsetHeight;
+    const left = Math.max(8, Math.min(rect.right - width, window.innerWidth - width - 8));
+    const top = rect.bottom + height + 8 <= window.innerHeight
+      ? rect.bottom + 8 : Math.max(8, rect.top - height - 8);
+    xMenu.style.left = left + 'px';
+    xMenu.style.top = top + 'px';
+  }
+
+  async function sendX(action) {
+    const trigger = xMenuButton;
+    const article = xMenuArticle;
+    const url = xMenuUrl;
+    const pageHref = location.href;
+    const stillCurrent = () => isXSite() && location.href === pageHref
+      && article?.isConnected && getXStatusUrl(article) === url;
+    if (!trigger?.isConnected || !article?.isConnected || !url || busy || !stillCurrent()) {
+      closeXMenu();
+      return;
+    }
+    closeXMenu(true);
+    busy = true;
+    trigger.disabled = true;
+    trigger.setAttribute('aria-busy', 'true');
+    trigger.title = '正在发送到 Sookit…';
+    try {
+      const response = await chrome.runtime.sendMessage({action: action.id, url});
+      if (!stillCurrent()) return;
+      if (!response?.ok) throw new Error(response?.error || 'Sookit 未确认接收请求');
+      tell(response.message || action.message);
+    } catch (error) {
+      if (stillCurrent()) tell(error.message || '无法连接 Sookit，请刷新页面后重试', true);
+    } finally {
+      busy = false;
+      if (trigger.isConnected) {
+        trigger.disabled = false;
+        trigger.removeAttribute('aria-busy');
+        trigger.title = 'Sookit 视频工具';
+      }
+    }
+  }
+
+  function xMenuSolidBackground() {
+    for (const node of [document.body, document.documentElement]) {
+      const match = /^rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)$/.exec(getComputedStyle(node).backgroundColor);
+      if (match && (match[4] === undefined || Number(match[4]) > 0.9)) {
+        return `rgb(${match[1]}, ${match[2]}, ${match[3]})`;
+      }
+    }
+    return null;
+  }
+
+  function xMenuPalette() {
+    const article = document.querySelector('article[data-testid="tweet"]');
+    const textSample = article?.querySelector('[data-testid="tweetText"]') || article;
+    const text = (textSample && getComputedStyle(textSample).color) || 'rgb(15, 20, 25)';
+    const channels = (text.match(/\d+/g) || []).slice(0, 3).map(Number);
+    const dark = channels.length === 3
+      ? (channels[0] * 299 + channels[1] * 587 + channels[2] * 114) / 1000 > 128 : false;
+    return {
+      dark,
+      text,
+      background: xMenuSolidBackground() || (dark ? 'rgb(21, 32, 43)' : 'rgb(255, 255, 255)'),
+    };
+  }
+
+  function createXMenu() {
+    const palette = xMenuPalette();
+    const element = document.createElement('div');
+    element.id = 'sookit-x-action-menu';
+    element.hidden = true;
+    element.dataset.theme = palette.dark ? 'dark' : 'light';
+    element.style.setProperty('--sookit-x-menu-text', palette.text);
+    element.style.setProperty('--sookit-x-menu-background', palette.background);
+    for (const action of xActions) {
+      const item = document.createElement('button');
+      item.type = 'button';
+      item.tabIndex = -1;
+      item.dataset.action = action.id;
+      item.setAttribute('role', 'menuitem');
+      const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      icon.setAttribute('viewBox', '0 0 24 24');
+      icon.setAttribute('aria-hidden', 'true');
+      const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      path.setAttribute('d', action.icon);
+      icon.append(path);
+      const label = document.createElement('span');
+      label.textContent = action.label;
+      item.append(icon, label);
+      item.addEventListener('click', () => sendX(action));
+      element.append(item);
+    }
+    element.setAttribute('role', 'menu');
+    element.setAttribute('aria-label', 'Sookit 视频工具');
+    element.addEventListener('keydown', event => {
+      const items = [...element.children];
+      const index = items.indexOf(document.activeElement);
+      let next;
+      if (event.key === 'ArrowDown') next = (index + 1) % items.length;
+      else if (event.key === 'ArrowUp') next = (index + items.length - 1) % items.length;
+      else if (event.key === 'Home') next = 0;
+      else if (event.key === 'End') next = items.length - 1;
+      else if ((event.key === 'Enter' || event.key === ' ') && index >= 0) {
+        event.preventDefault();
+        items[index].click();
+        return;
+      } else if (event.key === 'Tab') closeXMenu();
+      if (next !== undefined) {
+        event.preventDefault();
+        items[next].focus();
+      }
+    });
+    document.body.append(element);
+    return element;
+  }
+
+  function toggleXMenu(trigger, lastItem = false) {
+    if (busy || !trigger?.isConnected) return;
+    if (xMenu && !xMenu.hidden && xMenuButton === trigger) {
+      closeXMenu(true);
+      return;
+    }
+    const article = trigger.closest('article[data-testid="tweet"]');
+    const url = article && getXStatusUrl(article);
+    if (!article || !tweetHasVideo(article) || !url) return;
+    if (xMenu && !xMenu.hidden) closeXMenu();
+    if (xMenu) xMenu.remove();
+    xMenu = createXMenu();
+    xMenuButton = trigger;
+    xMenuArticle = article;
+    xMenuUrl = url;
+    trigger.dataset.xStatusUrl = url;
+    xMenu.setAttribute('aria-labelledby', trigger.id);
+    xMenu.hidden = false;
+    trigger.setAttribute('aria-expanded', 'true');
+    positionXMenu();
+    if (!xMenu.hidden) xMenu.children[lastItem ? xActions.length - 1 : 0].focus();
+  }
+
+  function createXButton(grokButton, statusUrl) {
+    const element = document.createElement('button');
+    element.type = 'button';
+    element.id = 'sookit-x-button-' + (++xButtonSequence);
+    element.className = grokButton.className;
+    element.classList.add('sookit-x-button');
+    element.title = 'Sookit 视频工具';
+    element.setAttribute('aria-label', 'Sookit 视频工具');
+    element.setAttribute('aria-haspopup', 'menu');
+    element.setAttribute('aria-controls', 'sookit-x-action-menu');
+    element.setAttribute('aria-expanded', 'false');
+    element.dataset.xStatusUrl = statusUrl;
+    const rect = grokButton.getBoundingClientRect();
+    const width = rect.width > 0 ? rect.width : 40;
+    const height = rect.height > 0 ? rect.height : width;
+    element.style.boxSizing = 'border-box';
+    element.style.width = width + 'px';
+    element.style.height = height + 'px';
+    element.style.margin = '0 8px 0 0';
+    element.style.padding = '0';
+    element.style.border = '0';
+    element.style.borderRadius = '9999px';
+    element.style.color = 'inherit';
+    element.style.display = 'inline-flex';
+    element.style.alignItems = 'center';
+    element.style.justifyContent = 'center';
+    element.style.flex = '0 0 auto';
+    element.style.cursor = 'pointer';
+    const icon = document.createElement('img');
+    icon.src = chrome.runtime.getURL('icons/sookit-48.png');
+    icon.alt = '';
+    icon.width = 20;
+    icon.height = 20;
+    icon.style.display = 'block';
+    icon.style.width = '20px';
+    icon.style.height = '20px';
+    icon.style.objectFit = 'contain';
+    icon.style.pointerEvents = 'none';
+    element.append(icon);
+    element.addEventListener('click', () => toggleXMenu(element));
+    element.addEventListener('keydown', event => {
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        event.preventDefault();
+        if (!xMenu || xMenu.hidden) toggleXMenu(element, event.key === 'ArrowUp');
+      }
+    });
+    return element;
+  }
+
+  function removeXButtons() {
+    closeXMenu();
+    for (const element of document.querySelectorAll('button.sookit-x-button')) element.remove();
+  }
+
+  function mountXButtons() {
+    if (xMenuButton && (!xMenuButton.isConnected || !xMenuArticle?.isConnected)) closeXMenu();
+    for (const article of document.querySelectorAll('article[data-testid="tweet"]')) {
+      const buttons = [...article.querySelectorAll('button.sookit-x-button')]
+        .filter(element => element.closest('article[data-testid="tweet"]') === article);
+      const statusUrl = getXStatusUrl(article);
+      const grokButton = findGrokButton(article);
+      if (!tweetHasVideo(article) || !statusUrl || !grokButton) {
+        for (const element of buttons) {
+          if (xMenuButton === element) closeXMenu();
+          element.remove();
+        }
+        continue;
+      }
+      const element = buttons.shift() || createXButton(grokButton, statusUrl);
+      for (const duplicate of buttons) {
+        if (xMenuButton === duplicate) closeXMenu();
+        duplicate.remove();
+      }
+      if (xMenuButton === element && xMenuUrl !== statusUrl) closeXMenu();
+      element.className = grokButton.className;
+      element.classList.add('sookit-x-button');
+      const rect = grokButton.getBoundingClientRect();
+      if (rect.width > 0) element.style.width = rect.width + 'px';
+      if (rect.height > 0) element.style.height = rect.height + 'px';
+      element.dataset.xStatusUrl = statusUrl;
+      if (grokButton.previousElementSibling !== element) grokButton.before(element);
+      element.disabled = busy;
+    }
+    for (const element of document.querySelectorAll('button.sookit-x-button')) {
+      if (!element.closest('article[data-testid="tweet"]')) {
+        if (xMenuButton === element) closeXMenu();
+        element.remove();
+      }
+    }
+  }
+
   function mount() {
     scheduled = false;
     const url = currentVideoUrl();
@@ -343,6 +650,22 @@
       pageUrl = url;
       closeMenu();
       if (feedback) feedback.hidden = true;
+    }
+    if (isXSite()) {
+      if (location.href !== xPageUrl) {
+        xPageUrl = location.href;
+        closeXMenu();
+        if (feedback) feedback.hidden = true;
+      }
+      closeMenu();
+      button?.remove();
+      if (button) delete button.dataset.shortVideoId;
+      mountXButtons();
+      return;
+    }
+    if (xPageUrl !== location.href || xMenuButton || document.querySelector('button.sookit-x-button')) {
+      xPageUrl = location.href;
+      removeXButtons();
     }
     if (!url) {
       closeMenu();
@@ -381,6 +704,18 @@
   }
 
   function relevantMutation(records) {
+    if (isXSite()) {
+      return records.some(record => {
+        const target = record.target instanceof Element ? record.target : record.target.parentElement;
+        if (target?.closest('#sookit-x-action-menu, #sookit-feedback, button.sookit-x-button')) return false;
+        if (record.type === 'attributes'
+            && !['data-testid', 'aria-label', 'href'].includes(record.attributeName)) return false;
+        if (target?.closest('article[data-testid="tweet"]')) return true;
+        return [...record.addedNodes, ...record.removedNodes].some(node => node instanceof Element
+          && (node.matches('article[data-testid="tweet"]')
+            || node.querySelector('article[data-testid="tweet"]')));
+      });
+    }
     if (!records.length || records.some(record => record.type !== 'attributes'
       || !['class', 'style'].includes(record.attributeName))) return true;
     return records.some(record => {
@@ -390,29 +725,42 @@
     });
   }
   document.addEventListener('pointerdown', event => {
-    if (menu && !menu.hidden && !menu.contains(event.target) && !button.contains(event.target)) closeMenu();
+    if (menu && !menu.hidden && !menu.contains(event.target) && !button?.contains(event.target)) closeMenu();
+    if (xMenu && !xMenu.hidden && !xMenu.contains(event.target) && !xMenuButton?.contains(event.target)) closeXMenu();
   }, true);
   document.addEventListener('focusin', event => {
-    if (menu && !menu.hidden && !menu.contains(event.target) && !button.contains(event.target)) closeMenu();
+    if (menu && !menu.hidden && !menu.contains(event.target) && !button?.contains(event.target)) closeMenu();
+    if (xMenu && !xMenu.hidden && !xMenu.contains(event.target) && !xMenuButton?.contains(event.target)) closeXMenu();
   });
   document.addEventListener('keydown', event => {
+    if (event.key === 'Escape' && xMenu && !xMenu.hidden) {
+      event.preventDefault();
+      event.stopPropagation();
+      closeXMenu(true);
+      return;
+    }
     if (event.key === 'Escape' && menu && !menu.hidden) {
       event.preventDefault();
       event.stopPropagation();
       closeMenu(true);
     }
   }, true);
-  window.addEventListener('resize', () => { positionMenu(); scheduleMount(); });
-  window.addEventListener('scroll', () => { positionMenu(); scheduleMount(); }, true);
+  window.addEventListener('resize', () => { positionMenu(); positionXMenu(); scheduleMount(); });
+  window.addEventListener('scroll', () => {
+    positionMenu();
+    positionXMenu();
+    if (!isXSite()) scheduleMount();
+  }, true);
   new MutationObserver(records => {
     if (relevantMutation(records)) scheduleMount();
   }).observe(document.documentElement, {
     childList: true, subtree: true, attributes: true,
-    attributeFilter: ['is-active', 'video-id', 'href', 'class', 'style']
+    attributeFilter: ['is-active', 'video-id', 'href', 'class', 'style', 'data-testid', 'aria-label']
   });
   document.addEventListener('yt-navigate-start', () => {
     pageGeneration += 1;
     closeMenu();
+    closeXMenu();
     if (feedback) feedback.hidden = true;
   });
   document.addEventListener('yt-navigate-finish', scheduleMount);

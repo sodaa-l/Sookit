@@ -140,6 +140,11 @@ class MainWindow(qfw.FluentWindow):
         except Exception as exc:
             return {'ok': False, 'error': f'无法确认浏览器扩展开关：{exc}'}
         action = request['action']
+        if action == 'parse_gif':
+            response = self.gif_page.parse_from_browser(request['url'])
+            if response.get('ok'):
+                self.switchTo(self.gif_page)
+            return response
         if action == 'sniff':
             response = self.youtube_page.sniff_from_browser(request['url'])
             if response.get('ok'):

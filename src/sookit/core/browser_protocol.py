@@ -11,7 +11,7 @@ MAX_MESSAGE_BYTES = 16 * 1024
 MAX_VIDEO_TITLE_LENGTH = 500
 MAX_VIDEO_CHANNEL_LENGTH = 200
 MAX_VIDEO_DURATION_SECONDS = 7 * 24 * 60 * 60
-BROWSER_ACTIONS = frozenset({'sniff', 'download_best', 'download_cover'})
+BROWSER_ACTIONS = frozenset({'sniff', 'download_best', 'download_cover', 'parse_gif'})
 
 
 def normalize_video_url(value: str) -> str:
@@ -43,6 +43,44 @@ def normalize_video_url(value: str) -> str:
     return f'https://www.youtube.com/watch?v={video_id}'
 
 
+def normalize_x_status_url(value: str) -> str:
+    """仅接受 HTTPS X/Twitter 状态链接，并去掉媒体序号。"""
+    if not isinstance(value, str) or len(value) > 4096:
+        raise ValueError('状态链接无效')
+    try:
+        parts = urlsplit(value)
+        host = (parts.hostname or '').lower()
+        if (parts.scheme != 'https' or host not in {
+                'x.com', 'www.x.com', 'twitter.com', 'www.twitter.com'}
+                or parts.username or parts.password or parts.port not in (None, 443)):
+            raise ValueError('仅支持 HTTPS X 状态链接')
+        if not re.fullmatch(
+                r'/(?:[^/]+/status/|i/web/status/)\d+(?:/(?:video|photo)/\d+)?/?',
+                parts.path):
+            raise ValueError('没有找到有效的 X 状态链接')
+    except (ValueError, TypeError) as exc:
+        raise ValueError('仅支持 HTTPS X 状态链接') from exc
+    path = re.sub(r'/(?:video|photo)/\d+/?$', '', parts.path).rstrip('/')
+    return f'https://x.com{path}'
+
+
+def normalize_browser_url(value: str, action: str) -> str:
+    """按浏览器动作选择 YouTube 或 X 单帖 URL 边界。"""
+    if action == 'parse_gif':
+        return normalize_x_status_url(value)
+    if action == 'download_cover':
+        return normalize_video_url(value)
+    if action not in ('sniff', 'download_best'):
+        raise ValueError('不支持的浏览器请求')
+    try:
+        return normalize_video_url(value)
+    except ValueError as youtube_error:
+        try:
+            return normalize_x_status_url(value)
+        except ValueError:
+            raise youtube_error
+
+
 def _clean_display_text(value: object, max_length: int) -> str:
     if not isinstance(value, str):
         return ''
@@ -70,7 +108,8 @@ def validate_request(message: object) -> dict:
     if (not isinstance(message, dict) or not isinstance(message.get('action'), str)
             or message['action'] not in BROWSER_ACTIONS):
         raise ValueError('不支持的浏览器请求')
-    request = {'action': message['action'], 'url': normalize_video_url(message.get('url'))}
+    request = {'action': message['action'],
+               'url': normalize_browser_url(message.get('url'), message['action'])}
     if request['action'] in ('download_best', 'download_cover'):
         metadata = _validated_video_metadata(message.get('video_metadata'))
         if metadata:

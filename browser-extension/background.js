@@ -1,11 +1,12 @@
 /* 页面脚本只传递视频链接和受限展示信息；本机调用始终经过扩展后台。 */
 const HOST = 'com.sookit.browser';
-const ACTIONS = new Set(['sniff', 'download_best', 'download_cover']);
-const ALLOWED_HOSTS = new Set(['www.youtube.com', 'youtube.com', 'm.youtube.com', 'youtu.be']);
+const ACTIONS = new Set(['sniff', 'download_best', 'download_cover', 'parse_gif']);
+const YOUTUBE_HOSTS = new Set(['www.youtube.com', 'youtube.com', 'm.youtube.com', 'youtu.be']);
+const X_HOSTS = new Set(['x.com', 'www.x.com', 'twitter.com', 'www.twitter.com']);
 
 function youtubeUrl(value) {
   const url = new URL(value);
-  if (url.protocol !== 'https:' || !ALLOWED_HOSTS.has(url.hostname)
+  if (url.protocol !== 'https:' || !YOUTUBE_HOSTS.has(url.hostname)
       || url.username || url.password || (url.port && url.port !== '443')) {
     throw new Error('仅支持 HTTPS YouTube 视频链接');
   }
@@ -20,6 +21,51 @@ function videoUrl(value) {
   else if (/^\/(shorts|live)\//.test(url.pathname)) id = url.pathname.split('/')[2];
   if (!/^[A-Za-z0-9_-]{11}$/.test(id)) throw new Error('没有找到有效的 YouTube 视频 ID');
   return `https://www.youtube.com/watch?v=${id}`;
+}
+
+function xStatusUrl(value) {
+  const url = new URL(value);
+  if (url.protocol !== 'https:' || !X_HOSTS.has(url.hostname)
+      || url.username || url.password || (url.port && url.port !== '443')) {
+    throw new Error('仅支持 HTTPS X 状态链接');
+  }
+  if (!/^\/(?:[^/]+\/status\/|i\/web\/status\/)\d+(?:\/(?:video|photo)\/\d+)?\/?$/.test(url.pathname)) {
+    throw new Error('没有找到有效的 X 状态链接');
+  }
+  const path = url.pathname.replace(/\/(?:video|photo)\/\d+\/?$/, '').replace(/\/+$/, '');
+  return `https://x.com${path}`;
+}
+
+function requestUrl(action, value) {
+  if (action === 'parse_gif') return xStatusUrl(value);
+  if (action === 'download_cover') return videoUrl(value);
+  try {
+    return videoUrl(value);
+  } catch (youtubeError) {
+    try {
+      return xStatusUrl(value);
+    } catch {
+      throw youtubeError;
+    }
+  }
+}
+
+function pagePlatform(value) {
+  const url = new URL(value);
+  if (url.protocol !== 'https:' || url.username || url.password || (url.port && url.port !== '443')) {
+    throw new Error('浏览器页面来源无效');
+  }
+  if (YOUTUBE_HOSTS.has(url.hostname)) return 'youtube';
+  if (X_HOSTS.has(url.hostname)) return 'x';
+  throw new Error('浏览器页面来源无效');
+}
+
+function maybeXStatusUrl(value) {
+  try {
+    return xStatusUrl(value);
+  } catch {
+    return null;
+  }
 }
 
 function cleanDisplayText(value, maxLength) {
@@ -46,20 +92,48 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
     if (sender.id !== chrome.runtime.id || !sender.tab || sender.frameId !== 0) {
       throw new Error('请求来源无效');
     }
-    youtubeUrl(sender.url);
-    const url = videoUrl(message.url);
-    // YouTube 站内导航复用文档，sender.url 可能仍是注入时的首页或旧视频。
-    let currentUrl;
+    const url = requestUrl(message.action, message.url);
+    const platform = url.startsWith('https://x.com/') ? 'x' : 'youtube';
+    if (pagePlatform(sender.url) !== platform) throw new Error('请求来源与视频链接不匹配');
+
+    // SPA 的 sender.url 可能是旧路由；仍以当前标签页及其 pendingUrl 判定站点。
+    let tab;
     try {
-      const tab = await chrome.tabs.get(sender.tab.id);
-      currentUrl = videoUrl(tab.url);
-      if (tab.pendingUrl && videoUrl(tab.pendingUrl) !== currentUrl) {
-        throw new Error('页面正在切换');
-      }
+      tab = await chrome.tabs.get(sender.tab.id);
     } catch {
       throw new Error('无法确认当前视频页面，请刷新页面后重试');
     }
-    if (currentUrl !== url) throw new Error('页面已切换，请重试');
+    let tabPlatform;
+    try {
+      tabPlatform = pagePlatform(tab.url);
+    } catch {
+      throw new Error('无法确认当前视频页面，请刷新页面后重试');
+    }
+    if (tabPlatform !== platform) throw new Error('页面已切换，请重试');
+    if (tab.pendingUrl) {
+      let pendingPlatform;
+      try {
+        pendingPlatform = pagePlatform(tab.pendingUrl);
+      } catch {
+        throw new Error('页面正在切换');
+      }
+      if (pendingPlatform !== platform) throw new Error('页面正在切换');
+    }
+    if (platform === 'youtube') {
+      let currentUrl;
+      try {
+        currentUrl = videoUrl(tab.url);
+        if (tab.pendingUrl && videoUrl(tab.pendingUrl) !== currentUrl) {
+          throw new Error('页面正在切换');
+        }
+      } catch {
+        throw new Error('无法确认当前视频页面，请刷新页面后重试');
+      }
+      if (currentUrl !== url) throw new Error('页面已切换，请重试');
+    } else {
+      const currentStatusUrl = maybeXStatusUrl(tab.url);
+      if (currentStatusUrl && currentStatusUrl !== url) throw new Error('页面已切换，请重试');
+    }
     try {
       const nativeMessage = {action: message.action, url};
       if (message.action === 'download_best' || message.action === 'download_cover') {
