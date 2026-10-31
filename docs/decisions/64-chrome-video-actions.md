@@ -34,8 +34,12 @@ YouTube 站内导航复用同一份页面文档，内容脚本消息的 `sender.
 
 - `node --test tests/test_browser_extension.cjs`：实际脚本的菜单、来源验证、动作转发、键盘操作、关闭路径、重复发送、SPA 导航及旧回执隔离。16 项通过，包含来源旧地址为首页/搜索页/旧视频、三种动作、页面脚本到后台的联动，以及标签页关闭/切换/URL 不可读时拒绝请求。
 - `uv run --no-sync python -X utf8 -m unittest discover -s tests -p test_browser_bridge.py -v`：协议、现有实例/冷启动和嗅探行为。
-- `uv run --no-sync python -X utf8 -m unittest discover -s tests -p test_browser_downloads.py -v`：下载入队与状态隔离；真实 yt-dlp 及 FFmpeg 配合本机 HTTP 验证最高分辨率视频和音轨合并、最佳封面原图、404 回退及无封面失败，不访问外部视频平台。
+- `uv run --no-sync python -X utf8 -m unittest discover -s tests -p test_browser_downloads.py -v`：最佳画质真实 yt-dlp 及 FFmpeg 配合本机 HTTP 验证最高分辨率视频和音轨合并；浏览器封面逐档回退测试已改为独立 worker mock，详见决策 66。
 
 此次站内导航校验修复只涉及扩展：在 `chrome://extensions` 重新加载 Sookit，确认其 YouTube 站点访问权限，再刷新已打开的 YouTube 页面即可；无需重建 host 或重启桌面应用。
 
 更新扩展后需在 Chrome 扩展页重新加载，并刷新 YouTube 视频页。Native Messaging host 包含协议白名单，也必须使用本次源码重新构建；源码环境重新运行 `uv run --no-sync python scripts/register_browser_bridge.py`，安装版随新包更新。已运行的桌面应用需重启。离线测试不代替真实 Chrome 的 YouTube 布局和完整本机桥接验收。
+
+## 封面路径修订（2026-10-31，见决策 66）
+
+本决策第 23、25、29、31 行记录的是原始实现：浏览器封面通过 yt-dlp 下载并进入任务队列。该封面方案现由决策 66 修订。扩展的 `download_cover` 现在复用 `YouTubePage.CoverDownloadWorker`，按 `build_thumbnails(video_id)` 的优先级逐档直接下载，失败时清除部分文件后继续尝试；文件使用 `<视频ID>_cover.<扩展名>`，冲突追加序号。封面不再依赖 yt-dlp、不进入任务队列，也不发送任务队列系统通知，成功/失败沿用嗅探页现有封面提示。`download_best` 仍按本决策原样使用 yt-dlp 任务队列。

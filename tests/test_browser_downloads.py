@@ -1,4 +1,4 @@
-"""浏览器下载入口隔离、最佳封面选择及真实 yt-dlp 本机下载验证。"""
+"""浏览器下载入口隔离、封面 worker 回退及真实最佳画质下载验证。"""
 import collections
 import functools
 import http.server
@@ -13,12 +13,12 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import MagicMock, patch
 
-from sookit.core import browser_downloads
-from sookit.core.browser_downloads import BEST_VIDEO_FORMAT, download_best_cover
+from sookit.core.browser_downloads import BEST_VIDEO_FORMAT
 from sookit.core.ffmpeg_utils import get_ffmpeg_path
 from sookit.core.functions import Functions
 from sookit.core.task_queue import TaskType
 from sookit.core.workers import TaskWorker
+from sookit.core.youtube_utils import build_thumbnails
 from sookit.core.ytdlp_utils import build_ytdlp_cmd, get_ytdlp_cmd
 
 URL = 'https://www.youtube.com/watch?v=Yb9H5vhWyHg'
@@ -26,9 +26,15 @@ URL = 'https://www.youtube.com/watch?v=Yb9H5vhWyHg'
 
 class BrowserDownloadDispatchTests(unittest.TestCase):
     def page(self):
+        from sookit.pages.youtube_page import YouTubePage
         page = SimpleNamespace(out_dir=object(), remote_cb=MagicMock(), read_path=MagicMock(),
                                run_queued_task=MagicMock(return_value='test-task'),
-                               url_input=MagicMock(), do_sniff=MagicMock())
+                               url_input=MagicMock(), do_sniff=MagicMock(),
+                               _cover_download_workers=set())
+        page._cover_extension = YouTubePage._cover_extension
+        page._next_cover_download_path = functools.partial(
+            YouTubePage._next_cover_download_path, page)
+        page._start_cover_download = MagicMock()
         page.remote_cb.isChecked.return_value = True
         page.read_path.return_value = 'D:/output'
         return page
@@ -40,42 +46,71 @@ class BrowserDownloadDispatchTests(unittest.TestCase):
                     'concurrent_fragments': 4, 'use_aria2c': False, 'aria2c_connections': 8}):
             return YouTubePage.download_from_browser(page, URL + '&list=PLtest', action)
 
-    def test_downloads_own_their_url_and_preserve_current_sniff(self):
-        for action in ('download_best', 'download_cover'):
-            page = self.page()
-            page._sniff_worker = SimpleNamespace(isRunning=lambda: True)
-            page._sniff_title = '另一个视频的标题'
-            response = self.dispatch(page, action)
-            self.assertTrue(response['ok'])
-            self.assertEqual(response['task_id'], 'test-task')
-            page.do_sniff.assert_not_called()
-            page.url_input.setText.assert_not_called()
-            page.url_input.text.assert_not_called()
-            task = page.run_queued_task.call_args.kwargs
-            self.assertEqual(task['task_type'], TaskType.YTDLP)
-            self.assertEqual(task['metadata']['url'], URL)
-            self.assertEqual(task['metadata']['out_dir'], 'D:/output')
-            self.assertNotIn('另一个', task['title'])
-            if action == 'download_best':
-                self.assertIs(task['func'], Functions.download_youtube)
-                self.assertEqual(task['args'], (URL, BEST_VIDEO_FORMAT, 'D:/output', True, 4, False, 8))
-                self.assertEqual(task['kwargs']['extra_args'], ['--ignore-config', '--no-playlist'])
-            else:
-                self.assertIs(task['func'], download_best_cover)
-                self.assertEqual(task['args'], (URL, 'D:/output', True))
+    def test_best_download_uses_own_url_and_preserves_current_sniff(self):
+        page = self.page()
+        page._sniff_worker = SimpleNamespace(isRunning=lambda: True)
+        page._sniff_title = '另一个视频的标题'
+        response = self.dispatch(page, 'download_best')
+        self.assertTrue(response['ok'])
+        self.assertEqual(response['task_id'], 'test-task')
+        page.do_sniff.assert_not_called()
+        page.url_input.setText.assert_not_called()
+        page.url_input.text.assert_not_called()
+        task = page.run_queued_task.call_args.kwargs
+        self.assertEqual(task['task_type'], TaskType.YTDLP)
+        self.assertEqual(task['metadata']['url'], URL)
+        self.assertEqual(task['metadata']['out_dir'], 'D:/output')
+        self.assertNotIn('另一个', task['title'])
+        self.assertIs(task['func'], Functions.download_youtube)
+        self.assertEqual(task['args'], (URL, BEST_VIDEO_FORMAT, 'D:/output', True, 4, False, 8))
+        self.assertEqual(task['kwargs']['extra_args'], ['--ignore-config', '--no-playlist'])
+
+    def test_cover_download_needs_no_ytdlp_and_uses_thumbnail_priority(self):
+        page = self.page()
+        response = self.dispatch(page, 'download_cover', available=False)
+        self.assertTrue(response['ok'])
+        self.assertEqual(
+            response['message'],
+            '封面下载已开始；高分辨率不可用时会自动尝试下一档，完成后请查看 Sookit')
+        urls, path = page._start_cover_download.call_args.args
+        self.assertEqual(urls, [thumbnail['url'] for thumbnail in build_thumbnails('Yb9H5vhWyHg')])
+        self.assertEqual(path, os.path.join('D:/output', 'Yb9H5vhWyHg_cover.jpg'))
+        page.run_queued_task.assert_not_called()
+        page.do_sniff.assert_not_called()
+
+    def test_cover_filename_adds_suffix_for_existing_and_active_downloads(self):
+        from sookit.pages.youtube_page import YouTubePage
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / 'video_cover.jpg').touch()
+            active_worker = MagicMock(path=str(root / 'video_cover_1.jpg'))
+            page = SimpleNamespace(_cover_download_workers={active_worker})
+            self.assertEqual(YouTubePage._next_cover_download_path(page, temporary, 'video_cover.jpg'),
+                             str(root / 'video_cover_2.jpg'))
+
+    def test_cover_download_worker_reference_is_released(self):
+        from sookit.pages.youtube_page import YouTubePage
+        worker = object()
+        workers = {worker}
+        page = SimpleNamespace(_cover_download_workers=workers,
+                               sender=MagicMock(return_value=worker))
+        YouTubePage._on_cover_download_worker_finished(page)
+        self.assertEqual(workers, set())
 
     def test_missing_tool_or_invalid_action_never_queues(self):
-        for action, available in [('download_best', False), ('download_cover', False), ('exec', True)]:
+        for action, available in [('download_best', False), ('exec', True)]:
             page = self.page()
             self.assertFalse(self.dispatch(page, action, available)['ok'])
             page.run_queued_task.assert_not_called()
 
     def test_empty_output_uses_existing_default(self):
-        from sookit.pages.youtube_page import DEFAULT_OUTPUT_DIR
+        from sookit.pages.youtube_page import DEFAULT_OUTPUT_DIR, YouTubePage
         page = self.page()
         page.read_path.return_value = ''
-        self.dispatch(page, 'download_cover')
-        self.assertEqual(page.run_queued_task.call_args.kwargs['args'][1], DEFAULT_OUTPUT_DIR)
+        response = YouTubePage.download_from_browser(page, URL, 'download_cover')
+        self.assertTrue(response['ok'])
+        self.assertEqual(page._start_cover_download.call_args.args[1], os.path.join(
+            DEFAULT_OUTPUT_DIR, 'Yb9H5vhWyHg_cover.jpg'))
 
     def test_gui_dispatches_downloads_without_changing_navigation_or_focus(self):
         from sookit.main_window import MainWindow
@@ -97,31 +132,71 @@ class BrowserDownloadDispatchTests(unittest.TestCase):
             page.download_from_browser.assert_not_called()
 
 
-class CoverArtifactTests(unittest.TestCase):
-    def test_requires_workspace_and_only_accepts_unique_nonempty_current_cover(self):
-        with self.assertRaisesRegex(ValueError, '工作目录'):
-            download_best_cover(URL, '.', False)
+class CoverDownloadWorkerTests(unittest.TestCase):
+    def test_falls_back_in_order_and_removes_partial_file(self):
+        from sookit.pages.youtube_page import YouTubePage
+        urls = [thumbnail['url'] for thumbnail in build_thumbnails('Yb9H5vhWyHg')]
         with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            (root / 'other_cover.jpg').write_bytes(b'old')
-            cases = [({}, False), ({'Yb9H5vhWyHg_cover.jpg': b''}, False),
-                     ({'Yb9H5vhWyHg_cover.jpg.part': b'partial'}, False),
-                     ({'Yb9H5vhWyHg_cover.webp': b'original'}, True)]
-            for artifacts, success in cases:
-                def run(*args, **kwargs):
-                    for name, data in artifacts.items():
-                        (root / name).write_bytes(data)
-                with self.subTest(artifacts=artifacts), \
-                        patch.object(browser_downloads, 'build_ytdlp_cmd', side_effect=lambda *args: ['yt-dlp', *args]), \
-                        patch.object(browser_downloads, 'run_ytdlp', side_effect=run):
-                    if success:
-                        self.assertEqual(download_best_cover(URL, temporary, False, workspace=temporary),
-                                         [str(root / 'Yb9H5vhWyHg_cover.webp')])
-                    else:
-                        with self.assertRaisesRegex(RuntimeError, '非空封面'):
-                            download_best_cover(URL, temporary, False, workspace=temporary)
-                for name in artifacts:
-                    (root / name).unlink()
+            path = Path(temporary) / 'Yb9H5vhWyHg_cover.jpg'
+            attempts = []
+            results = []
+
+            def download(url, output_path, log=None):
+                attempts.append(url)
+                if url == urls[0]:
+                    Path(output_path).write_bytes(b'partial first response')
+                    raise RuntimeError('分辨率不可用')
+                self.assertFalse(Path(output_path).exists())
+                Path(output_path).write_bytes(b'second thumbnail')
+
+            worker = YouTubePage.CoverDownloadWorker(urls, str(path))
+            worker.download_finished.connect(lambda success, output: results.append((success, output)))
+            with patch('sookit.pages.youtube_page.Functions.download_thumbnail', side_effect=download):
+                worker.run()
+
+            self.assertEqual(attempts, urls[:2])
+            self.assertEqual(path.read_bytes(), b'second thumbnail')
+            self.assertEqual(results, [(True, str(path))])
+
+    def test_accepts_single_gui_thumbnail_url(self):
+        from sookit.pages.youtube_page import YouTubePage
+        url = build_thumbnails('Yb9H5vhWyHg')[0]['url']
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / 'Yb9H5vhWyHg_cover.jpg'
+            attempts = []
+            results = []
+
+            def download(request_url, output_path, log=None):
+                attempts.append(request_url)
+                Path(output_path).write_bytes(b'gui thumbnail')
+
+            worker = YouTubePage.CoverDownloadWorker(url, str(path))
+            worker.download_finished.connect(lambda success, output: results.append((success, output)))
+            with patch('sookit.pages.youtube_page.Functions.download_thumbnail', side_effect=download):
+                worker.run()
+
+            self.assertEqual(attempts, [url])
+            self.assertEqual(path.read_bytes(), b'gui thumbnail')
+            self.assertEqual(results, [(True, str(path))])
+
+    def test_cleans_partial_file_when_every_resolution_fails(self):
+        from sookit.pages.youtube_page import YouTubePage
+        urls = [thumbnail['url'] for thumbnail in build_thumbnails('Yb9H5vhWyHg')[:2]]
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / 'Yb9H5vhWyHg_cover.jpg'
+            results = []
+
+            def download(url, output_path, log=None):
+                Path(output_path).write_bytes(b'partial response')
+                raise RuntimeError('请求失败')
+
+            worker = YouTubePage.CoverDownloadWorker(urls, str(path))
+            worker.download_finished.connect(lambda success, output: results.append((success, output)))
+            with patch('sookit.pages.youtube_page.Functions.download_thumbnail', side_effect=download):
+                worker.run()
+
+            self.assertEqual(results, [(False, str(path))])
+            self.assertFalse(path.exists())
 
 
 class FixtureHandler(http.server.SimpleHTTPRequestHandler):
@@ -169,51 +244,6 @@ class RealBrowserDownloadTests(unittest.TestCase):
     def fixture_command(self, *args):
         self.info_path.write_text(json.dumps(self.info), encoding='utf-8')
         return build_ytdlp_cmd(*args, '--load-info-json', str(self.info_path))
-
-    def real_cover(self, **kwargs):
-        # 只把最后的 URL 替换为本机元数据，执行实际 run_ytdlp 和真实下载器。
-        original = browser_downloads.run_ytdlp
-        def run(cmd, *args, **options):
-            self.assertEqual(cmd[-1], URL)
-            return original(cmd[:-1], *args, **options)
-        with patch.object(browser_downloads, 'build_ytdlp_cmd', side_effect=self.fixture_command), \
-                patch.object(browser_downloads, 'run_ytdlp', side_effect=run):
-            try:
-                return download_best_cover(URL, str(self.root), False, workspace=str(self.workspace),
-                                           log=self.logs.append, **kwargs)
-            except RuntimeError as error:
-                raise RuntimeError(f"{error}\n" + '\n'.join(self.logs)) from error
-
-    def test_best_thumbnail_is_original_and_video_is_never_requested(self):
-        for name, content in [('small.jpg', b'small original'), ('large.webp', b'largest original')]:
-            (self.fixture / name).write_bytes(content)
-        self.info['thumbnails'] = [
-            {'url': self.base + '/small.jpg', 'width': 320, 'height': 180},
-            {'url': self.base + '/large.webp', 'width': 1280, 'height': 720}]
-        processes = []
-        outputs = self.real_cover(on_process_created=processes.append)
-        self.assertEqual(len(outputs), 1)
-        self.assertEqual(Path(outputs[0]).read_bytes(), b'largest original')
-        self.assertEqual(Path(outputs[0]).suffix, '.webp')
-        self.assertEqual(self.server.requests['/large.webp'], 1)
-        self.assertEqual(self.server.requests['/small.jpg'], 0)
-        self.assertEqual(self.server.requests['/media.mp4'], 0)
-        self.assertEqual(processes[0].returncode, 0)
-        self.assertTrue(processes[0].stdout.closed)
-
-    def test_best_thumbnail_404_falls_back_and_no_thumbnail_fails(self):
-        (self.fixture / 'small.jpg').write_bytes(b'fallback original')
-        self.info['thumbnails'] = [
-            {'url': self.base + '/small.jpg', 'width': 320, 'height': 180},
-            {'url': self.base + '/missing.jpg', 'width': 1280, 'height': 720}]
-        outputs = self.real_cover()
-        self.assertEqual(Path(outputs[0]).read_bytes(), b'fallback original')
-        self.assertGreater(self.server.requests['/missing.jpg'], 0)
-        Path(outputs[0]).unlink()
-        self.info['thumbnails'] = []
-        with self.assertRaisesRegex(RuntimeError, '非空封面'):
-            self.real_cover()
-        self.assertEqual(self.server.requests['/media.mp4'], 0)
 
     def test_best_quality_downloads_highest_video_and_audio_with_actual_merger(self):
         ffmpeg = get_ffmpeg_path()

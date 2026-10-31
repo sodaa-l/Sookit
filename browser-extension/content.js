@@ -10,7 +10,7 @@
     {id: 'download_best', label: '下载最佳画质', icon: 'M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5',
       message: '最佳画质下载已加入 Sookit 任务队列'},
     {id: 'download_cover', label: '下载封面', icon: 'M3 3h18v18H3ZM3 17l6-6 4 4 3-3 5 5M8 7h.01',
-      message: '最佳封面下载已加入 Sookit 任务队列'}
+      message: '封面下载已开始；高分辨率不可用时会自动尝试下一档，完成后请查看 Sookit'}
   ];
   let button;
   let menu;

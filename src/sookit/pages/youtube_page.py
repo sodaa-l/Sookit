@@ -153,7 +153,7 @@ class YouTubePage(PageBase):
         # （见 docs/decisions/40-windows-toast-notifications.md 追加段）
         self._sniff_seq = 0
         self._cover_loader_worker = None
-        self._cover_download_worker = None
+        self._cover_download_workers = set()
         self._cover_data = None  # 封面原始字节数据（供任务队列复用）
         self._cover_data_seq = None  # 字幕任务只复用同一轮嗅探的封面
         self._sniff_thumbs = []  # 嗅探得到的封面列表（_populate_cover_combo 有效分支时保存，供入队复用）
@@ -634,39 +634,44 @@ class YouTubePage(PageBase):
         return {'ok': True, 'message': 'Sookit 已在后台开始嗅探'}
 
     def download_from_browser(self, url, action):
-        """浏览器下载使用自己的 URL 和任务参数，不读取当前嗅探结果。"""
+        """浏览器下载使用自己的 URL；最佳画质入队，封面直接走专用下载线程。"""
         from sookit.core.browser_protocol import normalize_video_url
-        from sookit.core.browser_downloads import BEST_VIDEO_FORMAT, download_best_cover
+        from sookit.core.browser_downloads import BEST_VIDEO_FORMAT
         url = normalize_video_url(url)
         if action not in ('download_best', 'download_cover'):
             return {'ok': False, 'error': '不支持的浏览器下载请求'}
-        if not is_ytdlp_available():
-            return {'ok': False, 'error': 'Sookit 尚未安装 yt-dlp，请到设置页下载安装'}
+
         out_dir = self.read_path(self.out_dir) or DEFAULT_OUTPUT_DIR
-        remote = self.remote_cb.isChecked()
         video_id = extract_youtube_id(url)
-        label = '最佳画质下载' if action == 'download_best' else '封面下载'
-        metadata = {
-            'url': url, 'out_dir': out_dir, 'browser_action': action,
-            'cover_url': build_thumbnails(video_id)[0]['url'],
-        }
         if action == 'download_best':
+            if not is_ytdlp_available():
+                return {'ok': False, 'error': 'Sookit 尚未安装 yt-dlp，请到设置页下载安装'}
+            remote = self.remote_cb.isChecked()
             config = load_download_config()
-            func = Functions.download_youtube
-            args = (url, BEST_VIDEO_FORMAT, out_dir, remote,
-                    config['concurrent_fragments'], config['use_aria2c'],
-                    config['aria2c_connections'])
-            kwargs = {'extra_args': ['--ignore-config', '--no-playlist']}
-            metadata['format_spec'] = BEST_VIDEO_FORMAT
-        else:
-            func = download_best_cover
-            args = (url, out_dir, remote)
-            kwargs = None
-        task_id = self.run_queued_task(
-            func=func, args=args, task_type=TaskType.YTDLP,
-            title=f'{label} - {video_id}', metadata=metadata, kwargs=kwargs)
-        return {'ok': True, 'task_id': task_id,
-                'message': f'{label}已加入 Sookit 任务队列'}
+            metadata = {
+                'url': url, 'out_dir': out_dir, 'browser_action': action,
+                'cover_url': build_thumbnails(video_id)[0]['url'],
+                'format_spec': BEST_VIDEO_FORMAT,
+            }
+            task_id = self.run_queued_task(
+                func=Functions.download_youtube,
+                args=(url, BEST_VIDEO_FORMAT, out_dir, remote,
+                      config['concurrent_fragments'], config['use_aria2c'],
+                      config['aria2c_connections']),
+                task_type=TaskType.YTDLP,
+                title=f'最佳画质下载 - {video_id}', metadata=metadata,
+                kwargs={'extra_args': ['--ignore-config', '--no-playlist']})
+            return {'ok': True, 'task_id': task_id,
+                    'message': '最佳画质下载已加入 Sookit 任务队列'}
+
+        thumbnails = build_thumbnails(video_id)
+        cover_urls = [thumbnail['url'] for thumbnail in thumbnails if thumbnail.get('url')]
+        if not cover_urls:
+            return {'ok': False, 'error': '无法获取该视频的封面链接'}
+        filename = f'{video_id}_cover{self._cover_extension(cover_urls[0])}'
+        path = self._next_cover_download_path(out_dir, filename)
+        self._start_cover_download(cover_urls, path)
+        return {'ok': True, 'message': '封面下载已开始；高分辨率不可用时会自动尝试下一档，完成后请查看 Sookit'}
 
     def do_sniff(self):
         self._invalidate_subtitles()
@@ -1208,22 +1213,34 @@ class YouTubePage(PageBase):
                 self.resolved.emit(None, f"兜底失败: {e}")
 
     class CoverDownloadWorker(QThread):
-        """封面下载专用线程，与视频下载并行执行"""
+        """封面下载专用线程，与视频下载并行执行；失败时按 URL 顺序回退。"""
         log_signal = pyqtSignal(str)
-        finished = pyqtSignal(bool)
+        download_finished = pyqtSignal(bool, str)
 
-        def __init__(self, url, path):
+        def __init__(self, urls, path):
             super().__init__()
-            self.url = url
+            self.urls = [urls] if isinstance(urls, str) else list(urls)
             self.path = path
 
         def run(self):
-            try:
-                Functions.download_thumbnail(self.url, self.path, log=self.log_signal.emit)
-                self.finished.emit(True)
-            except Exception as e:
-                self.log_signal.emit(f"封面下载失败: {e}")
-                self.finished.emit(False)
+            for index, url in enumerate(self.urls):
+                try:
+                    Functions.download_thumbnail(url, self.path, log=self.log_signal.emit)
+                    if not os.path.isfile(self.path) or os.path.getsize(self.path) == 0:
+                        raise RuntimeError("未生成非空封面文件")
+                    self.download_finished.emit(True, self.path)
+                    return
+                except Exception as e:
+                    try:
+                        if os.path.exists(self.path):
+                            os.remove(self.path)
+                    except OSError as cleanup_error:
+                        self.log_signal.emit(f"清理封面临时文件失败: {cleanup_error}")
+                    message = f"封面下载失败（{url}）: {e}"
+                    if index + 1 < len(self.urls):
+                        message += "；尝试下一档"
+                    self.log_signal.emit(message)
+            self.download_finished.emit(False, self.path)
 
     # -------- 封面下载（保存到本地）--------
     def _populate_cover_combo(self, thumbs):
@@ -1266,36 +1283,52 @@ class YouTubePage(PageBase):
             return
 
         out_dir = self.read_path(self.out_dir) or DEFAULT_OUTPUT_DIR
-        # 扩展名按封面 URL 推断（白名单外默认 .jpg），通用站点封面可能是 png/webp/avif
-        ext = os.path.splitext(urlparse(cover_url).path)[1].lower()
-        if ext not in ('.jpg', '.jpeg', '.png', '.webp', '.avif'):
-            ext = '.jpg'
+        ext = self._cover_extension(cover_url)
         if self._sniff_title:
             safe_base = "".join(c for c in self._sniff_title if c.isalnum() or c in ' _-.,()[]').strip()
             filename = f"{safe_base or video_id or 'cover'}_cover{ext}"
         else:
             filename = f"{video_id or 'cover'}_cover{ext}"
 
-        path = os.path.join(out_dir, filename)
-        if os.path.exists(path):
-            counter = 1
-            while True:
-                name, ext = os.path.splitext(filename)
-                new_path = os.path.join(out_dir, f"{name}_{counter}{ext}")
-                if not os.path.exists(new_path):
-                    path = new_path
-                    break
-                counter += 1
+        path = self._next_cover_download_path(out_dir, filename)
+        self._start_cover_download(cover_url, path)
 
-        # 使用独立 QThread 下载封面，与视频下载并行
-        worker = self.CoverDownloadWorker(cover_url, path)
+    @staticmethod
+    def _cover_extension(cover_url):
+        ext = os.path.splitext(urlparse(cover_url).path)[1].lower()
+        return ext if ext in ('.jpg', '.jpeg', '.png', '.webp', '.avif') else '.jpg'
+
+    def _next_cover_download_path(self, out_dir, filename):
+        name, ext = os.path.splitext(filename)
+        active_paths = {
+            os.path.normcase(os.path.abspath(worker.path))
+            for worker in getattr(self, '_cover_download_workers', ())
+        }
+        counter = 0
+        while True:
+            suffix = f'_{counter}' if counter else ''
+            path = os.path.join(out_dir, f'{name}{suffix}{ext}')
+            normalized = os.path.normcase(os.path.abspath(path))
+            if not os.path.exists(path) and normalized not in active_paths:
+                return path
+            counter += 1
+
+    def _start_cover_download(self, urls, path):
+        worker = self.CoverDownloadWorker(urls, path)
         worker.log_signal.connect(self.log)
-        worker.finished.connect(lambda ok: self._on_cover_download_done(ok, path))
-        self._cover_download_worker = worker  # 保存引用防止 GC
+        worker.download_finished.connect(self._on_cover_download_done, Qt.ConnectionType.QueuedConnection)
+        worker.finished.connect(self._on_cover_download_worker_finished, Qt.ConnectionType.QueuedConnection)
+        self._cover_download_workers.add(worker)
         worker.start()
+        filename = os.path.basename(path)
         self.log(f"▶ 开始下载封面: {filename}")
         show_infobar(self, "info", title="开始下载封面",
                      content=f"保存到: {filename}", duration=3000)
+
+    @pyqtSlot()
+    def _on_cover_download_worker_finished(self):
+        worker = self.sender()
+        self._cover_download_workers.discard(worker)
 
     def _on_cover_download_done(self, success, path):
         """封面下载完成回调"""
