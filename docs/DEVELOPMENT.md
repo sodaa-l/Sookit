@@ -101,14 +101,14 @@ flowchart TB
 | `ffmpeg_utils.py` | FFmpeg 路径、子进程执行 (`run_ffmpeg`/`run_ytdlp`)、时长/大小格式化 | `run_ffmpeg()`, `run_ytdlp()`, `check_ffmpeg()`, `extract_video_frame()` |
 | `ytdlp_utils.py` | yt-dlp/Deno 版本检查、下载 (aria2c+urllib 双通道)、独立下载器调起 | `download_ytdlp()`, `download_deno()`, `get_*_version()`, `check_ytdlp_deno_update_needed()`, `check_path_ytdlp_update()`, `check_tools_ytdlp_update()`, `launch_ytdlp_updater()` |
 | `app_update.py` | **Sookit 自身自动更新** (原 core/updater.py，注意与顶层 updater.exe 入口区分) | `check_latest_version()`, `download_installer()`, `is_newer()` |
-| `youtube_utils.py` | YouTube ID 提取、缩略图构建（硬编码 5 档 + 通用规范化）、HTTP 元数据获取 | `extract_youtube_id()`, `build_thumbnails()`, `normalize_thumbnails()`, `fetch_youtube_metadata()` |
+| `youtube_utils.py` | YouTube ID 提取、缩略图构建（硬编码 5 档 + 通用规范化）、HTTP 元数据获取；X poster 元数据异步查询 | `extract_youtube_id()`, `build_thumbnails()`, `normalize_thumbnails()`, `fetch_youtube_metadata()`, `extract_x_poster_url()`, `fetch_x_poster_url()` |
 | `sniff_options.py` | 嗅探页默认视图的档位归并 + 合并容器族判定（纯函数、无 Qt，决策 47） | `build_view_options()`, `is_standard_pair()` |
 | `subtitle_utils.py` | 字幕/评论轨道分类、每轨单次下载、SRT/TXT/VTT 导出、严格清单校验（决策 61） | `build_subtitle_tracks()`, `download_subtitles()`, `download_comments()` |
 | `browser_protocol.py` | 浏览器消息帧、按动作区分的 YouTube/X URL 白名单、固定扩展 ID（决策 62、64） | `normalize_video_url()`, `normalize_x_status_url()`, `normalize_browser_url()`, `validate_request()`, `encode_message()`, `decode_message()` |
 | `browser_ipc.py` | 当前用户/会话的 Qt 本机通道；GUI 线程分发、退出清理（决策 62） | `BrowserRequestServer`, `send_request()` |
 | `browser_downloads.py` | 浏览器菜单最佳画质格式选择（封面由嗅探页 worker 直接下载，决策 66） | `BEST_VIDEO_FORMAT` |
 | `browser_diagnostics.py` | 只读核对扩展资源、host 清单/程序与 Chrome 注册路径（决策 62） | `get_extension_dir()`, `get_expected_host_manifest()`, `read_registry_entries()`, `diagnose_browser_components()` |
-| `task_queue.py` | 任务队列单例。进度、workspace 生命周期、active_workspaces registry、JSON 持久化 | `TaskQueueManager`, `Task`, `TaskStatus`, `TaskType`, `_generate_ulid()` |
+| `task_queue.py` | 任务队列单例。进度、workspace 生命周期、active_workspaces registry、JSON 持久化及迟到封面更新 | `TaskQueueManager`, `Task`, `TaskStatus`, `TaskType`, `update_task_cover_url()`, `_generate_ulid()` |
 | `workers.py` | 后台线程: Worker(通用) / TaskWorker(队列, 含 workspace/进程树清理) / MonitorWorker(直播轮询) | `TaskWorker`, `MonitorWorker`, `_kill_process_tree()` |
 | `config.py` | JSON 配置文件读写 + 缓存 + 线程锁。主题色、开机自启、下载配置、浏览器扩展开关 | `load_config()`, `save_config()`, `load_browser_extension_enabled()`, `save_browser_extension_enabled()`, `load_download_config()` |
 | `utils.py` | 平滑滚动参数、SSL 上下文、**全局滚动条外观补丁**（决策 48：常显极淡、悬停恢复原生浓度） | `set_smooth_scroll_params()`, `get_certifi_ssl_context()`, `apply_global_scrollbar_style()` |
@@ -228,7 +228,7 @@ flowchart TB
 
 | 62 | Chrome 视频页按钮与后台嗅探、接收开关与只读诊断 | MV3 扩展支持 YouTube 与 X/Twitter 页面 → Native Messaging → 当前用户/会话的 Qt 本机通道；请求开关默认开，GUI 与冷启动 host 都校验；只读诊断扩展文件、host 清单/程序和 HKCU/HKLM 注册路径；YouTube 按当前视频校验，X feed 帖按来源域校验；浏览器结果通知复用应用现有通知机制 | [62-chrome-background-sniff.md](decisions/62-chrome-background-sniff.md) |
 | 63 | 设置页 Chrome 扩展引导区改版（2026-10-26） | 步骤序号改淡主题色圆底 + 主题色数字（订阅 `themeColorChanged` 重刷）；头部标题 15px/600 + 1px 分隔线，折叠时连分隔线一起隐藏；地址与路径统一为自绘「值条」（圆角 6、极淡底 + 1px 边框，亮暗两套色、订阅 `themeChangedFinished`），值条内嵌透明图标按钮，宽度按内容自适应、上限 820；路径前缀与路径拆成两个标签，`_GuideValueLabel` 重写 `sizeHint`/`minimumSizeHint` 让超长路径省略而值条可收缩；**步骤内容必须包成 `step_content` 再 `addWidget(…, 1)`**，直接嵌套布局会让值条的最大宽度向上传染、把序号挤到中间（实测偏移 84px） | [63-settings-guide-ui.md](decisions/63-settings-guide-ui.md) |
-| 64 | Chrome 视频菜单与直接后台下载（封面路径由决策 66 修订） | YouTube 保留三项菜单；X 视频帖在 Grok 左侧提供同尺寸入口和三项 X 风格菜单（嗅探、最佳画质、动图解析）；X 嗅探/下载接原队列，动图解析复用 GifPage 通知；按站点约束协议动作，扩展更新后重建 host | [64-chrome-video-actions.md](decisions/64-chrome-video-actions.md) |
+| 64 | Chrome 视频菜单与直接后台下载（封面路径由决策 66 修订） | YouTube 保留三项菜单；X 视频帖在 Grok 左侧提供同尺寸入口和三项 X 风格菜单（嗅探、最佳画质、动图解析）；X 最佳画质海报缺失时后台查询并回填进行中/已完成任务卡，完成任务持久化；按站点约束协议动作，扩展更新后重建 host | [64-chrome-video-actions.md](decisions/64-chrome-video-actions.md) |
 | 65 | 浏览器静默冷启动的日志、首次窗口尺寸与提示定位（2026-10-28） | 页面日志统一走 logger，避免 GBK stdout 抛异常造成嗅探假失败和计时器缺失；首次显示恢复 1131×731 并居中，后续保留用户手动尺寸；长短 InfoBar 在显示和尺寸变化后统一重排并更新运行中的动画终点 | [65-browser-cold-start.md](decisions/65-browser-cold-start.md) |
 | 66 | 浏览器封面逐档直接下载（2026-10-31） | 扩展封面复用 `YouTubePage.CoverDownloadWorker`，按 `build_thumbnails(video_id)` 优先级失败回退并清理残留；文件名优先用安全清理后的标题，缺失时回退 ID，并冲突加序号；不入任务队列，完成/失败通知显示标题及可用频道、时长；最佳画质仍走 yt-dlp 队列（扩展开工通知，完成/失败沿用队列通知） | [66-browser-cover-worker.md](decisions/66-browser-cover-worker.md) |
 
@@ -242,7 +242,7 @@ uv run --no-sync python -X utf8 -m unittest discover -s tests -p 'test_*.py' -v
 
 字幕功能本轮 76 条通过；真实平台验证、测试边界及独立联网探针命令见[决策 61](decisions/61-sniff-subtitle-download.md#验证与边界)。测试临时文件自动清理，不修改用户配置、任务记录或通知设置。
 
-浏览器按钮与消息分发另运行 `node --test tests/test_browser_extension.cjs`；桥接架构、源码注册、打包和真实 Chrome 验收边界见[决策 62](decisions/62-chrome-background-sniff.md)。浏览器菜单与最佳画质真实下载验证见[决策 64](decisions/64-chrome-video-actions.md)，封面 worker 的逐档回退、无 yt-dlp 分发及完成后引用释放测试见[决策 66](decisions/66-browser-cover-worker.md)；针对性命令为 `uv run --no-sync python -X utf8 -m unittest discover -s tests -p test_browser_downloads.py -v`。
+浏览器按钮与消息分发另运行 `node --test tests/test_browser_extension.cjs`；桥接架构、源码注册、打包和真实 Chrome 验收边界见[决策 62](decisions/62-chrome-background-sniff.md)。浏览器菜单与最佳画质真实下载验证见[决策 64](decisions/64-chrome-video-actions.md)，封面 worker 的逐档回退、无 yt-dlp 分发及完成后引用释放测试见[决策 66](decisions/66-browser-cover-worker.md)。X poster 回填与完成任务持久化的定向命令：`uv run --no-sync python -X utf8 -m unittest discover -s tests -p test_x_cover_metadata.py -v`；浏览器下载命令：`uv run --no-sync python -X utf8 -m unittest discover -s tests -p test_browser_downloads.py -v`。
 
 ## AI 编码约定
 
@@ -308,11 +308,13 @@ class MyNewPage(PageBase):
 | `input_video` / `input_img` | FfmpegTaskCard 封面加载 | 推荐 |
 | `out` | CompletedThumbnailCard 打开文件/文件夹 | 推荐 |
 | `cover_data` (bytes) | 封面二进制数据 | 可选 |
+| `cover_url` | YtDlpTaskCard / CompletedThumbnailCard 远程封面地址；X poster 可在入队后补齐 | 可选 |
 
 ### 线程安全
 
 - **不要**直接访问 `TaskQueueManager` 的 `active_tasks` / `completed_tasks` 内部 dict — 使用 `get_active_tasks()` / `get_completed_tasks()`。
 - **不要**跨线程操作 Qt 控件 — 使用 `pyqtSignal`。
+- 异步 worker 的结果通过排队的 Qt 信号回到 GUI 线程；更新任务封面时调用 `TaskQueueManager.update_task_cover_url(task_id, cover_url)`，该 API 同步更新 `Task.cover_url` 与 metadata 并发出 `task_updated`，已完成任务会写回 `completed_tasks.json`。页面由队列信号更新进行中或已完成卡片；不要从 worker 直接改任务队列或控件。
 
 ### InfoBar 提示规范（重要）
 

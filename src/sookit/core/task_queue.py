@@ -602,6 +602,29 @@ class TaskQueueManager(QObject):
         """获取所有已完成任务"""
         return list(self.completed_tasks.values())
 
+    def update_task_cover_url(self, task_id: str, cover_url: str) -> bool:
+        """更新任务封面；迟到的已完成任务封面会立即持久化。"""
+        if not isinstance(cover_url, str) or not cover_url.strip():
+            return False
+        cover_url = cover_url.strip()
+
+        task = self.active_tasks.get(task_id)
+        completed = False
+        if task is None:
+            task = self.completed_tasks.get(task_id)
+            completed = task is not None
+        if task is None:
+            return False
+        if task.cover_url == cover_url and task.metadata.get('cover_url') == cover_url:
+            return False
+
+        task.cover_url = cover_url
+        task.metadata['cover_url'] = cover_url
+        if completed:
+            self._save_completed_tasks()
+        self.task_updated.emit(task)
+        return True
+
     def remove_completed_task(self, task_id: str):
         """从已完成列表中移除指定任务"""
         if task_id in self.completed_tasks:

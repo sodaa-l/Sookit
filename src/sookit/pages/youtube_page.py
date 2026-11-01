@@ -39,7 +39,8 @@ from sookit.widgets.option_row import OptionRow
 from sookit.widgets.subtitle_panel import SubtitlePanel, CommentDownloadDialog
 from sookit.core.subtitle_utils import download_subtitles, download_comments
 from sookit.pages.base import PageBase
-from sookit.core.task_queue import TaskType
+from sookit.core.task_queue import TaskQueueManager, TaskType
+from sookit.core.youtube_utils import fetch_x_poster_url
 from sookit.core.ffmpeg_utils import run_ytdlp
 from sookit.core.ytdlp_utils import build_ytdlp_cmd
 from sookit.core.utils import get_certifi_ssl_context
@@ -660,7 +661,10 @@ class YouTubePage(PageBase):
                 'url': url, 'out_dir': out_dir, 'browser_action': action,
                 'format_spec': BEST_VIDEO_FORMAT,
             }
-            if video_id:
+            cover_url = display_metadata.get('cover_url')
+            if isinstance(cover_url, str) and cover_url:
+                metadata['cover_url'] = cover_url
+            elif video_id:
                 thumbnails = build_thumbnails(video_id)
                 if thumbnails and thumbnails[0].get('url'):
                     metadata['cover_url'] = thumbnails[0]['url']
@@ -678,6 +682,17 @@ class YouTubePage(PageBase):
                 task_type=TaskType.YTDLP,
                 title=video_title, metadata=metadata,
                 kwargs={'extra_args': ['--ignore-config', '--no-playlist']})
+            if not video_id and not metadata.get('cover_url'):
+                worker = GenericWorker(fetch_x_poster_url, args=(url,))
+                worker.task_id = task_id
+                self._threads.append(worker)
+                worker.finished.connect(
+                    self._on_x_poster_worker_finished,
+                    Qt.ConnectionType.QueuedConnection)
+                worker.done.connect(
+                    self._on_x_poster_lookup_done,
+                    Qt.ConnectionType.QueuedConnection)
+                worker.start()
             return {'ok': True, 'task_id': task_id,
                     'message': '最佳画质下载已加入 Sookit 任务队列'}
 
@@ -768,6 +783,22 @@ class YouTubePage(PageBase):
         self._sniff_timer.setSingleShot(True)
         self._sniff_timer.timeout.connect(lambda s=seq: self._sniff_timeout(s))
         self._sniff_timer.start(60000)
+
+    @pyqtSlot(object)
+    def _on_x_poster_lookup_done(self, cover_url):
+        """把后台找到的 X poster 在 GUI 线程交给队列管理器。"""
+        if not isinstance(cover_url, str) or not cover_url:
+            return
+        worker = self.sender()
+        task_id = getattr(worker, 'task_id', None)
+        if task_id:
+            TaskQueueManager.instance().update_task_cover_url(task_id, cover_url)
+
+    @pyqtSlot()
+    def _on_x_poster_worker_finished(self):
+        worker = self.sender()
+        if worker in self._threads:
+            self._threads.remove(worker)
 
     @pyqtSlot()
     def _on_sniff_worker_finished(self):

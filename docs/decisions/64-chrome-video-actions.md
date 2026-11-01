@@ -14,7 +14,7 @@ X 菜单按 X 原生 More 菜单的实测值自绘，不打开、不克隆也不
 
 ## 分发与隔离
 
-沿用 Native Messaging 与 Qt 本机通道，不增加端口或服务。扩展后台及 Python 协议层按站点限制动作：YouTube 允许 `sniff`、`download_best`、`download_cover`，X/Twitter 允许 `sniff`、`download_best`、`parse_gif`；所有动作服从浏览器请求接收开关。`download_best` 与 `download_cover` 的 YouTube 请求可附带从当前页面读取的标题、频道和时长；页面字段未就绪时最多等待 2 秒，并校验等待期间视频未切换。X feed 中的状态链接规范化为 HTTPS `x.com` status URL，支持 `/video/N`、`/photo/N` 后缀；X 请求不附 YouTube 页面元数据。后台与 Python 协议层都限制字段类型和长度；元数据用于最佳画质任务展示、封面结果通知和封面文件命名，不改变下载参数。
+沿用 Native Messaging 与 Qt 本机通道，不增加端口或服务。扩展后台及 Python 协议层按站点限制动作：YouTube 允许 `sniff`、`download_best`、`download_cover`，X/Twitter 允许 `sniff`、`download_best`、`parse_gif`；所有动作服从浏览器请求接收开关。`download_best` 与 `download_cover` 的 YouTube 请求可附带从当前页面读取的标题、频道和时长；页面字段未就绪时最多等待 2 秒，并校验等待期间视频未切换。X feed 中的状态链接规范化为 HTTPS `x.com` status URL，支持 `/video/N`、`/photo/N` 后缀；X `download_best` 可附带从当前帖子读取的正文标题、作者、可用时长和视频海报；扩展后台与 Python 协议层仅接受 HTTPS 精确主机 `pbs.twimg.com` 的海报 URL，并限制其他字段类型和长度；元数据用于最佳画质任务展示、封面结果通知和封面文件命名，不改变下载参数。
 
 ### 站内导航后的当前视频校验（2026-10-28 修复）
 
@@ -25,7 +25,7 @@ YouTube 请求保留扩展 ID、顶层 frame 和 HTTPS 来源检查，`sender.ur
 为读取 `Tab.url` 和 `Tab.pendingUrl`，YouTube 清单新增 `https://www.youtube.com/*`；X 扩展新增 `https://x.com/*`、`https://www.x.com/*`、`https://twitter.com/*`、`https://www.twitter.com/*`。host permissions 与脚本注入域一致，不申请全局 `tabs` 权限。[Chrome 官方 Tabs 权限文档](https://github.com/GoogleChrome/developer.chrome.com/blob/main/site/en/docs/extensions/reference/tabs/index.md#permissions--perms-)说明匹配站点的 host permission 可读取这些字段。YouTube 仍比对当前视频 ID；X feed 的帖子链接可能不同于标签页 URL，因此先验站点来源，标签页本身为 status 页时才比对状态 ID。
 
 - `sniff`：YouTube 保持决策 62 的后台嗅探、忙碌拒绝、导航切换和结果通知；X 复用同一嗅探流程。
-- `download_best`：直接以 `bestvideo*+bestaudio/best` 调用既有 `Functions.download_youtube`，由 yt-dlp 选择最佳视频及音轨并按需合并。复用下载并发、aria2c、远程组件选项和 FFmpeg 定位，显式使用 `--ignore-config --no-playlist`，避免外部配置改变一键下载的语义。YouTube 任务标题优先采用扩展传来的真实视频标题，缺失时回退到视频 ID；X 无页面元数据时回退到状态 ID。任务卡与系统通知显示可用的标题、频道和时长。
+- `download_best`：直接以 `bestvideo*+bestaudio/best` 调用既有 `Functions.download_youtube`，由 yt-dlp 选择最佳视频及音轨并按需合并。复用下载并发、aria2c、远程组件选项和 FFmpeg 定位，显式使用 `--ignore-config --no-playlist`，避免外部配置改变一键下载的语义。YouTube 任务标题优先采用扩展传来的真实视频标题，缺失时回退到视频 ID；X 任务标题使用帖子正文，作者、时长和海报按可用性进入任务卡与通知，缺标题时回退到状态 ID。任务卡与系统通知显示可用的标题、频道和时长。X poster 缺失时入队后由独立后台 worker 运行 yt-dlp `--dump-single-json --skip-download --ignore-config --no-playlist` 查询，超时上限 30 秒；按现有 Twitter medium 单档策略优先取图（无 medium 时沿用 `normalize_thumbnails` 的通用降级），URL 必须通过 HTTPS 精确主机 `pbs.twimg.com` 校验。查询失败或无可用海报不影响下载，任务卡保留 VIDEO 图标占位。迟到的 poster 通过 `TaskQueueManager.update_task_cover_url(task_id, cover_url)` 更新活跃或已完成任务；完成任务立即写回 `completed_tasks.json`。
 - `parse_gif`：仅限 X/Twitter status URL，路由到 `GifPage` 既有异步解析。成功、无结果和失败沿用现有系统结果通知，并遵循决策 40 的通知开关与主窗口失焦规则。
 - `download_cover`：`core/browser_downloads.py` 使用 yt-dlp 的 `--skip-download --write-thumbnail --no-simulate` 下载最佳可用封面，最高档返回错误时由下载器尝试下一档，保留原图格式。`--ignore-config` 避免外部配置启用全部缩略图；不传实际下载器不支持的 `--no-write-all-thumbnails`。
 
@@ -42,6 +42,7 @@ YouTube 请求保留扩展 ID、顶层 frame 和 HTTPS 来源检查，`sender.ur
 - `node --test tests/test_browser_extension.cjs`：实际脚本的菜单、来源验证、动作转发、键盘操作、关闭路径、重复发送、SPA 导航及旧回执隔离。16 项通过，包含来源旧地址为首页/搜索页/旧视频、三种动作、页面脚本到后台的联动，以及标签页关闭/切换/URL 不可读时拒绝请求。
 - `uv run --no-sync python -X utf8 -m unittest discover -s tests -p test_browser_bridge.py -v`：协议、现有实例/冷启动和嗅探行为。
 - `uv run --no-sync python -X utf8 -m unittest discover -s tests -p test_browser_downloads.py -v`：最佳画质真实 yt-dlp 及 FFmpeg 配合本机 HTTP 验证最高分辨率视频和音轨合并；浏览器封面逐档回退测试已改为独立 worker mock，详见决策 66。
+- `uv run --no-sync python -X utf8 -m unittest discover -s tests -p test_x_cover_metadata.py -v`：验证 X poster 的 medium 档选择、HTTPS 主机白名单、yt-dlp 命令参数/30 秒超时/失败回退，以及 active 任务更新与 completed 任务 JSON 持久化。
 
 此次站内导航校验修复只涉及扩展：在 `chrome://extensions` 重新加载 Sookit，确认其 YouTube 站点访问权限，再刷新已打开的 YouTube 页面即可；无需重建 host 或重启桌面应用。
 

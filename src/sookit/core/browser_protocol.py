@@ -11,6 +11,7 @@ MAX_MESSAGE_BYTES = 16 * 1024
 MAX_VIDEO_TITLE_LENGTH = 500
 MAX_VIDEO_CHANNEL_LENGTH = 200
 MAX_VIDEO_DURATION_SECONDS = 7 * 24 * 60 * 60
+MAX_VIDEO_COVER_URL_LENGTH = 2048
 BROWSER_ACTIONS = frozenset({'sniff', 'download_best', 'download_cover', 'parse_gif'})
 
 
@@ -101,6 +102,17 @@ def _validated_video_metadata(value: object) -> dict:
     duration = value.get('duration')
     if type(duration) is int and 0 < duration <= MAX_VIDEO_DURATION_SECONDS:
         metadata['duration'] = duration
+    cover_url = value.get('cover_url')
+    if isinstance(cover_url, str) and len(cover_url) <= MAX_VIDEO_COVER_URL_LENGTH:
+        try:
+            parts = urlsplit(cover_url)
+            if (parts.scheme == 'https' and parts.hostname
+                    and parts.hostname.lower() == 'pbs.twimg.com'
+                    and not parts.username and not parts.password
+                    and parts.port in (None, 443) and parts.path.startswith('/')):
+                metadata['cover_url'] = cover_url
+        except ValueError:
+            pass
     return metadata
 
 

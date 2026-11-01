@@ -5,6 +5,7 @@ YouTube 视频 ID 提取、缩略图构建、元数据获取
 
 import json
 import re
+import subprocess
 import time
 import urllib.request
 
@@ -57,6 +58,58 @@ def build_thumbnails(video_id):
         {**t, 'url': f'https://i.ytimg.com/vi/{video_id}/{t["id"]}.jpg'}
         for t in YOUTUBE_THUMBNAILS
     ]
+
+
+def extract_x_poster_url(info):
+    """提取并校验 yt-dlp 返回的 X/Twitter 海报 URL。"""
+    if not isinstance(info, dict):
+        return ''
+    extractor = info.get('extractor')
+    if not isinstance(extractor, str) or not extractor.lower().startswith('twitter'):
+        return ''
+
+    from sookit.core.browser_protocol import _validated_video_metadata
+
+    for thumbnail in normalize_thumbnails(info):
+        if not isinstance(thumbnail, dict):
+            continue
+        cover_url = _validated_video_metadata(
+            {'cover_url': thumbnail.get('url')}
+        ).get('cover_url')
+        if cover_url:
+            return cover_url
+    return ''
+
+
+def fetch_x_poster_url(url):
+    """用 yt-dlp 查询 X status 海报；失败只返回空字符串。"""
+    from sookit.core.browser_protocol import normalize_x_status_url
+    from sookit.core.ytdlp_utils import build_ytdlp_cmd
+
+    try:
+        url = normalize_x_status_url(url)
+    except (TypeError, ValueError):
+        return ''
+
+    try:
+        result = subprocess.run(
+            build_ytdlp_cmd(
+                '--dump-single-json', '--skip-download', '--ignore-config',
+                '--no-playlist', '--no-warnings', '--quiet', url,
+            ),
+            capture_output=True, text=True, encoding='utf-8', errors='replace',
+            timeout=30, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
+        )
+    except Exception:
+        return ''
+    if result.returncode != 0:
+        return ''
+
+    try:
+        info = json.loads(result.stdout)
+    except (json.JSONDecodeError, TypeError):
+        return ''
+    return extract_x_poster_url(info)
 
 
 def normalize_thumbnails(info):

@@ -146,14 +146,18 @@ class QueuePage(PageBase):
         self.active_cards_layout.insertWidget(0, card)
     
     def _on_task_updated(self, task: Task):
-        """任务状态/进度更新"""
+        """更新任务状态/进度，并接收迟到的封面 URL。"""
         card = self._active_cards.get(task.task_id)
-        if not card:
-            return
-        
-        # 更新进度
-        card.update_progress(task.progress, task.speed, task.eta)
-        card.update_status(task.status)
+        if card:
+            card.update_progress(task.progress, task.speed, task.eta)
+            card.update_status(task.status)
+        else:
+            card = self._completed_cards.get(task.task_id)
+
+        if card and task.cover_url:
+            set_cover_url = getattr(card, 'set_cover_url', None)
+            if callable(set_cover_url):
+                set_cover_url(task.cover_url)
     
     def _on_task_completed(self, task: Task):
         """任务完成 - 移动到已完成列表"""

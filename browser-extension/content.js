@@ -421,6 +421,50 @@
     xMenu.style.top = top + 'px';
   }
 
+  function safeXPosterUrl(value) {
+    if (typeof value !== 'string' || value.length > 2048) return '';
+    try {
+      const url = new URL(value);
+      if (url.protocol !== 'https:' || url.hostname.toLowerCase() !== 'pbs.twimg.com'
+          || url.username || url.password || (url.port && url.port !== '443')) return '';
+      return url.href;
+    } catch {
+      return '';
+    }
+  }
+
+  function readXVideoMetadata(article) {
+    const metadata = {};
+    const tweetText = article.querySelector('[data-testid="tweetText"]');
+    const title = cleanDisplayText(tweetText?.innerText || tweetText?.textContent || '', 500);
+    if (title) metadata.title = title;
+
+    const userName = article.querySelector('[data-testid="User-Name"]');
+    const displayName = [...(userName?.querySelectorAll('span') || [])]
+      .map(span => cleanDisplayText(span.innerText || span.textContent || '', 200))
+      .find(value => value && !value.startsWith('@') && value !== '·');
+    const authorLinks = [...(userName?.querySelectorAll('a') || [])]
+      .map(link => cleanDisplayText(link.innerText || link.textContent || '', 200));
+    const channel = displayName
+      || authorLinks.find(value => value && !value.startsWith('@'))
+      || authorLinks.find(value => value.startsWith('@'));
+    if (channel) metadata.channel = channel;
+
+    const player = article.querySelector('[data-testid="videoPlayer"]');
+    const video = player?.querySelector('video') || article.querySelector('video');
+    const duration = video?.duration;
+    if (Number.isFinite(duration) && duration > 0) {
+      const seconds = Math.round(duration);
+      if (Number.isSafeInteger(seconds) && seconds > 0 && seconds <= 604800) {
+        metadata.duration = seconds;
+      }
+    }
+    const poster = video?.poster || player?.querySelector('img[src]')?.src;
+    const coverUrl = safeXPosterUrl(poster);
+    if (coverUrl) metadata.cover_url = coverUrl;
+    return metadata;
+  }
+
   async function sendX(action) {
     const trigger = xMenuButton;
     const article = xMenuArticle;
@@ -438,7 +482,12 @@
     trigger.setAttribute('aria-busy', 'true');
     trigger.title = '正在发送到 Sookit…';
     try {
-      const response = await chrome.runtime.sendMessage({action: action.id, url});
+      const message = {action: action.id, url};
+      if (action.id === 'download_best') {
+        const metadata = readXVideoMetadata(article);
+        if (Object.keys(metadata).length) message.video_metadata = metadata;
+      }
+      const response = await chrome.runtime.sendMessage(message);
       if (!stillCurrent()) return;
       if (!response?.ok) throw new Error(response?.error || 'Sookit 未确认接收请求');
       tell(response.message || action.message);

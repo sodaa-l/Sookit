@@ -348,6 +348,7 @@ class YtDlpTaskCard(TaskCardBase):
     def _create_cover_widget(self):
         """创建封面控件"""
         self.cover_w = RoundedCoverWidget(self.COVER_W, self.COVER_H)
+        self._cover_url = self.task.cover_url or ''
         
         # 加载封面：优先使用预加载数据，避免重复下载
         if self.task.cover_url:
@@ -362,6 +363,20 @@ class YtDlpTaskCard(TaskCardBase):
         
         return self.cover_w
     
+    def set_cover_url(self, url: str):
+        """显示稍后取得的封面 URL；同一 URL 只启动一次加载。"""
+        if not isinstance(url, str) or not url.strip():
+            return
+        url = url.strip()
+        if url == self._cover_url:
+            return
+        self._cover_url = url
+        cover_data = self.task.metadata.get('cover_data')
+        if cover_data:
+            self._on_cover_loaded(cover_data)
+        else:
+            self._load_cover(url)
+
     def _load_cover(self, url: str):
         """异步加载封面"""
         class CoverLoader(QThread):
@@ -517,9 +532,25 @@ class CoverAreaWidget(QWidget):
         self._hovered = False
         self._pixmap = QPixmap()          # 原图（不预缩放）
         self._icon = None
+        self._cover_url = task.cover_url or ''
         self.setMinimumHeight(self.THUMB_H)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self._load_cover()
+
+    def set_cover_url(self, url):
+        """应用迟到的封面 URL，并在需要时启动异步加载。"""
+        if not isinstance(url, str) or not url.strip():
+            return
+        url = url.strip()
+        if url == self._cover_url:
+            return
+        self._cover_url = url
+        if self._pixmap.isNull():
+            self._icon = (qfw.FluentIcon.VIDEO
+                          if self.task.task_type == TaskType.YTDLP
+                          else qfw.FluentIcon.MUSIC)
+            self.update()
+        self._download_cover()
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -568,7 +599,7 @@ class CoverAreaWidget(QWidget):
             return
 
         # 6. 图标占位（音频输出任务显示 MUSIC）
-        if meta.get('input_video'):
+        if meta.get('input_video') or self.task.task_type == TaskType.YTDLP:
             self._icon = qfw.FluentIcon.VIDEO
         else:
             self._icon = qfw.FluentIcon.MUSIC
@@ -611,7 +642,7 @@ class CoverAreaWidget(QWidget):
 
     def _set_fallback(self):
         meta = self.task.metadata
-        if meta.get('input_video'):
+        if meta.get('input_video') or self.task.task_type == TaskType.YTDLP:
             self._icon = qfw.FluentIcon.VIDEO
         else:
             self._icon = qfw.FluentIcon.MUSIC
@@ -926,6 +957,9 @@ class CompletedThumbnailCard(QWidget):
         # 主题变化时刷新文字颜色
         qconfig.themeChanged.connect(self._update_theme_colors)
         self._update_theme_colors()
+
+    def set_cover_url(self, url):
+        self.cover.set_cover_url(url)
 
     def _update_theme_colors(self, theme=None):
         """根据当前主题更新文字颜色"""

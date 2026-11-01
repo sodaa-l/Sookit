@@ -73,16 +73,30 @@ function cleanDisplayText(value, maxLength) {
   return value.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, maxLength);
 }
 
+function safeXPosterUrl(value) {
+  if (typeof value !== 'string' || value.length > 2048) return '';
+  try {
+    const url = new URL(value);
+    if (url.protocol !== 'https:' || url.hostname.toLowerCase() !== 'pbs.twimg.com'
+        || url.username || url.password || (url.port && url.port !== '443')) return '';
+    return url.href;
+  } catch {
+    return '';
+  }
+}
+
 function videoMetadata(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const result = {};
   const title = cleanDisplayText(value.title, 500);
   const channel = cleanDisplayText(value.channel, 200);
+  const coverUrl = safeXPosterUrl(value.cover_url);
   if (title) result.title = title;
   if (channel) result.channel = channel;
   if (Number.isSafeInteger(value.duration) && value.duration > 0 && value.duration <= 604800) {
     result.duration = value.duration;
   }
+  if (coverUrl) result.cover_url = coverUrl;
   return Object.keys(result).length ? result : null;
 }
 
