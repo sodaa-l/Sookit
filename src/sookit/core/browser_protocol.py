@@ -13,10 +13,11 @@ MAX_VIDEO_CHANNEL_LENGTH = 200
 MAX_VIDEO_DURATION_SECONDS = 7 * 24 * 60 * 60
 MAX_VIDEO_COVER_URL_LENGTH = 2048
 BROWSER_ACTIONS = frozenset({'sniff', 'download_best', 'download_cover', 'parse_gif'})
-# 控制类动作不携带网页链接：launch 只给 Chrome host 用，status 是本机通道唯一放行的
-# 控制动作（扩展面板的连接探测），两者都不进入页面分派逻辑。
-CONTROL_ACTIONS = frozenset({'status', 'launch'})
-LOCAL_CONTROL_ACTIONS = frozenset({'status'})
+# 控制类动作不携带网页链接：launch 只给 Chrome host 用，status 与 activate 是本机通道
+# 放行的控制动作（扩展面板的探测与唤窗），三者都不进入页面分派逻辑。
+CONTROL_ACTIONS = frozenset({'status', 'launch', 'activate'})
+HOST_CONTROL_ACTIONS = frozenset({'status', 'launch'})
+LOCAL_CONTROL_ACTIONS = frozenset({'status', 'activate'})
 
 
 def normalize_video_url(value: str) -> str:

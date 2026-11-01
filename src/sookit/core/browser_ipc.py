@@ -13,7 +13,8 @@ from sookit.core.browser_protocol import (
     encode_message, validate_request,
 )
 
-# 本机通道只额外放行 status：面板连接探测不该由桥接进程独自回答，launch 仍归 host。
+# 本机通道只额外放行控制动作里给 GUI 用的 status / activate：面板探测与唤窗由 GUI 回答，
+# launch（启动进程）仍归 host，页面脚本也发不进来。
 LOCAL_ACTIONS = BROWSER_ACTIONS | LOCAL_CONTROL_ACTIONS
 
 logger = logging.getLogger(__name__)

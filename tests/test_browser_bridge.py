@@ -19,7 +19,7 @@ from PyQt6.QtWidgets import QApplication
 
 from sookit.core.browser_protocol import (
     BROWSER_ACTIONS, CONTROL_ACTIONS, EXTENSION_ID, EXTENSION_ORIGIN,
-    LOCAL_CONTROL_ACTIONS, MAX_MESSAGE_BYTES,
+    HOST_CONTROL_ACTIONS, LOCAL_CONTROL_ACTIONS, MAX_MESSAGE_BYTES,
     decode_message, encode_message, normalize_video_url, validate_request,
 )
 from sookit.core.browser_ipc import BrowserRequestServer, send_request
@@ -94,16 +94,19 @@ class ProtocolTests(unittest.TestCase):
             self.assertTrue((ROOT / 'browser-extension' / icon).is_file())
 
     def test_control_actions_skip_url_validation_but_need_channel_scope(self):
-        for action in ('status', 'launch'):
+        for action in ('status', 'launch', 'activate'):
             with self.subTest(action=action):
                 self.assertEqual(
                     validate_request({'action': action}, allowed=BROWSER_ACTIONS | CONTROL_ACTIONS),
                     {'action': action})
                 with self.assertRaisesRegex(ValueError, '不支持的浏览器请求'):
                     validate_request({'action': action})
-        # 本机通道只放行 status，launch 必须走 Chrome host。
+        # 本机通道放行 status/activate，launch 必须走 Chrome host。
         with self.assertRaisesRegex(ValueError, '不支持的浏览器请求'):
             validate_request({'action': 'launch'}, allowed=LOCAL_CONTROL_ACTIONS)
+        # 反向：扩展不能直接叫 GUI 唤窗，activate 只属于本机通道。
+        with self.assertRaisesRegex(ValueError, '不支持的浏览器请求'):
+            validate_request({'action': 'activate'}, allowed=BROWSER_ACTIONS | HOST_CONTROL_ACTIONS)
 
     def test_native_host_rejects_unapproved_extension_without_qt_or_gui_stdout(self):
         process = subprocess.run([sys.executable, '-m', 'sookit.native_host',
@@ -213,10 +216,15 @@ class BridgeTests(unittest.TestCase):
 
     def test_launch_reuses_running_instance_without_spawning(self):
         receipt = {'ok': True, 'enabled': True}
-        with patch('sookit.core.browser_ipc.send_request', return_value=receipt) as send,                 patch.object(native_host, 'app_command') as command,                 patch.object(native_host.subprocess, 'Popen') as launch:
+        activated = {'ok': True, 'activated': True}
+        with patch('sookit.core.browser_ipc.send_request',
+                   side_effect=[receipt, activated]) as send,                 patch.object(native_host, 'app_command') as command,                 patch.object(native_host.subprocess, 'Popen') as launch:
             self.assertEqual(native_host.forward_control({'action': 'launch'}),
-                             {'ok': True, 'started': False, 'status': receipt})
-            send.assert_called_once_with({'action': 'status'})
+                             {'ok': True, 'started': False, 'activated': True,
+                              'status': receipt})
+            # 已在运行：先探测，再叫 GUI 把窗口带回前台，不重启进程。
+            self.assertEqual(send.call_args_list[0].args[0], {'action': 'status'})
+            self.assertEqual(send.call_args_list[1].args[0], {'action': 'activate'})
             command.assert_not_called()
             launch.assert_not_called()
 
@@ -293,12 +301,18 @@ class LocalChannelTests(unittest.TestCase):
             self.assertFalse(self.response(socket)['ok'])
         self.handler.assert_not_called()
 
-    def test_status_reaches_ui_while_launch_is_refused_locally(self):
+    def test_status_and_activate_reach_ui_while_launch_is_refused_locally(self):
         socket = self.connect()
         socket.write(encode_message({'action': 'status'}))
         socket.flush()
         self.assertTrue(self.response(socket)['ok'])
         self.handler.assert_called_once_with({'action': 'status'})
+        self.handler.reset_mock()
+        socket = self.connect()
+        socket.write(encode_message({'action': 'activate'}))
+        socket.flush()
+        self.assertTrue(self.response(socket)['ok'])
+        self.handler.assert_called_once_with({'action': 'activate'})
         self.handler.reset_mock()
         socket = self.connect()
         socket.write(encode_message({'action': 'launch'}))

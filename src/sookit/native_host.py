@@ -7,7 +7,7 @@ import sys
 import time
 
 from sookit.core.browser_protocol import (
-    BROWSER_ACTIONS, CONTROL_ACTIONS, EXTENSION_ORIGIN, MAX_MESSAGE_BYTES,
+    BROWSER_ACTIONS, HOST_CONTROL_ACTIONS, EXTENSION_ORIGIN, MAX_MESSAGE_BYTES,
     decode_message, encode_message, validate_request,
 )
 
@@ -124,7 +124,10 @@ def forward_control(request):
     if request['action'] == 'launch':
         response = send_local({'action': 'status'})
         if response is not None:
-            return {'ok': True, 'started': False, 'status': response}
+            # 已在运行：把它带回前台，别让「启动」变成一次无用点击（决策 67）。
+            activated = send_local({'action': 'activate'}) is not None
+            return {'ok': True, 'started': False, 'activated': activated,
+                    'status': response}
         command, cwd = app_command(silent=False)
         _spawn(command, cwd)
         deadline = time.monotonic() + 30
@@ -149,8 +152,8 @@ def main():
         if len(sys.argv) < 2 or sys.argv[1] != EXTENSION_ORIGIN:
             raise ValueError('仅允许 Sookit Chrome 扩展连接')
         request = validate_request(read_message(sys.stdin.buffer),
-                                   allowed=BROWSER_ACTIONS | CONTROL_ACTIONS)
-        if request['action'] in CONTROL_ACTIONS:
+                                   allowed=BROWSER_ACTIONS | HOST_CONTROL_ACTIONS)
+        if request['action'] in HOST_CONTROL_ACTIONS:
             response = forward_control(request)
         else:
             response = forward_request(request)

@@ -8,7 +8,7 @@ import os
 import random
 
 from PyQt6.QtWidgets import QApplication
-from PyQt6.QtCore import QThread, QObject, pyqtSignal, pyqtSlot, QTimer, QUrl
+from PyQt6.QtCore import QThread, QObject, pyqtSignal, pyqtSlot, QTimer, QUrl, Qt
 from PyQt6.QtGui import QIcon, QDesktopServices
 
 import qfluentwidgets as qfw
@@ -150,6 +150,10 @@ class MainWindow(qfw.FluentWindow):
                 theme_color = DEFAULT_THEME_COLOR
             return {'ok': True, 'enabled': enabled, 'theme_color': theme_color,
                     'dark': qfw.isDarkTheme()}
+        if action == 'activate':
+            # 面板点「启动 Sookit」而桌面端已在跑：只把窗口带回前台，不碰业务、也不受总闸约束（决策 67）。
+            self._raise_window()
+            return {'ok': True, 'activated': True}
         try:
             if not load_browser_extension_enabled():
                 return {'ok': False, 'error': '浏览器扩展调用已暂停'}
@@ -218,6 +222,16 @@ class MainWindow(qfw.FluentWindow):
     def _activate_from_toast(self):
         """通知正文点击回调（已转回主线程）：显示并激活主窗口"""
         self.show()
+        self.activateWindow()
+
+    def _raise_window(self):
+        """把已运行的主窗口从最小化/后台带回前台（扩展面板「启动 Sookit」用）。"""
+        state = self.windowState()
+        if state & Qt.WindowState.WindowMinimized:
+            state &= ~Qt.WindowState.WindowMinimized
+        self.setWindowState(state | Qt.WindowState.WindowActive)
+        self.show()
+        self.raise_()
         self.activateWindow()
 
     def _on_stack_changed(self, index: int):
