@@ -180,11 +180,27 @@ class BridgeTests(unittest.TestCase):
             launch.assert_not_called()
 
 
-    def test_status_never_launches_and_reports_offline(self):
-        with patch('sookit.core.browser_ipc.send_request', return_value=None) as send,                 patch.object(native_host.subprocess, 'Popen') as launch:
+    def test_status_never_launches_and_reads_switch_from_config(self):
+        with patch('sookit.core.browser_ipc.send_request', return_value=None) as send, \
+                patch('sookit.core.config.load_browser_extension_enabled', return_value=False), \
+                patch('sookit.core.config.load_theme_color', return_value='#0098ff'), \
+                patch.object(native_host.subprocess, 'Popen') as launch:
             response = native_host.forward_control({'action': 'status'})
-            self.assertEqual(response, {'ok': False, 'code': 'offline', 'error': 'Sookit 未运行'})
+            self.assertEqual(response['code'], 'offline')
+            self.assertEqual(response['error'], 'Sookit 未运行')
+            self.assertIs(response['enabled'], False)
+            self.assertEqual(response['theme_color'], '#0098ff')
             send.assert_called_once_with({'action': 'status'})
+            launch.assert_not_called()
+
+    def test_status_reports_unknown_switch_when_config_unreadable(self):
+        with patch('sookit.core.browser_ipc.send_request', return_value=None), \
+                patch('sookit.core.config.load_browser_extension_enabled', side_effect=RuntimeError('坏配置')), \
+                patch('sookit.core.config.load_theme_color', side_effect=RuntimeError('坏配置')), \
+                patch.object(native_host.subprocess, 'Popen') as launch:
+            response = native_host.forward_control({'action': 'status'})
+            self.assertIsNone(response['enabled'])
+            self.assertIsNone(response['theme_color'])
             launch.assert_not_called()
 
     def test_status_forwards_gui_receipt_as_is(self):

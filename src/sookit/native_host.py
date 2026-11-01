@@ -100,6 +100,24 @@ def forward_request(request):
     raise TimeoutError('Sookit 启动超时，请先手动启动后重试')
 
 
+def _offline_status():
+    """桌面端没开也照常回答总闸与主题色：它们只是配置文件里的值，不需要 GUI 进程。
+
+    读取失败时对应字段为 None——面板据此显示「未知」，不猜。
+    """
+    from sookit.core.config import load_browser_extension_enabled, load_theme_color
+    receipt = {'ok': False, 'code': 'offline', 'error': 'Sookit 未运行'}
+    try:
+        receipt['enabled'] = load_browser_extension_enabled()
+    except Exception:
+        receipt['enabled'] = None
+    try:
+        receipt['theme_color'] = load_theme_color()
+    except Exception:
+        receipt['theme_color'] = None
+    return receipt
+
+
 def forward_control(request):
     """面板专用：status 只探测不启动，launch 才可见启动并轮询到就绪。"""
     _qt_app()
@@ -118,7 +136,7 @@ def forward_control(request):
         raise TimeoutError('Sookit 启动超时，请手动启动后重试')
     response = send_local({'action': 'status'})
     if response is None:
-        return {'ok': False, 'code': 'offline', 'error': 'Sookit 未运行'}
+        return _offline_status()
     return response
 
 

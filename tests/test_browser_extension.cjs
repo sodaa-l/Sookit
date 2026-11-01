@@ -733,7 +733,7 @@ function popupView(response, sites = null) {
   const accent = {};
   const documentElement = {dataset: {}, style: {setProperty(name, value) { accent[name] = value; }}};
   const stored = sites ? {sookitSites: {...sites}} : {};
-  for (const id of ['status', 'status-text', 'toggle-youtube', 'toggle-x', 'master-value', 'primary', 'hint']) {
+  for (const id of ['status', 'status-text', 'toggle-youtube', 'toggle-x', 'master-value', 'primary']) {
     elements.set(id, {id, dataset: {}, checked: true, disabled: false, textContent: '',
       listeners: {}, addEventListener(name, listener) { this.listeners[name] = listener; }});
   }
@@ -753,7 +753,7 @@ function popupView(response, sites = null) {
 
 const settle = async () => { for (let i = 0; i < 8; i += 1) await Promise.resolve(); };
 
-test('面板已连接时显示状态、同步主题并禁用主按钮', async () => {
+test('面板已连接时同步主题，主按钮恒为启动 Sookit', async () => {
   const view = popupView({ok: true, enabled: true, theme_color: '#0098ff', dark: true});
   await settle();
   assert.equal(view.messages.length, 1);
@@ -762,37 +762,57 @@ test('面板已连接时显示状态、同步主题并禁用主按钮', async ()
   assert.equal(view.elements.get('status').dataset.state, 'ok');
   assert.equal(view.elements.get('status-text').textContent, '已连接');
   assert.equal(view.elements.get('master-value').textContent, '已开启');
-  assert.equal(view.elements.get('primary').textContent, '已连接');
-  assert.equal(view.elements.get('primary').disabled, true);
+  assert.equal(view.elements.get('primary').textContent, '启动 Sookit');
+  assert.equal(view.elements.get('primary').disabled, false);
   assert.equal(view.documentElement.dataset.theme, 'dark');
   assert.equal(view.accent['--accent'], '#0098ff');
 });
 
-test('面板在总闸关闭时显示已暂停并指向设置页', async () => {
+test('总闸关闭时显示已暂停，主按钮文案不变', async () => {
   const view = popupView({ok: true, enabled: false, theme_color: '#3A9B8A', dark: false});
   await settle();
   assert.equal(view.elements.get('status').dataset.state, 'paused');
+  assert.equal(view.elements.get('status-text').textContent, '已暂停');
   assert.equal(view.elements.get('master-value').textContent, '已关闭');
-  assert.equal(view.elements.get('primary').disabled, true);
-  assert.match(view.elements.get('hint').textContent, /设置页/);
+  assert.equal(view.elements.get('primary').textContent, '启动 Sookit');
 });
 
-test('桌面端没开时仍显示已连接并给出启动入口，桥接未注册时才算未连接', async () => {
-  const desktopDown = popupView({ok: false, code: 'offline', error: 'Sookit 未运行'});
+test('桌面端没开时总闸仍由 host 读配置给出，主按钮照常可点', async () => {
+  const desktopDown = popupView({
+    ok: false, code: 'offline', error: 'Sookit 未运行', enabled: true, theme_color: '#0098ff',
+  });
   await settle();
   assert.equal(desktopDown.elements.get('status').dataset.state, 'ok');
   assert.equal(desktopDown.elements.get('status-text').textContent, '已连接');
-  assert.equal(desktopDown.elements.get('master-value').textContent, '未知');
+  assert.equal(desktopDown.elements.get('master-value').textContent, '已开启');
   assert.equal(desktopDown.elements.get('primary').textContent, '启动 Sookit');
   assert.equal(desktopDown.elements.get('primary').disabled, false);
-  assert.match(desktopDown.elements.get('hint').textContent, /Sookit 未运行/);
+  assert.equal(desktopDown.accent['--accent'], '#0098ff');
 
+  const paused = popupView({ok: false, code: 'offline', error: 'Sookit 未运行', enabled: false});
+  await settle();
+  assert.equal(paused.elements.get('status').dataset.state, 'paused');
+  assert.equal(paused.elements.get('master-value').textContent, '已关闭');
+
+  const unknown = popupView({ok: false, code: 'offline', error: 'Sookit 未运行', enabled: null});
+  await settle();
+  assert.equal(unknown.elements.get('status').dataset.state, 'ok');
+  assert.equal(unknown.elements.get('master-value').textContent, '未知');
+});
+
+test('桥接未注册时才算未连接，且主按钮不可点', async () => {
   const missing = popupView({ok: false, error: '未连接到 Sookit，请安装新版 Sookit 或运行浏览器桥接注册脚本'});
   await settle();
   assert.equal(missing.elements.get('status').dataset.state, 'offline');
   assert.equal(missing.elements.get('status-text').textContent, '未连接');
-  assert.match(missing.elements.get('hint').textContent, /register_browser_bridge/);
+  assert.equal(missing.elements.get('master-value').textContent, '未知');
+  assert.equal(missing.elements.get('primary').textContent, '启动 Sookit');
   assert.equal(missing.elements.get('primary').disabled, true);
+});
+
+test('面板不再有底部小字提示', () => {
+  const html = fs.readFileSync(path.join(extension, 'popup.html'), 'utf8');
+  assert.doesNotMatch(html, /id="hint"/);
 });
 
 test('面板站点开关读写扩展本地存储', async () => {

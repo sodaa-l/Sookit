@@ -239,10 +239,3 @@ body {
   color: var(--text-2);
   cursor: default;
 }
-
-.hint {
-  min-height: 15px;
-  margin: 8px 2px 0;
-  font-size: 11px;
-  color: var(--text-2);
-}
