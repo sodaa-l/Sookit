@@ -13,6 +13,10 @@ MAX_VIDEO_CHANNEL_LENGTH = 200
 MAX_VIDEO_DURATION_SECONDS = 7 * 24 * 60 * 60
 MAX_VIDEO_COVER_URL_LENGTH = 2048
 BROWSER_ACTIONS = frozenset({'sniff', 'download_best', 'download_cover', 'parse_gif'})
+# 控制类动作不携带网页链接：launch 只给 Chrome host 用，status 是本机通道唯一放行的
+# 控制动作（扩展面板的连接探测），两者都不进入页面分派逻辑。
+CONTROL_ACTIONS = frozenset({'status', 'launch'})
+LOCAL_CONTROL_ACTIONS = frozenset({'status'})
 
 
 def normalize_video_url(value: str) -> str:
@@ -116,12 +120,15 @@ def _validated_video_metadata(value: object) -> dict:
     return metadata
 
 
-def validate_request(message: object) -> dict:
+def validate_request(message: object, *, allowed=BROWSER_ACTIONS) -> dict:
     if (not isinstance(message, dict) or not isinstance(message.get('action'), str)
-            or message['action'] not in BROWSER_ACTIONS):
+            or message['action'] not in allowed):
         raise ValueError('不支持的浏览器请求')
-    request = {'action': message['action'],
-               'url': normalize_browser_url(message.get('url'), message['action'])}
+    action = message['action']
+    if action in CONTROL_ACTIONS:
+        return {'action': action}
+    request = {'action': action,
+               'url': normalize_browser_url(message.get('url'), action)}
     if request['action'] in ('download_best', 'download_cover'):
         metadata = _validated_video_metadata(message.get('video_metadata'))
         if metadata:

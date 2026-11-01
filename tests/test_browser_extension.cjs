@@ -11,21 +11,28 @@ const SHORT_URL = 'https://www.youtube.com/shorts/Yb9H5vhWyHg';
 const SHORT_URL_B = 'https://www.youtube.com/shorts/aaaaaaaaaaa';
 const ID = 'inplhidhdgncdjkkmbfcocedkabbaghn';
 
-function background(native = async () => ({ok: true}), getTab = async () => ({url: URL_A})) {
+function background(native = async () => ({ok: true}), getTab = async () => ({url: URL_A}), sites = null) {
   let receive;
   const calls = [];
   const tabQueries = [];
+  const stored = sites ? {sookitSites: {...sites}} : {};
   const context = vm.createContext({URL, chrome: {
     tabs: {async get(id) { tabQueries.push(id); return getTab(id); }},
+    storage: {local: {
+      async get(key) { return key && key in stored ? {[key]: stored[key]} : {}; },
+      async set(values) { Object.assign(stored, values); }
+    }},
     runtime: {
       id: ID,
+      getURL: file => `chrome-extension://${ID}/${file}`,
       onMessage: {addListener(listener) { receive = listener; }},
       async sendNativeMessage(host, request) { calls.push({host, request}); return native(request); }
     }
   }});
   vm.runInContext(fs.readFileSync(path.join(extension, 'background.js'), 'utf8'), context);
   const sender = {id: ID, frameId: 0, tab: {id: 1}, url: URL_A};
-  return {calls, tabQueries, sender, send(message, source = sender) {
+  const popupSender = {id: ID, url: `chrome-extension://${ID}/popup.html`, origin: `chrome-extension://${ID}`};
+  return {calls, tabQueries, stored, sender, popupSender, send(message, source = sender) {
     return new Promise(resolve => {
       const pending = receive(message, source, resolve);
       if (!pending) resolve(undefined);
@@ -223,22 +230,34 @@ function page(sendMessage = async () => ({ok: true, message: '已在后台开始
     createElement: tag => new Element(tag),
     createElementNS: (_ns, tag) => new Element(tag),
     getElementById: id => walk(root).find(node => node.id === id),
+    title: 'Sookit 测试视频 - YouTube',
     querySelector: selector => {
       if (selector === 'ytd-reel-video-renderer[is-active]') {
         return reels.find(reel => reel.renderer.hasAttribute('is-active'))?.renderer || null;
       }
+      // 内容脚本读取标题/频道/时长用于浏览器下载任务；真实页面有这些节点，假页面也要给全。
+      if (selector === 'meta[name="title"]') return {content: 'Sookit 测试视频'};
+      if (selector === '[itemprop="author"] [itemprop="name"]') {
+        return {getAttribute: () => 'Sookit 频道', textContent: 'Sookit 频道'};
+      }
+      if (selector === '[itemprop="duration"]') return {getAttribute: () => 'PT1M5S', textContent: 'PT1M5S'};
       return target;
     },
     querySelectorAll: selector => root.querySelectorAll(selector),
     addEventListener: (name, listener) => { documentEvents[name] = listener; }
   };
   const location = {href};
+  // 真实页面里 location.hostname 是派生属性；这里也要派生，否则站点判定无从下手。
+  Object.defineProperty(location, 'hostname', {
+    get() { try { return new URL(String(this.href)).hostname; } catch { return ''; } }
+  });
   const window = {innerWidth: 1024, innerHeight: 768,
     addEventListener(name, listener) { windowEvents[name] = listener; }};
   window.top = window;
   const frames = [];
   const observers = [];
   const observerConfigs = [];
+  const storageListeners = [];
   const timers = new Map();
   let timerId = 0;
   const requests = [];
@@ -258,7 +277,11 @@ function page(sendMessage = async () => ({ok: true, message: '已在后台开始
       observe(_target, config) { observerConfigs.push(config); }
     },
     chrome: {runtime: {getURL: file => `chrome-extension://${ID}/${file}`,
-      sendMessage(message) { requests.push(message); return sendMessage(message); }}}
+      sendMessage(message) { requests.push(message); return sendMessage(message); }},
+      storage: options.sites ? {
+        local: {get(_key, callback) { callback({sookitSites: {...options.sites}}); }},
+        onChanged: {addListener(listener) { storageListeners.push(listener); }}
+      } : undefined}
   });
   const source = fs.readFileSync(path.join(extension, 'content.js'), 'utf8');
   vm.runInContext(source, context);
@@ -292,9 +315,20 @@ function page(sendMessage = async () => ({ok: true, message: '已在后台开始
     documentEvent(name, event) { documentEvents[name]?.(event); },
     windowEvent(name) { windowEvents[name]?.(); },
     get menu() { return document.getElementById('sookit-action-menu'); },
-    choose(action = 'sniff') {
+    // 内容脚本用 setTimeout 轮询视频元数据；这里边等边推进假定时器，避免请求永远发不出去。
+    async choose(action = 'sniff') {
       if (!this.menu || this.menu.hidden) this.button.events.click();
-      return this.menu.children.find(item => item.dataset.action === action).events.click();
+      const pending = this.menu.children.find(item => item.dataset.action === action).events.click();
+      let settled = false;
+      const done = () => { settled = true; };
+      Promise.resolve(pending).then(done, done);
+      for (let step = 0; step < 40 && !settled && timers.size; step += 1) {
+        const [id, callback] = timers.entries().next().value;
+        timers.delete(id);
+        callback();
+        await new Promise(resolve => setImmediate(resolve));
+      }
+      return pending;
     },
     get button() { return document.getElementById('sookit-sniff-button'); },
     get feedback() { return document.getElementById('sookit-feedback'); },
@@ -306,7 +340,15 @@ function page(sendMessage = async () => ({ok: true, message: '已在后台开始
     reinject() { vm.runInContext(source, context); flush(); },
     navigate(url) { location.href = url; renderReels(url); documentEvents['yt-navigate-finish'](); flush(); },
     popstate(url) { location.href = url; renderReels(url); windowEvents.popstate(); flush(); },
-    replaceActions() { target.remove(); target = new Element('actions'); body.append(target); this.mutate(); flush(); }
+    replaceActions() { target.remove(); target = new Element('actions'); body.append(target); this.mutate(); flush(); },
+    // 模拟面板写入站点开关后触发的 storage.onChanged。
+    setSites(sites) {
+      Object.assign(options.sites, sites);
+      for (const listener of storageListeners) {
+        listener({sookitSites: {newValue: {...options.sites}}}, 'local');
+      }
+      flush();
+    }
   };
 }
 
@@ -483,7 +525,7 @@ test('点击只展开三项菜单，选择后发送且等待时不重复提交',
   assert.equal(site.menu.hidden, false);
   assert.equal(button.attributes['aria-expanded'], 'true');
   assert.deepEqual(site.menu.children.map(item => item.children[1].textContent),
-    ['嗅探视频', '下载最佳画质', '下载封面']);
+    ['嗅探视频', '下载最佳画质', '下载最佳封面']);
   assert.equal(site.document.activeElement, site.menu.children[0]);
   const first = site.choose();
   await site.choose('download_best');
@@ -623,4 +665,145 @@ test('后台的两种下载复用来源验证且只转发动作和链接', async
     assert.equal((await bridge.send({action, url: URL_A}, {...bridge.sender, frameId: 1})).ok, false);
   }
   assert.equal(bridge.calls.length, 2);
+});
+
+test('清单声明工具栏面板、存储权限与面板资源', () => {
+  const manifest = JSON.parse(fs.readFileSync(path.join(extension, 'manifest.json'), 'utf8'));
+  assert.equal(manifest.action?.default_popup, 'popup.html');
+  assert.ok(manifest.permissions.includes('storage'));
+  assert.ok(manifest.permissions.includes('nativeMessaging'));
+  for (const file of ['popup.html', 'popup.js', 'popup.css']) {
+    assert.ok(fs.statSync(path.join(extension, file)).isFile(), file);
+  }
+});
+
+test('面板消息只认扩展自己的 popup 来源，页面脚本冒充会被拒绝', async () => {
+  const bridge = background(async request => ({ok: true, enabled: true, theme_color: '#3A9B8A', dark: false}));
+  const status = await bridge.send({type: 'sookit.panel', op: 'status'}, bridge.popupSender);
+  assert.equal(status.ok, true);
+  assert.equal(bridge.calls.at(-1).request.action, 'status');
+  const spoofed = await bridge.send({type: 'sookit.panel', op: 'launch'}, bridge.sender);
+  assert.equal(spoofed.ok, false);
+  assert.match(spoofed.error, /来源无效/);
+  const contentScript = {
+    id: ID, frameId: 0, url: URL_A, origin: 'https://www.youtube.com',
+    tab: {id: 1}
+  };
+  const fromPage = await bridge.send({type: 'sookit.panel', op: 'launch'}, contentScript);
+  assert.equal(fromPage.ok, false);
+  assert.match(fromPage.error, /来源无效/);
+  assert.equal(bridge.calls.length, 1);
+});
+
+test('面板拒绝未知控制动作，launch 按用户点击原样转发', async () => {
+  const bridge = background(async () => ({ok: true, started: true}));
+  const unknown = await bridge.send({type: 'sookit.panel', op: 'sniff'}, bridge.popupSender);
+  assert.equal(unknown.ok, false);
+  assert.match(unknown.error, /不支持的面板操作/);
+  assert.equal(bridge.calls.length, 0);
+  const launched = await bridge.send({type: 'sookit.panel', op: 'launch'}, bridge.popupSender);
+  assert.equal(launched.ok, true);
+  assert.equal(bridge.calls.at(-1).request.action, 'launch');
+});
+
+test('站点开关关闭后同站点请求在后台被拒，不调用本机桥接', async () => {
+  const closed = background(async () => ({ok: true}), async () => ({url: URL_A}),
+    {youtube: false, x: true});
+  const rejected = await closed.send({action: 'sniff', url: URL_A});
+  assert.equal(rejected.ok, false);
+  assert.match(rejected.error, /扩展设置中关闭/);
+  assert.equal(closed.calls.length, 0);
+  const open = background(async () => ({ok: true}), async () => ({url: URL_A}),
+    {youtube: true, x: false});
+  assert.equal((await open.send({action: 'sniff', url: URL_A})).ok, true);
+});
+
+test('站点开关关闭时不注入按钮，改回开启后立即补挂', () => {
+  const site = page(undefined, URL_A, {sites: {youtube: false, x: true}});
+  assert.equal(site.button, undefined);
+  site.setSites({youtube: true});
+  assert.ok(site.button);
+  site.setSites({youtube: false});
+  assert.equal(site.button, undefined);
+});
+
+function popupView(response, sites = null) {
+  const elements = new Map();
+  const messages = [];
+  const accent = {};
+  const documentElement = {dataset: {}, style: {setProperty(name, value) { accent[name] = value; }}};
+  const stored = sites ? {sookitSites: {...sites}} : {};
+  for (const id of ['status', 'status-text', 'toggle-youtube', 'toggle-x', 'master-value', 'primary', 'hint']) {
+    elements.set(id, {id, dataset: {}, checked: true, disabled: false, textContent: '',
+      listeners: {}, addEventListener(name, listener) { this.listeners[name] = listener; }});
+  }
+  const context = vm.createContext({
+    document: {documentElement, getElementById: id => elements.get(id) || null},
+    chrome: {
+      storage: {local: {
+        async get(key) { return key in stored ? {[key]: stored[key]} : {}; },
+        async set(values) { Object.assign(stored, values); }
+      }},
+      runtime: {lastError: null, sendMessage(message, reply) { messages.push(message); reply(response); }}
+    }
+  });
+  vm.runInContext(fs.readFileSync(path.join(extension, 'popup.js'), 'utf8'), context);
+  return {elements, messages, stored, documentElement, accent};
+}
+
+const settle = async () => { for (let i = 0; i < 8; i += 1) await Promise.resolve(); };
+
+test('面板已连接时显示状态、同步主题并禁用主按钮', async () => {
+  const view = popupView({ok: true, enabled: true, theme_color: '#0098ff', dark: true});
+  await settle();
+  assert.equal(view.messages.length, 1);
+  assert.equal(view.messages[0].type, 'sookit.panel');
+  assert.equal(view.messages[0].op, 'status');
+  assert.equal(view.elements.get('status').dataset.state, 'ok');
+  assert.equal(view.elements.get('status-text').textContent, '已连接');
+  assert.equal(view.elements.get('master-value').textContent, '已开启');
+  assert.equal(view.elements.get('primary').textContent, '已连接');
+  assert.equal(view.elements.get('primary').disabled, true);
+  assert.equal(view.documentElement.dataset.theme, 'dark');
+  assert.equal(view.accent['--accent'], '#0098ff');
+});
+
+test('面板在总闸关闭时显示已暂停并指向设置页', async () => {
+  const view = popupView({ok: true, enabled: false, theme_color: '#3A9B8A', dark: false});
+  await settle();
+  assert.equal(view.elements.get('status').dataset.state, 'paused');
+  assert.equal(view.elements.get('master-value').textContent, '已关闭');
+  assert.equal(view.elements.get('primary').disabled, true);
+  assert.match(view.elements.get('hint').textContent, /设置页/);
+});
+
+test('桌面端没开时仍显示已连接并给出启动入口，桥接未注册时才算未连接', async () => {
+  const desktopDown = popupView({ok: false, code: 'offline', error: 'Sookit 未运行'});
+  await settle();
+  assert.equal(desktopDown.elements.get('status').dataset.state, 'ok');
+  assert.equal(desktopDown.elements.get('status-text').textContent, '已连接');
+  assert.equal(desktopDown.elements.get('master-value').textContent, '未知');
+  assert.equal(desktopDown.elements.get('primary').textContent, '启动 Sookit');
+  assert.equal(desktopDown.elements.get('primary').disabled, false);
+  assert.match(desktopDown.elements.get('hint').textContent, /Sookit 未运行/);
+
+  const missing = popupView({ok: false, error: '未连接到 Sookit，请安装新版 Sookit 或运行浏览器桥接注册脚本'});
+  await settle();
+  assert.equal(missing.elements.get('status').dataset.state, 'offline');
+  assert.equal(missing.elements.get('status-text').textContent, '未连接');
+  assert.match(missing.elements.get('hint').textContent, /register_browser_bridge/);
+  assert.equal(missing.elements.get('primary').disabled, true);
+});
+
+test('面板站点开关读写扩展本地存储', async () => {
+  const view = popupView({ok: true, enabled: true, theme_color: '#3A9B8A', dark: false},
+    {youtube: true, x: false});
+  await settle();
+  assert.equal(view.elements.get('toggle-youtube').checked, true);
+  assert.equal(view.elements.get('toggle-x').checked, false);
+  view.elements.get('toggle-x').checked = true;
+  view.elements.get('toggle-x').listeners.change();
+  await settle();
+  assert.equal(view.stored.sookitSites.x, true);
+  assert.equal(view.stored.sookitSites.youtube, true);
 });

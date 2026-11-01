@@ -18,7 +18,8 @@ from PyQt6.QtNetwork import QLocalSocket
 from PyQt6.QtWidgets import QApplication
 
 from sookit.core.browser_protocol import (
-    EXTENSION_ID, EXTENSION_ORIGIN, MAX_MESSAGE_BYTES,
+    BROWSER_ACTIONS, CONTROL_ACTIONS, EXTENSION_ID, EXTENSION_ORIGIN,
+    LOCAL_CONTROL_ACTIONS, MAX_MESSAGE_BYTES,
     decode_message, encode_message, normalize_video_url, validate_request,
 )
 from sookit.core.browser_ipc import BrowserRequestServer, send_request
@@ -88,9 +89,21 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(actual, EXTENSION_ID)
         native = json.loads((ROOT / 'packaging/com.sookit.browser.json').read_text(encoding='utf-8'))
         self.assertEqual(native['allowed_origins'], [EXTENSION_ORIGIN])
-        self.assertEqual(manifest['permissions'], ['nativeMessaging'])
+        self.assertEqual(manifest['permissions'], ['nativeMessaging', 'storage'])
         for icon in manifest['icons'].values():
             self.assertTrue((ROOT / 'browser-extension' / icon).is_file())
+
+    def test_control_actions_skip_url_validation_but_need_channel_scope(self):
+        for action in ('status', 'launch'):
+            with self.subTest(action=action):
+                self.assertEqual(
+                    validate_request({'action': action}, allowed=BROWSER_ACTIONS | CONTROL_ACTIONS),
+                    {'action': action})
+                with self.assertRaisesRegex(ValueError, '不支持的浏览器请求'):
+                    validate_request({'action': action})
+        # 本机通道只放行 status，launch 必须走 Chrome host。
+        with self.assertRaisesRegex(ValueError, '不支持的浏览器请求'):
+            validate_request({'action': 'launch'}, allowed=LOCAL_CONTROL_ACTIONS)
 
     def test_native_host_rejects_unapproved_extension_without_qt_or_gui_stdout(self):
         process = subprocess.run([sys.executable, '-m', 'sookit.native_host',
@@ -167,6 +180,44 @@ class BridgeTests(unittest.TestCase):
             launch.assert_not_called()
 
 
+    def test_status_never_launches_and_reports_offline(self):
+        with patch('sookit.core.browser_ipc.send_request', return_value=None) as send,                 patch.object(native_host.subprocess, 'Popen') as launch:
+            response = native_host.forward_control({'action': 'status'})
+            self.assertEqual(response, {'ok': False, 'code': 'offline', 'error': 'Sookit 未运行'})
+            send.assert_called_once_with({'action': 'status'})
+            launch.assert_not_called()
+
+    def test_status_forwards_gui_receipt_as_is(self):
+        receipt = {'ok': True, 'enabled': True, 'theme_color': '#3A9B8A', 'dark': False}
+        with patch('sookit.core.browser_ipc.send_request', return_value=receipt) as send,                 patch.object(native_host, 'app_command') as command,                 patch.object(native_host.subprocess, 'Popen') as launch:
+            self.assertEqual(native_host.forward_control({'action': 'status'}), receipt)
+            send.assert_called_once_with({'action': 'status'})
+            command.assert_not_called()
+            launch.assert_not_called()
+
+    def test_launch_reuses_running_instance_without_spawning(self):
+        receipt = {'ok': True, 'enabled': True}
+        with patch('sookit.core.browser_ipc.send_request', return_value=receipt) as send,                 patch.object(native_host, 'app_command') as command,                 patch.object(native_host.subprocess, 'Popen') as launch:
+            self.assertEqual(native_host.forward_control({'action': 'launch'}),
+                             {'ok': True, 'started': False, 'status': receipt})
+            send.assert_called_once_with({'action': 'status'})
+            command.assert_not_called()
+            launch.assert_not_called()
+
+    def test_launch_spawns_without_silent_and_polls_until_bound(self):
+        receipt = {'ok': True, 'enabled': True}
+        with patch('sookit.core.browser_ipc.send_request',
+                   side_effect=[None, None, receipt]) as send,                 patch.object(native_host, 'app_command',
+                             return_value=(['Sookit.exe'], ROOT)) as command,                 patch.object(native_host.subprocess, 'Popen') as launch,                 patch.object(native_host.time, 'sleep'):
+            self.assertEqual(native_host.forward_control({'action': 'launch'}),
+                             {'ok': True, 'started': True, 'status': receipt})
+            # 冷启动必须可见启动，不能再带 --silent。
+            command.assert_called_once_with(silent=False)
+            launch.assert_called_once()
+            self.assertEqual(launch.call_args.args[0], ['Sookit.exe'])
+            self.assertEqual(send.call_count, 3)
+
+
 class LocalChannelTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -224,6 +275,19 @@ class LocalChannelTests(unittest.TestCase):
             socket.write(frame)
             socket.flush()
             self.assertFalse(self.response(socket)['ok'])
+        self.handler.assert_not_called()
+
+    def test_status_reaches_ui_while_launch_is_refused_locally(self):
+        socket = self.connect()
+        socket.write(encode_message({'action': 'status'}))
+        socket.flush()
+        self.assertTrue(self.response(socket)['ok'])
+        self.handler.assert_called_once_with({'action': 'status'})
+        self.handler.reset_mock()
+        socket = self.connect()
+        socket.write(encode_message({'action': 'launch'}))
+        socket.flush()
+        self.assertFalse(self.response(socket)['ok'])
         self.handler.assert_not_called()
 
     def test_client_process_roundtrip(self):

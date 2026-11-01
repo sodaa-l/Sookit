@@ -5,7 +5,8 @@
   "description": "在 YouTube 与 X 视频帖调用桌面 Sookit 处理视频。",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAhEZOKOMbvbsXbaxifK/h1eGX3pSvrItOU9b1Fj0XXh2Dhu/LwPk/6u9W1tpriYshJog6Q+pr90auLjqzD2V43esKdSuIUjJbMYM2WngvrHtBGW5djhGm0D9ySCH59eJ+20K3hbzL8kxktw6Qr9heLUSEkJ3mVOHl3WYWIxjuaCc72DdoO9vIy5xF9g97M1oVCK60WzOOfv+/OlRcM+pEQdV8sJEuJJLBYJMJXgCGEHBqa45YQwAyq2/pXTrgGP/MEHUWQqDnxytMi28YFF/5VOYz86IVIDtTTIsq4H4Fl5J/flP+j4n46to7LB+9p68Rxq6WxQQJsF6H3fdm14sSXwIDAQAB",
   "permissions": [
-    "nativeMessaging"
+    "nativeMessaging",
+    "storage"
   ],
   "host_permissions": [
     "https://www.youtube.com/*",
@@ -16,6 +17,14 @@
   ],
   "background": {
     "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "Sookit",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "48": "icons/sookit-48.png",
+      "128": "icons/sookit-128.png"
+    }
   },
   "icons": {
     "48": "icons/sookit-48.png",

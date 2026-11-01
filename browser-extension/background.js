@@ -1,6 +1,9 @@
 /* 页面脚本只传递视频链接和受限展示信息；本机调用始终经过扩展后台。 */
 const HOST = 'com.sookit.browser';
 const ACTIONS = new Set(['sniff', 'download_best', 'download_cover', 'parse_gif']);
+// 面板只走两个控制动作；status 只探测不启动，launch 是用户显式点「启动 Sookit」。
+const CONTROL_OPS = new Set(['status', 'launch']);
+const SITES_KEY = 'sookitSites';
 const YOUTUBE_HOSTS = new Set(['www.youtube.com', 'youtube.com', 'm.youtube.com', 'youtu.be']);
 const X_HOSTS = new Set(['x.com', 'www.x.com', 'twitter.com', 'www.twitter.com']);
 
@@ -100,7 +103,53 @@ function videoMetadata(value) {
   return Object.keys(result).length ? result : null;
 }
 
+async function siteEnabled(platform) {
+  // 设置里关掉的站点，后台直接拒绝；旧页面残留的按钮也拦得住。
+  try {
+    const stored = await chrome.storage.local.get(SITES_KEY);
+    const sites = stored?.[SITES_KEY];
+    if (!sites || typeof sites !== 'object') return true;
+    return sites[platform] !== false;
+  } catch {
+    return true;
+  }
+}
+
+async function callNative(nativeMessage) {
+  try {
+    return await chrome.runtime.sendNativeMessage(HOST, nativeMessage);
+  } catch (error) {
+    const detail = String(error?.message || error);
+    if (/not found|not registered|forbidden|Access to the specified native/i.test(detail)) {
+      throw new Error('未连接到 Sookit，请安装新版 Sookit 或运行浏览器桥接注册脚本');
+    }
+    throw new Error(`Sookit 连接失败：${detail}`);
+  }
+}
+
+// 面板消息只认扩展自身的页面（popup）。用扩展自己的 origin 或 popup 的 url 判定来源：
+// 网页与内容脚本在这两项上都是页面自己的，伪造不了；而 popup 的 sender 不带 tab、
+// frameId 也不保证为 0，故不能依赖这两个字段。
+function panelSender(sender) {
+  if (sender?.id !== chrome.runtime.id) return false;
+  const popupUrl = chrome.runtime.getURL('popup.html');
+  const extensionOrigin = chrome.runtime.getURL('').replace(/\/$/, '');
+  return sender.url === popupUrl || sender.origin === extensionOrigin;
+}
+
+async function handlePanel(op) {
+  if (!CONTROL_OPS.has(op)) throw new Error('不支持的面板操作');
+  return callNative({action: op});
+}
+
 chrome.runtime.onMessage.addListener((message, sender, reply) => {
+  if (message?.type === 'sookit.panel') {
+    (async () => {
+      if (!panelSender(sender)) throw new Error('请求来源无效');
+      return handlePanel(message.op);
+    })().then(reply, error => reply({ok: false, error: String(error.message || error)}));
+    return true;
+  }
   if (!ACTIONS.has(message?.action)) return false;
   (async () => {
     if (sender.id !== chrome.runtime.id || !sender.tab || sender.frameId !== 0) {
@@ -109,6 +158,7 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
     const url = requestUrl(message.action, message.url);
     const platform = url.startsWith('https://x.com/') ? 'x' : 'youtube';
     if (pagePlatform(sender.url) !== platform) throw new Error('请求来源与视频链接不匹配');
+    if (!await siteEnabled(platform)) throw new Error('该站点的 Sookit 按钮已在扩展设置中关闭');
 
     // SPA 的 sender.url 可能是旧路由；仍以当前标签页及其 pendingUrl 判定站点。
     let tab;
@@ -148,20 +198,12 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
       const currentStatusUrl = maybeXStatusUrl(tab.url);
       if (currentStatusUrl && currentStatusUrl !== url) throw new Error('页面已切换，请重试');
     }
-    try {
-      const nativeMessage = {action: message.action, url};
-      if (message.action === 'download_best' || message.action === 'download_cover') {
-        const metadata = videoMetadata(message.video_metadata);
-        if (metadata) nativeMessage.video_metadata = metadata;
-      }
-      return await chrome.runtime.sendNativeMessage(HOST, nativeMessage);
-    } catch (error) {
-      const detail = String(error?.message || error);
-      if (/not found|not registered|forbidden|Access to the specified native/i.test(detail)) {
-        throw new Error('未连接到 Sookit，请安装新版 Sookit 或运行浏览器桥接注册脚本');
-      }
-      throw new Error(`Sookit 连接失败：${detail}`);
+    const nativeMessage = {action: message.action, url};
+    if (message.action === 'download_best' || message.action === 'download_cover') {
+      const metadata = videoMetadata(message.video_metadata);
+      if (metadata) nativeMessage.video_metadata = metadata;
     }
+    return callNative(nativeMessage);
   })().then(reply, error => reply({ok: false, error: String(error.message || error)}));
   return true;
 });

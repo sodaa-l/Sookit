@@ -9,8 +9,12 @@ from PyQt6.QtCore import QObject, QTimer
 from PyQt6.QtNetwork import QLocalServer, QLocalSocket
 
 from sookit.core.browser_protocol import (
-    MAX_MESSAGE_BYTES, decode_message, encode_message, validate_request,
+    BROWSER_ACTIONS, LOCAL_CONTROL_ACTIONS, MAX_MESSAGE_BYTES, decode_message,
+    encode_message, validate_request,
 )
+
+# 本机通道只额外放行 status：面板连接探测不该由桥接进程独自回答，launch 仍归 host。
+LOCAL_ACTIONS = BROWSER_ACTIONS | LOCAL_CONTROL_ACTIONS
 
 logger = logging.getLogger(__name__)
 
@@ -89,7 +93,7 @@ class BrowserRequestServer(QObject):
         if len(buffer) < size + 4:
             return
         try:
-            request = validate_request(decode_message(bytes(buffer)))
+            request = validate_request(decode_message(bytes(buffer)), allowed=LOCAL_ACTIONS)
             response = self._handler(request)
         except (ValueError, UnicodeError) as exc:
             response = {'ok': False, 'error': str(exc)}

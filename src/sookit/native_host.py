@@ -7,7 +7,8 @@ import sys
 import time
 
 from sookit.core.browser_protocol import (
-    EXTENSION_ORIGIN, MAX_MESSAGE_BYTES, decode_message, encode_message, validate_request,
+    BROWSER_ACTIONS, CONTROL_ACTIONS, EXTENSION_ORIGIN, MAX_MESSAGE_BYTES,
+    decode_message, encode_message, validate_request,
 )
 
 
@@ -29,7 +30,8 @@ def read_message(stream):
     return decode_message(header + _read_exact(stream, size))
 
 
-def app_command():
+def app_command(*, silent=True):
+    """silent=False 用于面板「启动 Sookit」，让用户看得到主窗口。"""
     if getattr(sys, 'frozen', False):
         executable = Path(sys.executable).resolve().with_name('Sookit.exe')
         source_config = executable.with_name('source-launch.json')
@@ -41,18 +43,41 @@ def app_command():
                     or not all(isinstance(arg, str) for arg in command)
                     or not Path(command[0]).is_file() or not cwd.is_dir()):
                 raise ValueError('源码启动配置无效，请重新注册浏览器桥接')
+            if not silent:
+                command = [arg for arg in command if arg != '--silent']
             return command, cwd
         if not executable.is_file():
             raise FileNotFoundError('未找到 Sookit.exe，请重新安装 Sookit')
-        return [str(executable), '--silent'], executable.parent
-    return [sys.executable, '-m', 'sookit', '--silent'], Path(__file__).resolve().parents[2]
+        return [str(executable)] + (['--silent'] if silent else []), executable.parent
+    command = [sys.executable, '-m', 'sookit'] + (['--silent'] if silent else [])
+    return command, Path(__file__).resolve().parents[2]
+
+
+def _spawn(command, cwd):
+    """独立于 Chrome host 存活；stdin/stdout 不继承 Native Messaging 管道。"""
+    options = {}
+    if os.name == 'nt':
+        options['creationflags'] = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+    subprocess.Popen(command, cwd=str(cwd), stdin=subprocess.DEVNULL,
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                     close_fds=True, **options)
+
+
+def _qt_app():
+    from PyQt6.QtCore import QCoreApplication
+    return QCoreApplication.instance() or QCoreApplication([])
+
+
+def send_local(request, timeout_ms=None):
+    from sookit.core.browser_ipc import send_request
+    if timeout_ms is None:
+        return send_request(request)
+    return send_request(request, timeout_ms=timeout_ms)
 
 
 def forward_request(request):
-    from PyQt6.QtCore import QCoreApplication
-    from sookit.core.browser_ipc import send_request
-    app = QCoreApplication.instance() or QCoreApplication([])
-    response = send_request(request)
+    _qt_app()
+    response = send_local(request)
     if response is not None:
         return response
 
@@ -65,20 +90,36 @@ def forward_request(request):
         return {'ok': False, 'error': f'无法确认浏览器扩展开关：{exc}'}
 
     command, cwd = app_command()
-    # 独立于 Chrome host 存活；stdin/stdout 不继承 Native Messaging 管道。
-    options = {}
-    if os.name == 'nt':
-        options['creationflags'] = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
-    subprocess.Popen(command, cwd=str(cwd), stdin=subprocess.DEVNULL,
-                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                     close_fds=True, **options)
+    _spawn(command, cwd)
     deadline = time.monotonic() + 30
     while time.monotonic() < deadline:
-        response = send_request(request, timeout_ms=1000)
+        response = send_local(request, timeout_ms=1000)
         if response is not None:
             return response
         time.sleep(0.15)
     raise TimeoutError('Sookit 启动超时，请先手动启动后重试')
+
+
+def forward_control(request):
+    """面板专用：status 只探测不启动，launch 才可见启动并轮询到就绪。"""
+    _qt_app()
+    if request['action'] == 'launch':
+        response = send_local({'action': 'status'})
+        if response is not None:
+            return {'ok': True, 'started': False, 'status': response}
+        command, cwd = app_command(silent=False)
+        _spawn(command, cwd)
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            response = send_local({'action': 'status'}, timeout_ms=1000)
+            if response is not None:
+                return {'ok': True, 'started': True, 'status': response}
+            time.sleep(0.15)
+        raise TimeoutError('Sookit 启动超时，请手动启动后重试')
+    response = send_local({'action': 'status'})
+    if response is None:
+        return {'ok': False, 'code': 'offline', 'error': 'Sookit 未运行'}
+    return response
 
 
 def main():
@@ -89,8 +130,12 @@ def main():
     try:
         if len(sys.argv) < 2 or sys.argv[1] != EXTENSION_ORIGIN:
             raise ValueError('仅允许 Sookit Chrome 扩展连接')
-        request = validate_request(read_message(sys.stdin.buffer))
-        response = forward_request(request)
+        request = validate_request(read_message(sys.stdin.buffer),
+                                   allowed=BROWSER_ACTIONS | CONTROL_ACTIONS)
+        if request['action'] in CONTROL_ACTIONS:
+            response = forward_control(request)
+        else:
+            response = forward_request(request)
     except Exception as exc:
         print(f'Sookit browser bridge: {exc}', file=sys.stderr)
         response = {'ok': False, 'error': str(exc) or 'Sookit 本机通信失败'}

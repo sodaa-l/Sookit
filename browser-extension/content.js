@@ -34,6 +34,21 @@
   let xMenuArticle;
   let xButtonSequence = 0;
   let xPageUrl = location.href;
+  // 站点开关存在扩展 local storage（面板写入）；改动后立即增删本站点按钮。
+  const SITES_KEY = 'sookitSites';
+  const sites = {youtube: true, x: true};
+  function applySites(value) {
+    if (!value || typeof value !== 'object') return;
+    sites.youtube = value.youtube !== false;
+    sites.x = value.x !== false;
+    scheduleMount();
+  }
+  try {
+    chrome.storage?.local?.get(SITES_KEY, stored => applySites(stored?.[SITES_KEY]));
+    chrome.storage?.onChanged?.addListener((changes, area) => {
+      if (area === 'local' && changes?.[SITES_KEY]) applySites(changes[SITES_KEY].newValue);
+    });
+  } catch {}
 
   function currentVideoUrl() {
     const url = new URL(location.href);
@@ -709,12 +724,22 @@
       closeMenu();
       button?.remove();
       if (button) delete button.dataset.shortVideoId;
-      mountXButtons();
+      if (sites.x) {
+        mountXButtons();
+      } else {
+        removeXButtons();
+      }
       return;
     }
     if (xPageUrl !== location.href || xMenuButton || document.querySelector('button.sookit-x-button')) {
       xPageUrl = location.href;
       removeXButtons();
+    }
+    if (!sites.youtube) {
+      closeMenu();
+      button?.remove();
+      if (button) delete button.dataset.shortVideoId;
+      return;
     }
     if (!url) {
       closeMenu();
