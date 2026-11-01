@@ -21,9 +21,12 @@ from sookit.core.config import DEFAULT_THEME_COLOR, THEME_COLORS, load_browser_e
 
 # ---------- 从 widgets 导入自定义控件 ----------
 from sookit.widgets.infobar import show_infobar
-from sookit.widgets.notifier import notify_task_completed, notify_task_failed, \
-    notify_result_notice, notify_update_notice, browser_task_metadata_summary, \
-    get_toast_bridge, set_main_window
+from sookit.widgets.notifier import (
+    notify_task_completed, notify_task_failed, notify_result_notice,
+    notify_update_notice, browser_task_metadata_summary, get_toast_bridge, set_main_window,
+    TOAST_TARGET_GIF, TOAST_TARGET_MONITOR, TOAST_TARGET_QUEUE_ACTIVE,
+    TOAST_TARGET_QUEUE_COMPLETED, TOAST_TARGET_SETTINGS, TOAST_TARGET_YOUTUBE,
+)
 
 # ---------- 从 core.functions 导入工具函数 ----------
 from sookit.core.functions import (
@@ -204,7 +207,9 @@ class MainWindow(qfw.FluentWindow):
             metadata_summary = browser_task_metadata_summary(task)
             if metadata_summary:
                 detail = f"{detail} · {metadata_summary}"
-            notify_result_notice("下载已开始", getattr(task, "title", "最佳画质下载"), detail)
+            notify_result_notice(
+                "下载已开始", getattr(task, "title", "最佳画质下载"), detail,
+                target_page=TOAST_TARGET_QUEUE_ACTIVE)
 
     def _on_task_completed_toast(self, task):
         if not self._window_focused():
@@ -219,10 +224,28 @@ class MainWindow(qfw.FluentWindow):
         if path and os.path.isdir(path):
             QDesktopServices.openUrl(QUrl.fromLocalFile(path))
 
-    def _activate_from_toast(self):
-        """通知正文点击回调（已转回主线程）：显示并激活主窗口"""
-        self.show()
-        self.activateWindow()
+    def _activate_from_toast(self, target_page: str):
+        """通知正文点击回调（已转回主线程）：激活主窗口并打开对应页面。"""
+        self._raise_window()
+        pages = {
+            TOAST_TARGET_YOUTUBE: self.youtube_page,
+            TOAST_TARGET_GIF: self.gif_page,
+            TOAST_TARGET_MONITOR: self.monitor_page,
+            TOAST_TARGET_QUEUE_ACTIVE: self.queue_page,
+            TOAST_TARGET_QUEUE_COMPLETED: self.queue_page,
+            TOAST_TARGET_SETTINGS: self.settings_page,
+        }
+        page = pages.get(target_page)
+        if page is None:
+            return
+        self.switchTo(page)
+
+        queue_segment = {
+            TOAST_TARGET_QUEUE_ACTIVE: "active",
+            TOAST_TARGET_QUEUE_COMPLETED: "completed",
+        }.get(target_page)
+        if queue_segment is not None:
+            self.queue_page.segment_widget.setCurrentItem(queue_segment)
 
     def _raise_window(self):
         """把已运行的主窗口从最小化/后台带回前台（扩展面板「启动 Sookit」用）。"""

@@ -232,6 +232,7 @@ flowchart TB
 | 65 | 浏览器静默冷启动的日志、首次窗口尺寸与提示定位（2026-10-28） | 页面日志统一走 logger，避免 GBK stdout 抛异常造成嗅探假失败和计时器缺失；首次显示恢复 1131×731 并居中，后续保留用户手动尺寸；长短 InfoBar 在显示和尺寸变化后统一重排并更新运行中的动画终点 | [65-browser-cold-start.md](decisions/65-browser-cold-start.md) |
 | 66 | 浏览器封面逐档直接下载（2026-10-31） | 扩展封面复用 `YouTubePage.CoverDownloadWorker`，按 `build_thumbnails(video_id)` 优先级失败回退并清理残留；文件名优先用安全清理后的标题，缺失时回退 ID，并冲突加序号；不入任务队列，完成/失败通知显示标题及可用频道、时长；最佳画质仍走 yt-dlp 队列（扩展开工通知，完成/失败沿用队列通知） | [66-browser-cover-worker.md](decisions/66-browser-cover-worker.md) |
 | 67 | 浏览器扩展工具栏面板与连接状态语义（2026-11-01） | 点扩展图标弹出面板：状态按桥接可用性判定——host 能应答即「已连接」（Sookit 没启动也算），host 找不到/被拒才「未连接」并指路重注册，GUI 回执 enabled 为假则「已暂停」；总闸与主题色由 host 直接读配置文件得到，桌面端没开也照常显示（读不出来显示「未知」）；主按钮恒为「启动 Sookit」，面板无底部提示小字，进度/错误提示集中在标题栏状态胶囊（拉起时转圈）；页面动作结果显示在页面右上角小窗（发出即弹，loading 转圈 / 成功 2 秒收起 / 失败常驻到点关闭，不拉面板），桌面端已在跑时点它改叫 GUI 把窗口带回前台（新 activate 动作只走本机通道，扩展侧发不进来）；status 探测绝不冷启动、launch 才带可见窗口启动并轮询；控制动作不带 URL，本机通道只放行 status、launch 仅 host；面板消息按扩展自身 origin/url 判定来源（工具栏 popup 不带 tab、frameId 也不为 0，不能照抄页面消息那套校验）；站点开关存扩展 `chrome.storage.local`（`sookitSites`，后台与内容脚本都按它拒绝/增减入口），总闸在面板只读；回执里的主题色/明暗会存进 `sookitTheme`，面板打开先用缓存再问 status，避免先薄荷绿后突然变色；改完必须重新打包并注册 host，仅重载扩展会一直显示未连接 | [67-extension-popup.md](decisions/67-extension-popup.md) |
+| 68 | 系统通知正文点击路由到来源页面（2026-11-02） | Toast 正文携带目标页键并经 Qt 信号转回主线程，激活窗口后切到对应顶层页；浏览器最佳画质开工/失败落到队列「进行中」、完成落到「已完成」，更新类通知落到设置；成功任务的「打开文件夹」按钮仍独立打开目录 | [68-toast-click-page-routing.md](decisions/68-toast-click-page-routing.md) |
 
 ## 测试
 

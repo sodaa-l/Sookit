@@ -19,7 +19,7 @@ from sookit.core.task_queue import TaskQueueManager, TaskType
 from sookit.core.workers import MonitorWorker
 from sookit.pages.base import PageBase
 from sookit.widgets.infobar import show_infobar
-from sookit.widgets.notifier import notify_result_notice
+from sookit.widgets.notifier import TOAST_TARGET_MONITOR, notify_result_notice
 
 
 class MonitorPage(PageBase):
@@ -162,7 +162,9 @@ class MonitorPage(PageBase):
         if not videos:
             self.log("频道中未找到任何视频")
             # 系统通知（决策 40 扩展）：0 条对用户是「没拿到想要的结果」，单独提示
-            notify_result_notice("频道嗅探完成", url, "该频道中没有找到可添加的视频")
+            notify_result_notice(
+                "频道嗅探完成", url, "该频道中没有找到可添加的视频",
+                target_page=TOAST_TARGET_MONITOR)
             return
         added = 0
         for v in videos:
@@ -174,7 +176,9 @@ class MonitorPage(PageBase):
         show_infobar(self, "success", title="完成",
                      content=f"已添加 {added} 个视频到监控列表", duration=3000)
         # 系统通知（决策 40 扩展）：主窗口不在焦点时告知频道嗅探结果
-        notify_result_notice("频道嗅探完成", url, f"已添加 {added} 个视频到监控列表")
+        notify_result_notice(
+            "频道嗅探完成", url, f"已添加 {added} 个视频到监控列表",
+            target_page=TOAST_TARGET_MONITOR)
 
     def _on_channel_error(self, err, url=""):
         self.add_btn.setEnabled(True)
@@ -183,7 +187,8 @@ class MonitorPage(PageBase):
         self.log(f"频道嗅探失败: {err}")
         show_infobar(self, "error", title="嗅探失败", content=err, duration=5000)
         # 系统通知（决策 40 扩展）：主窗口不在焦点时告知频道嗅探失败
-        notify_result_notice("频道嗅探失败", url, err)
+        notify_result_notice(
+            "频道嗅探失败", url, err, target_page=TOAST_TARGET_MONITOR)
 
     def _add_single_task(self, task_id, url, title):
         row = self.task_table.rowCount()

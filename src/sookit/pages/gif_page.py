@@ -52,7 +52,7 @@ from sookit.core.utils import get_certifi_ssl_context, set_smooth_scroll_params
 from sookit.core.workers import GenericWorker
 from sookit.pages.base import PageBase
 from sookit.widgets.infobar import show_infobar
-from sookit.widgets.notifier import notify_result_notice
+from sookit.widgets.notifier import TOAST_TARGET_GIF, notify_result_notice
 from sookit.widgets.task_card import RoundedCoverWidget
 
 # 色数固定选项（GIF 调色板常用档位，含内核 COLOR_CANDIDATES）
@@ -782,8 +782,9 @@ class GifPage(PageBase):
             self.selection_hint.setText("该链接没有动图或视频")
             self._update_dl_button()
             # 系统通知（决策 40 扩展）：0 条对用户是「没拿到想要的结果」，单独提示
-            notify_result_notice("未找到动图", self._last_title or self._parsing_url,
-                                 "该链接没有动图或视频（推文只含图片）")
+            notify_result_notice(
+                "未找到动图", self._last_title or self._parsing_url,
+                "该链接没有动图或视频（推文只含图片）", target_page=TOAST_TARGET_GIF)
             return
         self._parsed_url = self._parsing_url
         # 列表顺序由 fetch_gif_items 保证「动图在前、视频在后」（决策 44）
@@ -797,8 +798,9 @@ class GifPage(PageBase):
         # 系统通知（决策 40 扩展）：主窗口不在焦点时告知解析结果
         summary = (f"共解析到 {n_gif} 个动图、{n_video} 个视频" if n_video
                    else f"共解析到 {n_gif} 个动图")
-        notify_result_notice("解析成功", self._last_title or self._parsing_url,
-                             summary)
+        notify_result_notice(
+            "解析成功", self._last_title or self._parsing_url, summary,
+            target_page=TOAST_TARGET_GIF)
 
     @staticmethod
     def _count_items(items):
@@ -812,7 +814,8 @@ class GifPage(PageBase):
         self.log(f"解析失败: {msg}")
         show_infobar(self, "error", title="解析失败", content=msg, duration=-1)
         # 系统通知（决策 40 扩展）：主窗口不在焦点时告知解析失败
-        notify_result_notice("解析失败", self._parsing_url, msg)
+        notify_result_notice(
+            "解析失败", self._parsing_url, msg, target_page=TOAST_TARGET_GIF)
 
     # -------- 选择区 --------
 

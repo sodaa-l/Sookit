@@ -31,6 +31,13 @@ logger = logging.getLogger("Sookit.notifier")
 # 按钮 arguments 约定（on_activated 按 arguments 区分点击来源）
 _OPEN_FOLDER_ARG = "open_folder"
 
+TOAST_TARGET_YOUTUBE = "youtube"
+TOAST_TARGET_GIF = "gif"
+TOAST_TARGET_MONITOR = "monitor"
+TOAST_TARGET_QUEUE_ACTIVE = "queue_active"
+TOAST_TARGET_QUEUE_COMPLETED = "queue_completed"
+TOAST_TARGET_SETTINGS = "settings"
+
 # 自有 AUMID（HKCU 注册表注册，Electron/Tauri 同款方案）。
 # 注册后通知显示「Sookit」品牌名+图标，且横幅/通知中心不被降级；
 # 注册失败退回库默认的 cmd 借用身份（横幅可能被系统压制，见决策 40）。
@@ -73,7 +80,7 @@ class _ToastSignalBridge(QObject):
     """把 WinRT 回调线程的事件转回 Qt 主线程"""
 
     open_path_requested = pyqtSignal(str)  # 请求打开文件夹
-    activate_requested = pyqtSignal()      # 请求显示主窗口
+    activate_requested = pyqtSignal(str)   # 请求切换页面并显示主窗口
 
 
 def get_toast_bridge() -> _ToastSignalBridge:
@@ -151,13 +158,13 @@ def _resolve_open_dir(task) -> str:
     return ""
 
 
-def _dispatch_activation(bridge: _ToastSignalBridge, args, open_dir: str):
-    """on_activated 回调（WinRT 线程）：点「打开文件夹」→ 开目录；点正文 → 拉起主窗口"""
+def _dispatch_activation(bridge: _ToastSignalBridge, args, open_dir: str, target_page: str):
+    """on_activated 回调（WinRT 线程）：动作按钮开目录，正文点击路由到目标页。"""
     arguments = getattr(args, "arguments", None)
     if arguments == _OPEN_FOLDER_ARG and open_dir:
         bridge.open_path_requested.emit(open_dir)
     else:
-        bridge.activate_requested.emit()
+        bridge.activate_requested.emit(target_page)
 
 
 def browser_video_metadata_summary(metadata) -> str:
@@ -219,10 +226,11 @@ def _show_task_toast(task, ok: bool) -> bool:
             open_dir = ""
 
         bridge = get_toast_bridge()
+        target_page = TOAST_TARGET_QUEUE_COMPLETED if ok else TOAST_TARGET_QUEUE_ACTIVE
         toast = Toast(
             text_fields=text_fields,
             actions=actions,
-            on_activated=lambda args: _dispatch_activation(bridge, args, open_dir),
+            on_activated=lambda args: _dispatch_activation(bridge, args, open_dir, target_page),
         )
         toaster.show_toast(toast)
         return True
@@ -241,8 +249,8 @@ def notify_task_failed(task) -> bool:
     return _show_task_toast(task, ok=False)
 
 
-def _show_plain_toast(text_fields: list) -> bool:
-    """无按钮的纯文本通知（更新类共用），点击正文拉起主窗口"""
+def _show_plain_toast(text_fields: list, target_page: str) -> bool:
+    """无按钮的纯文本通知，正文点击路由至 target_page。"""
     if not load_toast_notification_enabled():
         return False
     try:
@@ -254,7 +262,7 @@ def _show_plain_toast(text_fields: list) -> bool:
         bridge = get_toast_bridge()
         toast = Toast(
             text_fields=text_fields,
-            on_activated=lambda args: bridge.activate_requested.emit(),
+            on_activated=lambda args: _dispatch_activation(bridge, args, "", target_page),
         )
         toaster.show_toast(toast)
         return True
@@ -267,12 +275,17 @@ def notify_update_notice(title: str, content: str) -> bool:
     """更新类通知（Sookit/yt-dlp 更新可用、安装包就绪、更新完毕共用，无按钮）"""
     title = (title or "").strip() or "Sookit"
     content = (content or "").strip()
-    return _show_plain_toast([title, content] if content else [title])
+    return _show_plain_toast(
+        [title, content] if content else [title], target_page=TOAST_TARGET_SETTINGS)
 
 
-def notify_result_notice(headline: str, title: str, detail: str = "") -> bool:
-    """嗅探/解析类结果通知（无按钮，点击正文拉起主窗口）
+def notify_result_notice(
+    headline: str, title: str, detail: str = "",
+    target_page: str = TOAST_TARGET_YOUTUBE,
+) -> bool:
+    """嗅探/解析类结果通知（无按钮，点击正文路由到目标页）。
 
+    默认目标为视频嗅探页；其他来源页由调用方传入 target_page。
     三段结构：结果行 headline（如「嗅探成功」/「解析失败」）+ 对象标题 title
     （视频标题、推文标题或链接）+ 可选详情 detail（失败时为错误摘要，截断 200 字）。
 
@@ -287,4 +300,4 @@ def notify_result_notice(headline: str, title: str, detail: str = "") -> bool:
         fields.append(title.strip())
     if (detail or "").strip():
         fields.append(detail.strip()[:200])
-    return _show_plain_toast(fields)
+    return _show_plain_toast(fields, target_page=target_page)
