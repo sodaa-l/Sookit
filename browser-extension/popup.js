@@ -1,5 +1,6 @@
 /* Sookit 扩展面板：读扩展设置、探测连接、按需请求启动桌面端。 */
 const SITES_KEY = 'sookitSites';
+const THEME_KEY = 'sookitTheme';
 
 const el = {
   status: document.getElementById('status'),
@@ -25,6 +26,33 @@ function applyTheme(color, dark) {
   }
 }
 
+// 上次回执里的主题先落盘，下次打开面板直接用，不用等 host 往返。
+async function rememberTheme(color, dark) {
+  const valid = typeof color === 'string' && /^#[0-9a-f]{6}$/i.test(color);
+  if (!valid && typeof dark !== 'boolean') return;
+  try {
+    const stored = await chrome.storage.local.get(THEME_KEY);
+    const theme = {...(stored?.[THEME_KEY] || {})};
+    if (valid) theme.color = color;
+    if (typeof dark === 'boolean') theme.dark = dark;
+    await chrome.storage.local.set({[THEME_KEY]: theme});
+  } catch {
+    // 存不下就继续用回执里的值，下次打开再更新。
+  }
+}
+
+async function loadTheme() {
+  try {
+    const stored = await chrome.storage.local.get(THEME_KEY);
+    const theme = stored?.[THEME_KEY];
+    if (theme) applyTheme(theme.color, theme.dark);
+  } catch {
+    // 没有缓存就用默认薄荷绿 + 系统明暗。
+  } finally {
+    document.body.dataset.ready = 'true';
+  }
+}
+
 async function loadSites() {
   try {
     const stored = await chrome.storage.local.get(SITES_KEY);
@@ -46,7 +74,7 @@ async function saveSite(name, checked) {
   } catch {
     const input = el[name];
     if (input) input.checked = !checked;
-    setStatus('offline', '设置未保存');
+    setStatus('error', '设置未保存');
   }
 }
 
@@ -82,6 +110,7 @@ function showMaster(enabled) {
 
 function showConnected(status) {
   applyTheme(status.theme_color, status.dark);
+  rememberTheme(status.theme_color, status.dark);
   showMaster(status.enabled);
   el.primary.textContent = '启动 Sookit';
   el.primary.disabled = false;
@@ -90,19 +119,21 @@ function showConnected(status) {
 // 桥接通了但桌面端没开：扩展本身是生效的，所以仍显示「已连接」，主按钮负责启动。
 function showDesktopDown(status) {
   applyTheme(status.theme_color);
+  rememberTheme(status.theme_color);
   showMaster(status.enabled);
   el.primary.textContent = '启动 Sookit';
   el.primary.disabled = false;
 }
 
-function showOffline(kind) {
+function showOffline(kind, text = '未连接') {
   el.master.textContent = '未知';
-  setStatus('offline', '未连接');
+  setStatus('offline', text);
   el.primary.textContent = '启动 Sookit';
   el.primary.disabled = kind === 'outdated' || kind === 'missing';
 }
 
 async function refresh() {
+  setStatus('busy', '连接中…');
   const {response, error} = await sendPanel('status');
   if (response?.ok) {
     showConnected(response);
@@ -112,25 +143,28 @@ async function refresh() {
     showDesktopDown(response);
     return;
   }
-  showOffline(offlineKind(String(response?.error || error || '')));
+  const kind = offlineKind(String(response?.error || error || ''));
+  showOffline(kind, kind === 'outdated' ? '版本过旧' : '未连接');
 }
 
 async function launch() {
   if (el.primary.disabled) return;
   el.primary.disabled = true;
-  el.primary.textContent = '正在启动…';
+  // 进度只在标题栏里显示，主按钮文字保持「启动 Sookit」。
+  setStatus('busy', '正在启动…');
   const {response, error} = await sendPanel('launch');
-  el.primary.textContent = '启动 Sookit';
+  el.primary.disabled = false;
   if (response?.ok) {
     if (response.status?.ok) showConnected(response.status);
     else refresh();
     return;
   }
-  showOffline(offlineKind(String(response?.error || error || '')));
+  showOffline(offlineKind(String(response?.error || error || '')), '启动失败');
 }
 
 el.primary.addEventListener('click', () => { launch(); });
 el.youtube.addEventListener('change', () => { saveSite('youtube', el.youtube.checked); });
 el.x.addEventListener('change', () => { saveSite('x', el.x.checked); });
 loadSites();
+loadTheme();
 refresh();

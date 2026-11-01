@@ -71,7 +71,7 @@ class BrowserDownloadDispatchTests(unittest.TestCase):
         self.assertTrue(response['ok'])
         self.assertEqual(
             response['message'],
-            '封面下载已开始；高分辨率不可用时会自动尝试下一档，完成后请查看 Sookit')
+            '封面下载已开始')
         urls, path = page._start_cover_download.call_args.args
         self.assertEqual(urls, [thumbnail['url'] for thumbnail in build_thumbnails('Yb9H5vhWyHg')])
         self.assertEqual(path, os.path.join('D:/output', 'Yb9H5vhWyHg_cover.jpg'))

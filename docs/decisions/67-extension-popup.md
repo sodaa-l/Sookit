@@ -20,6 +20,9 @@
 - **站点开关存扩展本地**：`chrome.storage.local` 的 `sookitSites` = `{youtube: bool, x: bool}`，缺省视为开启。后台在转发前按站点拒绝被关闭的动作（`该站点的 Sookit 按钮已在扩展设置中关闭`）；`content.js` 按开关决定是否注入按钮，并订阅 `storage.onChanged` 即时增删。桌面端配置不参与这两个开关。
 - **总闸只读**：面板显示「桌面端接收：已开启/已关闭/未知」，不提供开关——总闸仍由设置页管理，避免同一状态两个写入方。值由 host 直接读配置文件得出，桌面端没开也能显示。
 - **主按钮恒为「启动 Sookit」**：不再随状态变身（已连接时也照旧是「启动 Sookit」），桥接未注册/版本过旧时禁用；面板底部不再有提示小字，状态信息只由状态胶囊和总闸行承载。
+- **所有提示集中在标题栏**：状态胶囊就是唯一的提示区——`连接中…`/`正在启动…` 时圆点换成转圈（`data-state="busy"` 下 `.dot` 隐藏、`.spinner` 显示并旋转），启动失败显示「启动失败」、设置保存失败显示「设置未保存」（`error` 红点）；主按钮文字在拉起过程中保持不变，不在按钮或其它位置另起文案。
+- **动作结果显示在页面右上角小窗**：指令一发出（还没等到回执）就在页面右上角弹出 `#sookit-feedback`，`data-state` 分三态——`loading`（转圈 + 动作等待文案，如「正在嗅探视频…」，常驻到出结果）、`success`（绿边，2 秒后自动收起）、`error`（红边，常驻，由用户点关闭按钮收走）；页面切换导致回执被丢弃时，`finally` 会把还停在 `loading` 的小窗收掉，不留残影。样式对齐 Sookit：右上角 `top/right: 16px`、浅色卡片 `#fffffffa`（正文 `#1a1a1a`、关闭按钮 `#888888`）、8px 圆角、强调色左侧 3px 色条、微软雅黑 13px、与面板标题栏同一套转圈参数；小窗可点（`pointer-events` 默认），只有关闭按钮一处交互。桌面端拉面板的方案（`chrome.action.openPopup()`，实测 156 可用）被放弃：面板会立刻抢焦点，用户在页面上动一下鼠标就把它关掉。
+- **主题先读缓存再问回执**：回执里的 `theme_color`/`dark` 会记进 `chrome.storage.local` 的 `sookitTheme`；面板打开时先把缓存套到 `--accent`/`data-theme`，再发 `status` 覆盖。缓存读到之前 `body` 保持 `opacity: 0`（`data-ready` 后才显示），所以不会出现「先薄荷绿、回执到了再突然变色」。副作用：用户在 Sookit 里改了主题色后第一次打开面板仍会先显示旧色、回执到了才切到新色（缓存只可能落后一次）。
 - **UI 对齐既有风格**：强调色与明暗取自回执（`theme_color`/`dark`），默认薄荷绿 `#3A9B8A`；圆角 8px、Microsoft YaHei 13px/11px、行高 48px、胶囊开关，与设置页、任务卡一致。桌面端没开时强调色仍取自配置（host 直接读），明暗退回「跟随系统」。
 - **扩展代码对缺失 API 容错**：`content.js` 用 `chrome.storage?.` 可选链，老测试环境（无 storage 桩）不受影响。
 
@@ -29,7 +32,7 @@
 
 ## 验证覆盖
 
-`tests/test_browser_extension.cjs` 覆盖：清单含 `action.default_popup`/`storage`、面板只认 popup 来源（页面冒充 launch 被拒且不触发本机调用）、未知 op 拒绝、launch 原样转发、站点开关关闭时同站点请求被后台拒绝、内容脚本按开关注入/移除、面板状态与主题同步（含桌面端没开时由 host 读配置给出的总闸）、主按钮恒为「启动 Sookit」、面板不含底部提示小字、站点开关读写 storage。
+`tests/test_browser_extension.cjs` 覆盖：清单含 `action.default_popup`/`storage`、面板只认 popup 来源（页面冒充 launch 被拒且不触发本机调用）、未知 op 拒绝、launch 原样转发、站点开关关闭时同站点请求被后台拒绝、内容脚本按开关注入/移除、面板状态与主题同步（含桌面端没开时由 host 读配置给出的总闸）、打开即用缓存主题且不等回执、回执后回写缓存、主按钮恒为「启动 Sookit」、面板不含底部提示小字、标题栏转圈、页面小窗在右上角/发出即弹/loading 与 success 与 error 三态、成功 2 秒收起、失败常驻到点关闭、站点开关读写 storage。
 `tests/test_browser_bridge.py` 覆盖：控制动作不带 URL 且通道范围限制（本机通道拒 launch、host 拒 activate）、status 不 Popen 且总闸/主题色由 host 读配置（读不出来回 `None`）、status 原样转发 GUI 回执、launch 已连不重启而是叫 GUI 唤窗、launch 冷启动不带 `--silent` 并轮询到绑定、本机通道 status/activate 派发与 launch 拒绝。
 
 针对性命令：`node --test tests/test_browser_extension.cjs`；`uv run --no-sync python -X utf8 -m unittest discover -s tests -p test_browser_bridge.py -v`。

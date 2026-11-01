@@ -112,23 +112,81 @@
   stroke-linejoin: round;
 }
 #sookit-action-menu[hidden] { display: none; }
+/* 动作提示小窗：页面右上角，浅色卡片，风格对齐 Sookit 桌面端。 */
 #sookit-feedback {
   position: fixed;
-  bottom: 28px;
-  left: 50%;
-  transform: translateX(-50%);
+  top: 16px;
+  right: 16px;
   z-index: 2147483647;
-  max-width: min(560px, calc(100vw - 48px));
-  padding: 12px 20px;
-  border-radius: 8px;
-  background: #212121;
-  color: #fff;
-  box-shadow: 0 4px 20px #0003;
-  font: 14px/1.5 'Roboto', 'Arial', sans-serif;
-  pointer-events: none;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: min(300px, calc(100vw - 32px));
+  max-width: min(440px, calc(100vw - 32px));
+  padding: 16px 12px 16px 18px;
+  border: 1px solid #0000001a;
+  border-left: 4px solid #3a9b8a;
+  border-radius: 10px;
+  background: #fffffffa;
+  color: #1a1a1a;
+  box-shadow: 0 14px 40px #0000002e;
+  font: 15px/1.5 'Microsoft YaHei UI', 'Microsoft YaHei', system-ui, sans-serif;
+  font-weight: 500;
+  animation: sookit-feedback-in 0.18s ease-out;
 }
-#sookit-feedback[data-error='true'] { background: #8c2020; }
+#sookit-feedback[data-state='error'] { border-left-color: #c4473f; }
 #sookit-feedback[hidden] { display: none; }
+
+/* 等待态转圈：与面板标题栏的 spinner 同一套参数。 */
+#sookit-feedback .sookit-feedback-spinner {
+  display: none;
+  flex: none;
+  box-sizing: border-box;
+  width: 16px;
+  height: 16px;
+  border: 2px solid #3a9b8a3d;
+  border-top-color: #3a9b8a;
+  border-radius: 50%;
+  animation: sookit-feedback-spin 0.7s linear infinite;
+}
+#sookit-feedback[data-state='loading'] .sookit-feedback-spinner { display: block; }
+#sookit-feedback[data-state='loading'] .sookit-feedback-text { color: #606060; }
+
+#sookit-feedback .sookit-feedback-text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+#sookit-feedback .sookit-feedback-close {
+  flex: none;
+  box-sizing: border-box;
+  width: 28px;
+  height: 28px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: #888888;
+  font: 20px/1 'Microsoft YaHei UI', 'Microsoft YaHei', system-ui, sans-serif;
+  cursor: pointer;
+}
+#sookit-feedback .sookit-feedback-close:hover { background: #0000000f; color: #1a1a1a; }
+#sookit-feedback .sookit-feedback-close:focus-visible { outline: 2px solid #3a9b8a; outline-offset: 1px; }
+
+@keyframes sookit-feedback-in {
+  from {
+    opacity: 0;
+    transform: translateX(8px);
+  }
+}
+
+@keyframes sookit-feedback-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
 
 button.sookit-x-button {
   box-sizing: border-box;

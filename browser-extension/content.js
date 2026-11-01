@@ -6,17 +6,17 @@
   document.head.append(marker);
   const actions = [
     {id: 'sniff', label: '嗅探视频', icon: 'M21 21l-5-5M18 10a8 8 0 1 1-16 0 8 8 0 0 1 16 0Z',
-      message: 'Sookit 已在后台开始嗅探，完成后会发送系统通知'},
+      pending: '正在嗅探视频…', message: 'Sookit 已在后台开始嗅探，完成后会发送系统通知'},
     {id: 'download_best', label: '下载最佳画质', icon: 'M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5',
-      message: '最佳画质下载已加入 Sookit 任务队列'},
+      pending: '正在解析最佳画质…', message: '最佳画质下载已加入 Sookit 任务队列'},
     {id: 'download_cover', label: '下载最佳封面', icon: 'M3 3h18v18H3ZM3 17l6-6 4 4 3-3 5 5M8 7h.01',
-      message: '封面下载已开始；高分辨率不可用时会自动尝试下一档，完成后请查看 Sookit'}
+      pending: '正在解析封面…', message: '封面下载已开始'}
   ];
   const xActions = [
     actions[0],
     actions[1],
     {id: 'parse_gif', label: '解析动图', icon: 'M4 4h16v16H4zM9 8l6 4-6 4z',
-      message: '已在 Sookit 动图页开始解析'}
+      pending: '正在解析动图…', message: '已在 Sookit 动图页开始解析'}
   ];
   const xHosts = new Set(['x.com', 'www.x.com', 'twitter.com', 'www.twitter.com']);
   let button;
@@ -25,6 +25,7 @@
   let pageUrl = currentVideoUrl();
   let pageGeneration = 0;
   let feedback;
+  let feedbackText;
   let busy = false;
   let scheduled = false;
   let feedbackTimer;
@@ -242,19 +243,44 @@
     return fullyVisible.length === 1 ? fullyVisible[0].actionBar : null;
   }
 
-  function tell(text, error = false) {
-    if (!feedback) {
-      feedback = document.createElement('div');
-      feedback.id = 'sookit-feedback';
-      feedback.setAttribute('role', 'status');
-      feedback.setAttribute('aria-live', 'polite');
-      document.body.append(feedback);
-    }
-    feedback.textContent = text;
-    feedback.dataset.error = String(error);
-    feedback.hidden = false;
+  function hideFeedback() {
     clearTimeout(feedbackTimer);
-    feedbackTimer = setTimeout(() => { feedback.hidden = true; }, error ? 7000 : 4000);
+    if (feedback) feedback.hidden = true;
+  }
+
+  // 右上角小窗：loading 等结果，成功两秒后自动收起，失败常驻到用户关闭。
+  function ensureFeedback() {
+    if (feedback) return feedback;
+    feedback = document.createElement('div');
+    feedback.id = 'sookit-feedback';
+    feedback.setAttribute('role', 'status');
+    feedback.setAttribute('aria-live', 'polite');
+    const spinner = document.createElement('span');
+    spinner.className = 'sookit-feedback-spinner';
+    spinner.setAttribute('aria-hidden', 'true');
+    feedbackText = document.createElement('span');
+    feedbackText.className = 'sookit-feedback-text';
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.className = 'sookit-feedback-close';
+    close.setAttribute('aria-label', '关闭提示');
+    close.textContent = '\u00d7';
+    close.addEventListener('click', hideFeedback);
+    feedback.append(spinner, feedbackText, close);
+    document.body.append(feedback);
+    return feedback;
+  }
+
+  function tell(text, state = 'success') {
+    const element = ensureFeedback();
+    element.dataset.state = state;
+    feedbackText.textContent = text;
+    element.hidden = false;
+    clearTimeout(feedbackTimer);
+    // 成功只停留两秒；进行中和失败都常驻，由关闭按钮或下一条指令收走。
+    if (state === 'success') {
+      feedbackTimer = setTimeout(hideFeedback, 2000);
+    }
   }
 
   function closeMenu(restoreFocus = false) {
@@ -296,6 +322,7 @@
     button.disabled = true;
     button.setAttribute('aria-busy', 'true');
     button.title = '正在发送到 Sookit…';
+    tell(action.pending || '正在发送到 Sookit…', 'loading');
     try {
       const message = {action: action.id, url};
       if (action.id === 'download_best' || action.id === 'download_cover') {
@@ -308,10 +335,12 @@
       tell(response.message || action.message);
     } catch (error) {
       if (currentVideoUrl() === url && generation === pageGeneration) {
-        tell(error.message || '无法连接 Sookit，请刷新页面后重试', true);
+        tell(error.message || '无法连接 Sookit，请刷新页面后重试', 'error');
       }
     } finally {
       busy = false;
+      // 页面切走等没有结果的路径，别把小窗留在 loading 上。
+      if (feedback?.dataset.state === 'loading') hideFeedback();
       if (button) {
         button.disabled = false;
         button.removeAttribute('aria-busy');
@@ -496,6 +525,7 @@
     trigger.disabled = true;
     trigger.setAttribute('aria-busy', 'true');
     trigger.title = '正在发送到 Sookit…';
+    tell(action.pending || '正在发送到 Sookit…', 'loading');
     try {
       const message = {action: action.id, url};
       if (action.id === 'download_best') {
@@ -507,9 +537,10 @@
       if (!response?.ok) throw new Error(response?.error || 'Sookit 未确认接收请求');
       tell(response.message || action.message);
     } catch (error) {
-      if (stillCurrent()) tell(error.message || '无法连接 Sookit，请刷新页面后重试', true);
+      if (stillCurrent()) tell(error.message || '无法连接 Sookit，请刷新页面后重试', 'error');
     } finally {
       busy = false;
+      if (feedback?.dataset.state === 'loading') hideFeedback();
       if (trigger.isConnected) {
         trigger.disabled = false;
         trigger.removeAttribute('aria-busy');

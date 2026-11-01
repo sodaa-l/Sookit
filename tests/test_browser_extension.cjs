@@ -287,7 +287,12 @@ function page(sendMessage = async () => ({ok: true, message: '已在后台开始
   vm.runInContext(source, context);
   const flush = () => { for (const fn of frames.splice(0)) fn(); };
   flush();
-  return {document, requests, flush, frames, rect, window, reels, observerConfigs,
+  const tick = () => {
+    const entries = [...timers.entries()];
+    timers.clear();
+    for (const [, callback] of entries) callback();
+  };
+  return {document, requests, flush, frames, rect, window, reels, observerConfigs, timers, tick,
     activateReel(index, url) {
       if (options.structure === 'legacy') {
         for (const reel of reels) reel.renderer.removeAttribute('is-active');
@@ -332,6 +337,7 @@ function page(sendMessage = async () => ({ok: true, message: '已在后台开始
     },
     get button() { return document.getElementById('sookit-sniff-button'); },
     get feedback() { return document.getElementById('sookit-feedback'); },
+    get feedbackMessage() { return this.feedback?.children[1]?.textContent; },
     mutate(target, attributeName) {
       const records = target ? [{type: 'attributes', target, attributeName}]
         : [{type: 'childList', target: body}];
@@ -397,7 +403,8 @@ test('现代 Shorts 操作栏按视频身份切换，传递当前视频并清理
 
   finishFirst({ok: true, message: '旧视频的回执'});
   await oldRequest;
-  assert.equal(site.feedback, undefined);
+  // 旧视频的回执被丢弃：等待中的小窗也跟着收走，不能留在页面上。
+  assert.equal(site.feedback.hidden, true);
   await site.choose('sniff');
   assert.deepEqual(site.requests.map(request => request.url), [URL_A, URL_B]);
   site.navigate(URL_A);
@@ -536,8 +543,8 @@ test('点击只展开三项菜单，选择后发送且等待时不重复提交',
   finish({ok: true, message: '后台嗅探已启动'});
   await first;
   assert.equal(button.disabled, false);
-  assert.equal(site.feedback.textContent, '后台嗅探已启动');
-  assert.equal(site.feedback.dataset.error, 'false');
+  assert.equal(site.feedbackMessage, '后台嗅探已启动');
+  assert.equal(site.feedback.dataset.state, 'success');
 });
 
 test('三种菜单选项分别传递动作和当前视频，不提前嗅探', async () => {
@@ -548,7 +555,7 @@ test('三种菜单选项分别传递动作和当前视频，不提前嗅探', as
     assert.equal(site.requests.at(-1).url, URL_A);
   }
   assert.equal(site.requests.length, 3);
-  assert.match(site.feedback.textContent, /封面下载/);
+  assert.match(site.feedbackMessage, /封面下载/);
 });
 
 test('YouTube 站内导航关闭菜单，使用新链接并在离开视频页时移除按钮', async () => {
@@ -578,7 +585,7 @@ test('从首页进入视频再切换视频，页面菜单与后台按当前链�
     site.navigate(url);
     for (const action of ['sniff', 'download_best', 'download_cover']) {
       await site.choose(action);
-      assert.equal(site.feedback.dataset.error, 'false');
+      assert.equal(site.feedback.dataset.state, 'success');
       assert.equal(bridge.calls.at(-1).request.url, url);
       assert.equal(bridge.calls.at(-1).request.action, action);
     }
@@ -595,7 +602,7 @@ test('切换视频后抛弃旧回执，返回同一视频也不会显示过期�
     if (returnToOriginal) site.navigate(URL_A);
     finish({ok: true, message: '旧视频的回执'});
     await sent;
-    assert.equal(site.feedback, undefined);
+    assert.equal(site.feedback.hidden, true);
     assert.equal(site.button.disabled, false);
   }
 });
@@ -603,8 +610,8 @@ test('切换视频后抛弃旧回执，返回同一视频也不会显示过期�
 test('连接失败显示错误，恢复按钮并允许重试', async () => {
   const site = page(async () => { throw new Error('本机桥接未注册'); });
   await site.choose();
-  assert.equal(site.feedback.dataset.error, 'true');
-  assert.match(site.feedback.textContent, /未注册/);
+  assert.equal(site.feedback.dataset.state, 'error');
+  assert.match(site.feedbackMessage, /未注册/);
   assert.equal(site.button.disabled, false);
   await site.choose('download_best');
   assert.equal(site.requests.length, 2);
@@ -727,28 +734,40 @@ test('站点开关关闭时不注入按钮，改回开启后立即补挂', () =>
   assert.equal(site.button, undefined);
 });
 
-function popupView(response, sites = null) {
+function popupView(response, sites = null, options = {}) {
   const elements = new Map();
   const messages = [];
+  const pending = [];
   const accent = {};
   const documentElement = {dataset: {}, style: {setProperty(name, value) { accent[name] = value; }}};
   const stored = sites ? {sookitSites: {...sites}} : {};
+  if (options.theme) stored.sookitTheme = {...options.theme};
   for (const id of ['status', 'status-text', 'toggle-youtube', 'toggle-x', 'master-value', 'primary']) {
     elements.set(id, {id, dataset: {}, checked: true, disabled: false, textContent: '',
       listeners: {}, addEventListener(name, listener) { this.listeners[name] = listener; }});
   }
+  const body = {dataset: {}};
   const context = vm.createContext({
-    document: {documentElement, getElementById: id => elements.get(id) || null},
+    document: {documentElement, body, getElementById: id => elements.get(id) || null},
     chrome: {
       storage: {local: {
         async get(key) { return key in stored ? {[key]: stored[key]} : {}; },
         async set(values) { Object.assign(stored, values); }
       }},
-      runtime: {lastError: null, sendMessage(message, reply) { messages.push(message); reply(response); }}
+      runtime: {lastError: null, sendMessage(message, reply) {
+        messages.push(message);
+        if (options.holdStatus && message.op === 'status') return;
+        if (options.holdLaunch && message.op === 'launch') {
+          pending.push(reply);
+          return;
+        }
+        reply(response);
+      }}
     }
   });
   vm.runInContext(fs.readFileSync(path.join(extension, 'popup.js'), 'utf8'), context);
-  return {elements, messages, stored, documentElement, accent};
+  return {elements, messages, stored, documentElement, accent, body,
+    replyLaunch(reply) { pending.shift()(reply); }};
 }
 
 const settle = async () => { for (let i = 0; i < 8; i += 1) await Promise.resolve(); };
@@ -808,6 +827,109 @@ test('桥接未注册时才算未连接，且主按钮不可点', async () => {
   assert.equal(missing.elements.get('master-value').textContent, '未知');
   assert.equal(missing.elements.get('primary').textContent, '启动 Sookit');
   assert.equal(missing.elements.get('primary').disabled, true);
+});
+
+test('拉起 Sookit 时标题栏转圈，主按钮文字保持不变', async () => {
+  const view = popupView(
+    {ok: false, code: 'offline', error: 'Sookit 未运行', enabled: true}, null, {holdLaunch: true});
+  await settle();
+  assert.equal(view.elements.get('status-text').textContent, '已连接');
+  view.elements.get('primary').listeners.click();
+  await settle();
+  assert.equal(view.elements.get('status').dataset.state, 'busy');
+  assert.equal(view.elements.get('status-text').textContent, '正在启动…');
+  assert.equal(view.elements.get('primary').textContent, '启动 Sookit');
+  assert.equal(view.elements.get('primary').disabled, true);
+  view.replyLaunch({ok: false, error: 'Sookit 连接失败：boom'});
+  await settle();
+  assert.equal(view.elements.get('status').dataset.state, 'offline');
+  assert.equal(view.elements.get('status-text').textContent, '启动失败');
+  assert.equal(view.elements.get('primary').disabled, false);
+});
+
+test('面板打开先用上次记住的主题，不等状态回执', async () => {
+  const view = popupView({ok: true, enabled: true, theme_color: '#0098ff', dark: true},
+    null, {holdStatus: true, theme: {color: '#0098ff', dark: true}});
+  await settle();
+  assert.equal(view.accent['--accent'], '#0098ff');
+  assert.equal(view.documentElement.dataset.theme, 'dark');
+  assert.equal(view.body.dataset.ready, 'true');
+  assert.equal(view.elements.get('status-text').textContent, '连接中…');
+});
+
+test('状态回执到达后记住主题，下次打开直接用', async () => {
+  const view = popupView({ok: true, enabled: true, theme_color: '#0098ff', dark: true});
+  await settle();
+  assert.equal(view.stored.sookitTheme.color, '#0098ff');
+  assert.equal(view.stored.sookitTheme.dark, true);
+});
+
+test('主题读到之前不画内容，避免先默认色再突然变色', () => {
+  const css = fs.readFileSync(path.join(extension, 'popup.css'), 'utf8');
+  assert.match(css, /body \{[^}]*opacity: 0;/);
+  assert.match(css, /body\[data-ready='true'\] \{\s*opacity: 1;\s*\}/);
+});
+
+test('标题栏带转圈占位符，供进行中的操作显示', () => {
+  const html = fs.readFileSync(path.join(extension, 'popup.html'), 'utf8');
+  assert.match(html, /class="spinner"/);
+});
+
+test('指令发出立即在页面右上角弹出带转圈和关闭按钮的小窗', () => {
+  let finish;
+  const site = page(() => new Promise(resolve => { finish = resolve; }));
+  site.button.events.click();
+  const item = site.menu.children.find(child => child.dataset.action === 'sniff');
+  const pending = item.events.click();
+  const feedback = site.feedback;
+  assert.ok(feedback);
+  assert.equal(feedback.hidden, false);
+  assert.equal(feedback.dataset.state, 'loading');
+  assert.equal(feedback.children[0].className, 'sookit-feedback-spinner');
+  assert.equal(feedback.children[1].textContent, '正在嗅探视频…');
+  assert.equal(feedback.children[2].className, 'sookit-feedback-close');
+  finish({ok: true, message: '已在后台开始嗅探'});
+  return pending;
+});
+
+test('成功提示两秒后自动收起', async () => {
+  const site = page();
+  await site.choose('sniff');
+  const feedback = site.feedback;
+  assert.equal(feedback.dataset.state, 'success');
+  assert.equal(feedback.children[1].textContent, '已在后台开始嗅探');
+  assert.equal(feedback.hidden, false);
+  site.tick();
+  assert.equal(feedback.hidden, true);
+});
+
+test('失败提示常驻，点关闭按钮才收起', async () => {
+  const site = page(async () => ({ok: false, error: '该站点的 Sookit 按钮已在扩展设置中关闭'}));
+  await site.choose('sniff');
+  const feedback = site.feedback;
+  assert.equal(feedback.dataset.state, 'error');
+  assert.equal(feedback.children[1].textContent, '该站点的 Sookit 按钮已在扩展设置中关闭');
+  site.tick();
+  assert.equal(feedback.hidden, false);
+  feedback.children[2].events.click();
+  assert.equal(feedback.hidden, true);
+});
+
+test('小窗样式对齐 Sookit：右上角、转圈、关闭按钮', () => {
+  const css = fs.readFileSync(path.join(extension, 'content.css'), 'utf8');
+  const block = css.slice(css.indexOf('#sookit-feedback {'));
+  assert.match(block, /position: fixed;/);
+  assert.match(block, /top: 16px;/);
+  assert.match(block, /right: 16px;/);
+  assert.match(block, /border-radius: 10px;/);
+  assert.match(block, /background: #ffffff/);
+  assert.match(block, /min-width: min\(300px/);
+  assert.match(block, /font: 15px\/1.5/);
+  assert.match(css, /\.sookit-feedback-spinner \{[^}]*animation: sookit-feedback-spin/);
+  assert.match(css, /#sookit-feedback\[data-state='loading'\] \.sookit-feedback-spinner \{ display: block; \}/);
+  assert.match(css, /\.sookit-feedback-close \{/);
+  const script = fs.readFileSync(path.join(extension, 'content.js'), 'utf8');
+  assert.match(script, /tell\(action\.pending \|\| '正在发送到 Sookit…', 'loading'\);/);
 });
 
 test('面板不再有底部小字提示', () => {

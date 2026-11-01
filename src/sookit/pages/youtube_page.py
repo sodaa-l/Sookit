@@ -718,7 +718,7 @@ class YouTubePage(PageBase):
         filename = f'{filename_base}_cover{self._cover_extension(cover_urls[0])}'
         path = self._next_cover_download_path(out_dir, filename)
         self._start_cover_download(cover_urls, path, display_metadata=cover_metadata)
-        return {'ok': True, 'message': '封面下载已开始；高分辨率不可用时会自动尝试下一档，完成后请查看 Sookit'}
+        return {'ok': True, 'message': '封面下载已开始'}
 
     def do_sniff(self):
         self._invalidate_subtitles()
