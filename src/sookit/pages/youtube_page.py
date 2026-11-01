@@ -639,9 +639,9 @@ class YouTubePage(PageBase):
         """浏览器下载使用自己的 URL；最佳画质入队，封面直接走专用下载线程。"""
         from sookit.core.browser_protocol import MAX_VIDEO_DURATION_SECONDS, normalize_browser_url
         from sookit.core.browser_downloads import BEST_VIDEO_FORMAT
-        url = normalize_browser_url(url, action)
         if action not in ('download_best', 'download_cover'):
             return {'ok': False, 'error': '不支持的浏览器下载请求'}
+        url = normalize_browser_url(url, action)
 
         out_dir = self.read_path(self.out_dir) or DEFAULT_OUTPUT_DIR
         video_id = extract_youtube_id(url)

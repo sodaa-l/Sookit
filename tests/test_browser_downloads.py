@@ -32,6 +32,7 @@ class BrowserDownloadDispatchTests(unittest.TestCase):
                                url_input=MagicMock(), do_sniff=MagicMock(),
                                _cover_download_workers=set())
         page._cover_extension = YouTubePage._cover_extension
+        page._cover_filename_base = YouTubePage._cover_filename_base
         page._next_cover_download_path = functools.partial(
             YouTubePage._next_cover_download_path, page)
         page._start_cover_download = MagicMock()
