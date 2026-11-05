@@ -1,4 +1,4 @@
-"""只读检查浏览器扩展资源与 Chrome Native Messaging 注册。"""
+"""检查浏览器扩展资源，并按用户操作修复 Chrome Native Messaging 注册。"""
 import base64
 import hashlib
 import json
@@ -266,6 +266,37 @@ def _source_launch_issues(config_path: Path) -> list[str]:
     return issues
 
 
+def _local_component_issues(extension_dir: Path, manifest_path: Path, *, frozen: bool) -> list[str]:
+    expected_host = _expected_host_executable(manifest_path, frozen=frozen)
+    issues = _extension_manifest_issues(extension_dir)
+    issues.extend(_host_manifest_issues(str(manifest_path), expected_host=expected_host))
+    if not frozen:
+        issues.extend(_source_launch_issues(expected_host.with_name('source-launch.json')))
+    return issues
+
+
+def repair_browser_registration(*, frozen=None, executable=None, project_root=None) -> None:
+    """将当前布局的有效清单注册到 HKCU，不提权、不修改 HKLM 或安装文件。"""
+    runtime_frozen = getattr(sys, 'frozen', False) if frozen is None else frozen
+    extension_dir = get_extension_dir(
+        frozen=runtime_frozen, executable=executable, project_root=project_root)
+    manifest_path = get_expected_host_manifest(
+        frozen=runtime_frozen, executable=executable, project_root=project_root)
+    issues = _local_component_issues(extension_dir, manifest_path, frozen=bool(runtime_frozen))
+    if issues:
+        raise RuntimeError("当前组件文件不完整，无法修复注册：" + "；".join(issues))
+
+    import winreg
+
+    # HKCU\Software\Google 在 32/64 位进程间共享，只需覆盖当前用户的这一个值。
+    key = winreg.CreateKeyEx(
+        winreg.HKEY_CURRENT_USER, REGISTRY_KEY, 0, winreg.KEY_SET_VALUE)
+    try:
+        winreg.SetValueEx(key, '', 0, winreg.REG_SZ, str(manifest_path))
+    finally:
+        winreg.CloseKey(key)
+
+
 def diagnose_browser_components(*, registry_entries=None, frozen=None, executable=None,
                                 project_root=None) -> dict:
     """检查本地扩展、host 清单/程序及当前安装形态的只读注册路径。"""
@@ -275,10 +306,9 @@ def diagnose_browser_components(*, registry_entries=None, frozen=None, executabl
     expected_manifest = get_expected_host_manifest(
         frozen=runtime_frozen, executable=executable, project_root=project_root)
     expected_host = _expected_host_executable(expected_manifest, frozen=bool(runtime_frozen))
-    issues = _extension_manifest_issues(extension_dir)
-    if not runtime_frozen:
-        source_config = expected_host.with_name('source-launch.json')
-        issues.extend(_source_launch_issues(source_config))
+    local_issues = _local_component_issues(
+        extension_dir, expected_manifest, frozen=bool(runtime_frozen))
+    issues = list(local_issues)
 
     try:
         entries = read_registry_entries() if registry_entries is None else registry_entries
@@ -328,14 +358,15 @@ def diagnose_browser_components(*, registry_entries=None, frozen=None, executabl
         if hkcu_entries and hklm_entries:
             issues.append('HKCU 注册项优先于 HKLM，可能遮蔽安装版桥接')
 
-    manifests_to_check = {str(expected_manifest)}
-    manifests_to_check.update(entry['manifest_path'] for entry in preferred_entries)
+    manifests_to_check = {entry['manifest_path'] for entry in preferred_entries
+                          if _normalized_path(entry['manifest_path']) != current_key}
     for manifest_path in sorted(manifests_to_check, key=_normalized_path):
         issues.extend(_host_manifest_issues(
             manifest_path, expected_host=expected_host))
 
     return {
         'ok': not issues,
+        'can_repair': bool(issues) and not local_issues,
         'issues': issues,
         'extension_dir': str(extension_dir),
         'expected_manifest': str(expected_manifest),

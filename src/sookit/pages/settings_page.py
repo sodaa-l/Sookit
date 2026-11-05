@@ -40,7 +40,7 @@ from sookit.core.config import (
     load_browser_extension_enabled, save_browser_extension_enabled,
 )
 from sookit.core.browser_diagnostics import (
-    diagnose_browser_components, get_extension_dir,
+    diagnose_browser_components, get_extension_dir, repair_browser_registration,
 )
 from sookit.core.utils import set_smooth_scroll_params
 from sookit import APP_NAME, APP_VERSION
@@ -470,10 +470,6 @@ class SettingsPage(QWidget):
             "此开关只控制 Sookit 是否接收请求；扩展自身启停由 Chrome 管理。")
         browser_toggle_row.addWidget(self.browser_extension_switch)
         browser_toggle_lay.addLayout(browser_toggle_row)
-        self.browser_extension_paused_label = qfw.BodyLabel(
-            "已暂停接收浏览器请求，可随时重新开启")
-        self.browser_extension_paused_label.setVisible(not self._browser_extension_enabled)
-        browser_toggle_lay.addWidget(self.browser_extension_paused_label)
         self.browser_extension_config_error_label = qfw.BodyLabel(
             f"无法读取浏览器扩展开关，已按关闭处理：{self._browser_extension_load_error}"
             if self._browser_extension_load_error else "")
@@ -659,7 +655,10 @@ class SettingsPage(QWidget):
         browser_components_row = QHBoxLayout()
         self.browser_components_status = qfw.BodyLabel("正在检查本机组件…")
         browser_components_row.addWidget(self.browser_components_status, 1)
-        self.browser_components_refresh_button = qfw.PrimaryPushButton("重新检查")
+        self.browser_components_repair_button = qfw.PrimaryPushButton("修复")
+        self.browser_components_repair_button.setVisible(False)
+        browser_components_row.addWidget(self.browser_components_repair_button)
+        self.browser_components_refresh_button = qfw.PushButton("重新检查")
         browser_components_row.addWidget(self.browser_components_refresh_button)
         browser_components_lay.addLayout(browser_components_row)
         self.browser_components_details = qfw.BodyLabel("")
@@ -846,6 +845,8 @@ class SettingsPage(QWidget):
         self.browser_copy_folder_button.clicked.connect(self._copy_browser_extension_path)
         self.browser_components_refresh_button.clicked.connect(
             self._refresh_browser_components)
+        self.browser_components_repair_button.clicked.connect(
+            self._repair_browser_components)
         # 检查更新按钮信号连接
         self.check_update_btn.clicked.connect(self._on_check_update)
 
@@ -910,7 +911,6 @@ class SettingsPage(QWidget):
 
         self._browser_extension_enabled = checked
         self._browser_extension_load_error = None
-        self.browser_extension_paused_label.setVisible(not checked)
         self.browser_extension_config_error_label.clear()
         self.browser_extension_config_error_label.setVisible(False)
 
@@ -965,16 +965,46 @@ class SettingsPage(QWidget):
         except Exception as exc:
             result = {"ok": False, "issues": [f"检查本机组件失败：{exc}"]}
 
+        self._browser_components_result = result
+        self.browser_components_repair_button.setVisible(bool(result.get("can_repair")))
         issues = list(dict.fromkeys(result.get("issues", [])))
         if result.get("ok") and not issues:
             self.browser_components_status.setText("扩展文件完整 · 浏览器桥接正常")
+            self.browser_components_status.setToolTip("")
             self.browser_components_details.clear()
             self.browser_components_details.setVisible(False)
             return
 
-        self.browser_components_status.setText("本机组件需要处理")
-        self.browser_components_details.setText("\n".join(f"• {issue}" for issue in issues))
-        self.browser_components_details.setVisible(True)
+        self.browser_components_status.setText(
+            "浏览器桥接需要修复" if result.get("can_repair") else "本机组件需要处理")
+        self.browser_components_status.setToolTip("\n".join(issues))
+        self.browser_components_details.setText(
+            "" if result.get("can_repair") else "组件文件不完整或检查失败，请尝试重新安装 Sookit。")
+        self.browser_components_details.setVisible(not result.get("can_repair", False))
+
+    def _repair_browser_components(self):
+        """点击即修复当前用户注册，复查通过后再报告成功。"""
+        self.browser_components_repair_button.setEnabled(False)
+        self.browser_components_refresh_button.setEnabled(False)
+        self.browser_components_repair_button.setText("修复中…")
+        error = None
+        try:
+            repair_browser_registration()
+        except Exception as exc:
+            error = str(exc)
+        finally:
+            self._refresh_browser_components()
+            self.browser_components_repair_button.setText("修复")
+            self.browser_components_repair_button.setEnabled(True)
+            self.browser_components_refresh_button.setEnabled(True)
+
+        if error is None and self._browser_components_result.get("ok"):
+            show_infobar(self, "success", title="修复成功", content="浏览器桥接已修复。")
+        else:
+            if error:
+                self.browser_components_status.setToolTip(error)
+            show_infobar(self, "error", title="修复失败",
+                         content="请重试，仍无法修复时请重新安装 Sookit。")
 
     # ========== 安装引导与本机组件诊断 ==========
 

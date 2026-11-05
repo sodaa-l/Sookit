@@ -18,7 +18,7 @@ from sookit import native_host
 from sookit.core import config
 from sookit.core.browser_diagnostics import (
     REGISTRY_KEY, diagnose_browser_components, get_expected_host_manifest,
-    get_extension_dir, read_registry_entries,
+    get_extension_dir, read_registry_entries, repair_browser_registration,
 )
 from sookit.core.browser_protocol import EXTENSION_ORIGIN, HOST_NAME
 from sookit.main_window import MainWindow
@@ -387,6 +387,115 @@ class BrowserDiagnosticsTests(unittest.TestCase):
                          '缺少 background.service_worker', '缺少有效的 content_scripts'):
             self.assertTrue(any(expected in issue for issue in result['issues']), expected)
 
+    def _fake_registry(self, entries=None):
+        fake = SimpleNamespace(
+            HKEY_CURRENT_USER='HKCU', HKEY_LOCAL_MACHINE='HKLM',
+            KEY_READ=0x20019, KEY_SET_VALUE=0x0002,
+            KEY_WOW64_32KEY=0x0200, KEY_WOW64_64KEY=0x0100, REG_SZ=1,
+        )
+        values = dict(entries or {})
+
+        def handle(root, key, reserved, access):
+            self.assertEqual(key, REGISTRY_KEY)
+            # HKCU\Software\Google is shared; HKLM\Software is redirected.
+            return root, 0 if root == 'HKCU' else (access & 0x0300) or 0x0100
+
+        def query(key, name):
+            if key not in values:
+                raise FileNotFoundError()
+            return values[key], fake.REG_SZ
+
+        def write(key, name, reserved, kind, value):
+            self.assertEqual(key[0], 'HKCU')  # never touch machine registration
+            self.assertEqual((name, reserved, kind), ('', 0, fake.REG_SZ))
+            values[key] = value
+
+        def open_key(root, key, reserved, access):
+            result = handle(root, key, reserved, access)
+            if result not in values:
+                raise FileNotFoundError()
+            return result
+
+        fake.OpenKey = open_key
+        fake.QueryValueEx = query
+        fake.CreateKeyEx = MagicMock(side_effect=handle)
+        fake.SetValueEx = MagicMock(side_effect=write)
+        fake.CloseKey = MagicMock()
+        fake.values = values
+        return fake
+
+    def test_repair_replaces_stale_user_registration_for_each_layout(self):
+        for frozen in (False, True):
+            with self.subTest(frozen=frozen):
+                root = self.root / ('install' if frozen else 'source')
+                self._extension(root / 'browser-extension')
+                executable = root / 'Sookit.exe'
+                expected = get_expected_host_manifest(
+                    frozen=frozen, executable=executable, project_root=root)
+                self._host_manifest(expected, host_relative=None if frozen else
+                                    Path('sookit-native-host') / 'sookit-native-host.exe')
+                if not frozen:
+                    self._source_launch_config(
+                        expected.parent / 'sookit-native-host' / 'sookit-native-host.exe')
+                stale = str(self.root / 'old-dev' / f'{HOST_NAME}.json')
+                fake = self._fake_registry({
+                    ('HKCU', 0): stale,
+                    ('HKLM', 0x0200): stale,
+                    ('HKLM', 0x0100): str(expected),
+                })
+                options = dict(frozen=frozen, executable=executable, project_root=root)
+                with patch.dict(sys.modules, {'winreg': fake}):
+                    before = diagnose_browser_components(**options)
+                    self.assertFalse(before['ok'])
+                    self.assertTrue(before['can_repair'])
+                    repair_browser_registration(**options)
+                    after = diagnose_browser_components(**options)
+                self.assertTrue(after['ok'], after['issues'])
+                self.assertFalse(after['can_repair'])
+                self.assertEqual(fake.values[('HKCU', 0)], str(expected))
+                fake.CreateKeyEx.assert_called_once_with(
+                    'HKCU', REGISTRY_KEY, 0, fake.KEY_SET_VALUE)
+                self.assertEqual(fake.values[('HKLM', 0x0200)], stale)
+                self.assertEqual(fake.values[('HKLM', 0x0100)], str(expected))
+
+    def test_repair_can_register_missing_key(self):
+        self._extension(self.root / 'browser-extension')
+        expected = self._host_manifest(self.root / f'{HOST_NAME}.json')
+        fake = self._fake_registry()
+        with patch.dict(sys.modules, {'winreg': fake}):
+            repair_browser_registration(frozen=True, executable=self.root / 'Sookit.exe')
+        self.assertEqual(list(fake.values.values()), [str(expected)])
+        self.assertEqual(fake.CreateKeyEx.call_count, 1)
+
+    def test_repair_refuses_missing_or_invalid_files_without_writing_registry(self):
+        self._extension(self.root / 'browser-extension')
+        expected = self._host_manifest(self.root / f'{HOST_NAME}.json')
+        host = expected.parent / 'sookit-native-host.exe'
+        for broken in ('missing_host', 'wrong_origin'):
+            with self.subTest(broken=broken):
+                self._host_manifest(expected, origin='wrong' if broken == 'wrong_origin'
+                                    else EXTENSION_ORIGIN)
+                if broken == 'missing_host':
+                    host.unlink()
+                fake = self._fake_registry()
+                with patch.dict(sys.modules, {'winreg': fake}):
+                    options = dict(frozen=True, executable=self.root / 'Sookit.exe')
+                    result = diagnose_browser_components(**options)
+                    self.assertFalse(result['can_repair'])
+                    with self.assertRaisesRegex(RuntimeError, '组件文件不完整'):
+                        repair_browser_registration(**options)
+                fake.CreateKeyEx.assert_not_called()
+
+    def test_registry_write_failure_propagates_and_closes_open_handle(self):
+        self._extension(self.root / 'browser-extension')
+        self._host_manifest(self.root / f'{HOST_NAME}.json')
+        fake = self._fake_registry()
+        fake.SetValueEx.side_effect = PermissionError('access denied')
+        with patch.dict(sys.modules, {'winreg': fake}):
+            with self.assertRaises(PermissionError):
+                repair_browser_registration(frozen=True, executable=self.root / 'Sookit.exe')
+        fake.CloseKey.assert_called_once()
+
     def test_registry_reader_enumerates_both_hives_and_all_views_read_only(self):
         class FakeWinreg:
             HKEY_CURRENT_USER = object()
@@ -443,6 +552,50 @@ class BrowserSettingsUiTests(unittest.TestCase):
 
         self.addCleanup(cleanup_page)
         return page
+
+    def test_registration_problem_shows_direct_repair_and_success_hides_it(self):
+        page = self._page()
+        broken = {'ok': False, 'can_repair': True, 'issues': ['HKCU stale developer path']}
+        with patch('sookit.pages.settings_page.diagnose_browser_components', return_value=broken):
+            page._refresh_browser_components()
+        self.assertFalse(page.browser_components_repair_button.isHidden())
+        self.assertEqual(page.browser_components_status.text(), '浏览器桥接需要修复')
+        self.assertTrue(page.browser_components_details.isHidden())
+        with patch('sookit.pages.settings_page.repair_browser_registration') as repair, \
+                patch('sookit.pages.settings_page.diagnose_browser_components',
+                      return_value={'ok': True, 'issues': []}) as diagnose, \
+                patch('sookit.pages.settings_page.show_infobar') as info:
+            page.browser_components_repair_button.click()
+        repair.assert_called_once_with()
+        diagnose.assert_called_once_with()
+        self.assertEqual(info.call_args.args[1], 'success')
+        self.assertTrue(page.browser_components_repair_button.isHidden())
+        self.assertTrue(page.browser_components_refresh_button.isEnabled())
+
+    def test_repair_failure_or_unsuccessful_recheck_never_reports_success(self):
+        page = self._page()
+        broken = {'ok': False, 'can_repair': True, 'issues': ['registration invalid']}
+        for error in (PermissionError('access denied'), None):
+            with self.subTest(error=error):
+                with patch('sookit.pages.settings_page.repair_browser_registration',
+                           side_effect=error), \
+                        patch('sookit.pages.settings_page.diagnose_browser_components',
+                              return_value=broken), \
+                        patch('sookit.pages.settings_page.show_infobar') as info:
+                    page._repair_browser_components()
+                self.assertEqual(info.call_args.args[1], 'error')
+                self.assertFalse(page.browser_components_repair_button.isHidden())
+                self.assertTrue(page.browser_components_repair_button.isEnabled())
+                self.assertTrue(page.browser_components_refresh_button.isEnabled())
+                self.assertEqual(page.browser_components_repair_button.text(), '修复')
+
+    def test_missing_components_do_not_offer_registration_repair(self):
+        page = self._page()
+        with patch('sookit.pages.settings_page.diagnose_browser_components',
+                   return_value={'ok': False, 'can_repair': False, 'issues': ['missing host']}):
+            page._refresh_browser_components()
+        self.assertTrue(page.browser_components_repair_button.isHidden())
+        self.assertIn('重新安装', page.browser_components_details.text())
 
     def test_default_state_guide_steps_copy_and_component_summary(self):
         page = self._page()
@@ -715,15 +868,14 @@ class BrowserSettingsUiTests(unittest.TestCase):
         # tooltip 走 Fluent 风格，不用原生 Qt 提示框
         self.assertIsNotNone(path_label.findChild(qfw.ToolTipFilter))
 
-    def test_switch_success_saves_and_displays_paused_status(self):
+    def test_switch_success_saves_without_extra_paused_hint(self):
         page = self._page()
         with patch('sookit.pages.settings_page.save_browser_extension_enabled') as save:
             page.browser_extension_switch.setChecked(False)
             save.assert_called_once_with(False)
         self.assertFalse(page.browser_extension_switch.isChecked())
-        self.assertEqual(page.browser_extension_paused_label.text(),
-                         '已暂停接收浏览器请求，可随时重新开启')
-        self.assertFalse(page.browser_extension_paused_label.isHidden())
+        self.assertNotIn('已暂停接收浏览器请求，可随时重新开启',
+                         [label.text() for label in page.browser_toggle_card.findChildren(QLabel)])
 
     def test_switch_persistence_failure_reverts_and_folder_open_requires_existing_path(self):
         page = self._page()

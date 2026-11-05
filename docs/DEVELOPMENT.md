@@ -234,6 +234,7 @@ flowchart TB
 | 67 | 浏览器扩展工具栏面板与连接状态语义（2026-11-01） | 点扩展图标弹出面板：状态按桥接可用性判定——host 能应答即「已连接」（Sookit 没启动也算），host 找不到/被拒才「未连接」并指路重注册，GUI 回执 enabled 为假则「已暂停」；总闸与主题色由 host 直接读配置文件得到，桌面端没开也照常显示（读不出来显示「未知」）；主按钮恒为「启动 Sookit」，面板无底部提示小字，进度/错误提示集中在标题栏状态胶囊（拉起时转圈）；页面动作结果显示在页面右上角小窗（发出即弹，loading 转圈 / 成功 2 秒收起 / 失败常驻到点关闭，不拉面板），桌面端已在跑时点它改叫 GUI 把窗口带回前台（新 activate 动作只走本机通道，扩展侧发不进来）；status 探测绝不冷启动、launch 才带可见窗口启动并轮询；控制动作不带 URL，本机通道只放行 status、launch 仅 host；面板消息按扩展自身 origin/url 判定来源（工具栏 popup 不带 tab、frameId 也不为 0，不能照抄页面消息那套校验）；站点开关存扩展 `chrome.storage.local`（`sookitSites`，后台与内容脚本都按它拒绝/增减入口），总闸在面板只读；回执里的主题色/明暗会存进 `sookitTheme`，面板打开先用缓存再问 status，避免先薄荷绿后突然变色；改完必须重新打包并注册 host，仅重载扩展会一直显示未连接 | [67-extension-popup.md](decisions/67-extension-popup.md) |
 | 68 | 系统通知正文点击路由到来源页面（2026-11-02） | Toast 正文携带目标页键并经 Qt 信号转回主线程，激活窗口后切到对应顶层页；浏览器最佳画质开工/失败落到队列「进行中」、完成落到「已完成」，更新类通知落到设置；成功任务的「打开文件夹」按钮仍独立打开目录 | [68-toast-click-page-routing.md](decisions/68-toast-click-page-routing.md) |
 | 69 | 线上固定 Inno Setup 7 并保留默认防护（2026-11-05） | Release 使用官方 7.1.1 x64，固定下载地址与 SHA-256 并校验 ISCC `--version` 输出，失败终止；保留 RedirectionGuard 默认防护，预先以管理员身份启动安装器仍有上游继承限制 | [69-inno-setup-7-ci.md](decisions/69-inno-setup-7-ci.md) |
+| 70 | 浏览器桥接一键修复（2026-11-05） | 注册异常显示“修复”，点击直接注册当前布局的有效清单到 HKCU，复查通过才提示成功；文件缺失不写注册表，不提权 | [70-browser-bridge-repair.md](decisions/70-browser-bridge-repair.md) |
 
 ## 测试
 
