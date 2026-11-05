@@ -108,11 +108,41 @@ jobs:
           $iss = $iss -replace '#define MyAppVersion ".*"', "#define MyAppVersion `"$env:VERSION`""
           Set-Content packaging/installer.iss $iss -NoNewline
 
+      # 固定官方 7.1.1（含 postinstall 子进程意外继承 RedirectionGuard 的修复）。
+      # 保留安装器/卸载器默认防护；预先以管理员身份启动安装器仍是上游已知边界。
+      - name: 安装并校验 Inno Setup 7.1.1
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $innoVersion = "7.1.1"
+          $innoSetup = Join-Path $env:RUNNER_TEMP "innosetup-$innoVersion-x64.exe"
+          $innoDir = Join-Path $env:RUNNER_TEMP "Inno Setup $innoVersion"
+          Invoke-WebRequest -Uri "https://github.com/jrsoftware/issrc/releases/download/is-7_1_1/innosetup-$innoVersion-x64.exe" -OutFile $innoSetup
+          # SHA-256 来自官方 GitHub release asset 的 digest 字段。
+          $innoHash = (Get-FileHash $innoSetup -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($innoHash -ne "8a5a6711c3766a6e5fb74f280ba0e3551e719ce94538d901fdbd1f8f9920b3f0") {
+            throw "Inno Setup sha256 校验失败: 实际 $innoHash"
+          }
+          $install = Start-Process -FilePath $innoSetup -ArgumentList @(
+            "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/SP-", "/CURRENTUSER", "/PORTABLE=1", "/NOICONS",
+            "/DIR=`"$innoDir`""
+          ) -Wait -PassThru
+          if ($install.ExitCode -ne 0) { throw "Inno Setup 安装失败: 退出码 $($install.ExitCode)" }
+          $iscc = Join-Path $innoDir "ISCC.exe"
+          if (-not (Test-Path $iscc -PathType Leaf)) { throw "未找到固定版本编译器: $iscc" }
+          $actualVersion = (& $iscc --version | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup 版本查询失败: 退出码 $LASTEXITCODE" }
+          Write-Host "Inno Setup 编译器: $iscc；版本: $actualVersion"
+          if ($actualVersion -ne $innoVersion) { throw "Inno Setup 版本不符: $actualVersion" }
+          Add-Content $env:GITHUB_ENV "INNO_SETUP_ISCC=$iscc"
+          Remove-Item $innoSetup
+
       - name: 编译 Inno Setup 安装器
         shell: pwsh
         run: |
-          choco install innosetup -y --no-progress
-          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" packaging/installer.iss
+          $ErrorActionPreference = "Stop"
+          & $env:INNO_SETUP_ISCC packaging/installer.iss
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup 编译失败: 退出码 $LASTEXITCODE" }
 
       # 生成安装器 sha256 校验文件（updater.exe 下载后校验 + skip-if-exists 完整性判定）。
       # 内容格式 "<hex>  <文件名>"（与 sha256sum -c 兼容），解析侧取首个 64 位 hex 即可。
