@@ -237,6 +237,8 @@ flowchart TB
 | 70 | 浏览器桥接一键修复（2026-11-05） | 注册异常显示“修复”，点击直接注册当前布局的有效清单到 HKCU，复查通过才提示成功；文件缺失不写注册表，不提权 | [70-browser-bridge-repair.md](decisions/70-browser-bridge-repair.md) |
 | 71 | 直播监控封面平铺（2026-11-06） | 16:9 圆角封面与两行标题，信息区至少 180px；普通透明容器，无独立底板、外框或卡片悬停效果；自适应列数、常驻空态槽，按任务 ID 更新状态，封面异步释放 | [71-monitor-cards.md](decisions/71-monitor-cards.md) |
 
+| 72 | 浏览器统一直播 / Premiere 监控入口（2026-11-06） | YouTube 菜单新增 monitor，不区分内容类型；按视频 ID 去重，沿用监控设置及结束后下载，窗口不抢焦点；HTTP 降级不凭开始时间判断结束，旧 host 需更新 | [72-browser-monitor.md](decisions/72-browser-monitor.md) |
+
 ## 测试
 
 已安装项目依赖及 yt-dlp / FFmpeg 后，运行离线回归（临时本地 HTTP、真实外部工具与隔离的 Qt 队列，不访问测试平台）：

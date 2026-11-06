@@ -167,6 +167,12 @@ class MainWindow(qfw.FluentWindow):
             if response.get('ok'):
                 self.switchTo(self.gif_page)
             return response
+        if action == 'monitor':
+            response = self.monitor_page.monitor_from_browser(
+                request['url'], video_metadata=request.get('video_metadata'))
+            if response.get('ok'):
+                self.switchTo(self.monitor_page)
+            return response
         if action == 'sniff':
             response = self.youtube_page.sniff_from_browser(request['url'])
             if response.get('ok'):

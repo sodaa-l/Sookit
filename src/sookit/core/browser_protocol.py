@@ -12,7 +12,7 @@ MAX_VIDEO_TITLE_LENGTH = 500
 MAX_VIDEO_CHANNEL_LENGTH = 200
 MAX_VIDEO_DURATION_SECONDS = 7 * 24 * 60 * 60
 MAX_VIDEO_COVER_URL_LENGTH = 2048
-BROWSER_ACTIONS = frozenset({'sniff', 'download_best', 'download_cover', 'parse_gif'})
+BROWSER_ACTIONS = frozenset({'sniff', 'download_best', 'download_cover', 'parse_gif', 'monitor'})
 # 控制类动作不携带网页链接：launch 只给 Chrome host 用，status 与 activate 是本机通道
 # 放行的控制动作（扩展面板的探测与唤窗），三者都不进入页面分派逻辑。
 CONTROL_ACTIONS = frozenset({'status', 'launch', 'activate'})
@@ -74,7 +74,7 @@ def normalize_browser_url(value: str, action: str) -> str:
     """按浏览器动作选择 YouTube 或 X 单帖 URL 边界。"""
     if action == 'parse_gif':
         return normalize_x_status_url(value)
-    if action == 'download_cover':
+    if action in ('download_cover', 'monitor'):
         return normalize_video_url(value)
     if action not in ('sniff', 'download_best'):
         raise ValueError('不支持的浏览器请求')
@@ -130,7 +130,7 @@ def validate_request(message: object, *, allowed=BROWSER_ACTIONS) -> dict:
         return {'action': action}
     request = {'action': action,
                'url': normalize_browser_url(message.get('url'), action)}
-    if request['action'] in ('download_best', 'download_cover'):
+    if request['action'] in ('download_best', 'download_cover', 'monitor'):
         metadata = _validated_video_metadata(message.get('video_metadata'))
         if metadata:
             request['video_metadata'] = metadata

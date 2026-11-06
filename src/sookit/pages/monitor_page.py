@@ -15,6 +15,7 @@ from PyQt6.QtGui import QDesktopServices
 import qfluentwidgets as qfw
 
 from sookit.core.functions import Functions, load_download_config, DEFAULT_OUTPUT_DIR
+from sookit.core.browser_protocol import normalize_video_url
 from sookit.core.ytdlp_utils import is_ytdlp_available
 from sookit.core.youtube_utils import extract_youtube_id, fetch_youtube_metadata
 from sookit.core.youtube_utils import build_thumbnails
@@ -157,6 +158,33 @@ class MonitorPage(PageBase):
             task_id = f"任务{self._task_counter}"
             self._add_single_task(task_id, url, url)
 
+    def monitor_from_browser(self, url, video_metadata=None):
+        """浏览器统一入口；网页信息仅作展示，状态始终由后台重新检测。"""
+        if self._closing:
+            return {'ok': False, 'error': '监控页正在关闭，请稍后重试'}
+        try:
+            url = normalize_video_url(url)
+        except ValueError as exc:
+            return {'ok': False, 'error': str(exc)}
+        video_id = extract_youtube_id(url)
+        for task_id, info in self._task_info.items():
+            if extract_youtube_id(info['url']) == video_id:
+                return {'ok': True, 'task_id': task_id, 'duplicate': True,
+                        'message': '此视频已在 Sookit 监控列表中'}
+        if not is_ytdlp_available():
+            return {'ok': False, 'error': 'yt-dlp 不可用，请先在设置页配置'}
+        metadata = video_metadata if isinstance(video_metadata, dict) else {}
+        title = metadata.get('title') or url
+        channel = metadata.get('channel') or ''
+        self._task_counter += 1
+        task_id = f"任务{self._task_counter}"
+        self._add_single_task(task_id, url, title)
+        self._task_info[task_id]['channel'] = channel
+        self._task_cards[task_id].set_metadata(title, channel)
+        self.log(f"[{task_id}] 已从浏览器添加直播 / Premiere 监控")
+        return {'ok': True, 'task_id': task_id,
+                'message': '已添加到 Sookit 监控列表，结束后自动下载'}
+
     def _sniff_channel_and_add(self, url):
         self.add_btn.setEnabled(False)
         self.add_btn.setText("嗅探频道中...")
@@ -278,8 +306,9 @@ class MonitorPage(PageBase):
         card = self._task_cards.get(task_id)
         if card is None or self._closing:
             return
-        real_title = info.get('title') or title
-        channel = info.get('channel') or info.get('uploader') or ''
+        previous = self._task_info[task_id]
+        real_title = info.get('title') or previous.get('title') or title
+        channel = info.get('channel') or info.get('uploader') or previous.get('channel', '')
         scheduled = info.get('scheduled_start_time')
         self._task_info[task_id].update(
             title=real_title, duration=info.get('duration', ''),
@@ -294,10 +323,10 @@ class MonitorPage(PageBase):
         if status == 'is_upcoming' and scheduled and scheduled > now:
             wait_secs = scheduled - now
             if wait_secs > 60:
-                self.log(f"[{task_id}] 检测到预定首播，距开始还有 "
+                self.log(f"[{task_id}] 检测到预约直播 / Premiere，距开始还有 "
                          f"{int(wait_secs//60)} 分 {int(wait_secs%60)} 秒，届时自动开始")
             else:
-                self.log(f"[{task_id}] 检测到预定首播，距开始还有 {int(wait_secs)} 秒")
+                self.log(f"[{task_id}] 检测到预约直播 / Premiere，距开始还有 {int(wait_secs)} 秒")
 
             if wait_secs > 60:
                 init_text = f"等待中（剩余 {math.ceil(wait_secs / 60)} 分钟）"

@@ -81,12 +81,12 @@ test('站内导航后按当前标签页校验，不把内容脚本的旧地址�
     'https://www.youtube.com/results?search_query=cover', URL_A]) {
     const bridge = background(undefined, async () => ({url: current + '&t=10'}));
     const sender = {...bridge.sender, url: original};
-    for (const action of ['sniff', 'download_best', 'download_cover']) {
+    for (const action of ['sniff', 'download_best', 'download_cover', 'monitor']) {
       const result = await bridge.send({action, url: current}, sender);
       assert.equal(result.ok, true, result.error);
       assert.equal(bridge.calls.at(-1).request.url, current);
     }
-    assert.deepEqual(bridge.tabQueries, [1, 1, 1]);
+    assert.deepEqual(bridge.tabQueries, [1, 1, 1, 1]);
   }
 });
 
@@ -121,7 +121,7 @@ function page(sendMessage = async () => ({ok: true, message: '已在后台开始
   class Element {
     constructor(tag) {
       this.tagName = tag; this.children = []; this.dataset = {}; this.attributes = {}; this.events = {};
-      this.style = {}; this.offsetWidth = 224; this.offsetHeight = 160; this.hidden = false;
+      this.style = {setProperty(name, value) { this[name] = value; }}; this.offsetWidth = 224; this.offsetHeight = 160; this.hidden = false;
     }
     get isConnected() { return this === root || Boolean(this.parentElement?.isConnected); }
     contains(node) { return this === node || this.children.some(child => child.contains(node)); }
@@ -131,10 +131,22 @@ function page(sendMessage = async () => ({ok: true, message: '已在后台开始
       }
       return null;
     }
+    get classList() { return {add: name => { this.className = ((this.className || '') + ' ' + name).trim(); }}; }
+    before(element) { this.parentElement?.insertBefore(element, this); }
+    insertBefore(element, next) {
+      element.remove(); this.children.splice(this.children.indexOf(next), 0, element); element.parentElement = this;
+    }
+    get nextElementSibling() { return this.parentElement?.children[this.parentElement.children.indexOf(this) + 1] || null; }
     get firstElementChild() { return this.children[0] || null; }
     getAttribute(key) { return this.attributes[key] ?? null; }
     hasAttribute(key) { return this.attributes[key] !== undefined; }
     matches(selector) {
+      if (selector.includes(', ')) return selector.split(', ').some(part => this.matches(part));
+      if (selector === 'article[data-testid="tweet"]') return this.tagName === 'article' && this.attributes['data-testid'] === 'tweet';
+      if (selector === 'a[href*="/status/"]') return this.tagName === 'a' && (this.href || '').includes('/status/');
+      if (selector === 'button[aria-label]') return this.tagName === 'button' && this.hasAttribute('aria-label');
+      if (selector === 'button[data-testid]') return this.tagName === 'button' && this.hasAttribute('data-testid');
+      if (selector === 'button.sookit-x-button') return this.tagName === 'button' && (this.className || '').split(/\s+/).includes('sookit-x-button');
       if (selector.startsWith('#')) return this.id === selector.slice(1);
       if (selector === "a[href*='/shorts/']") {
         return this.tagName === 'a' && String(this.getAttribute('href') || '').includes('/shorts/');
@@ -187,6 +199,13 @@ function page(sendMessage = async () => ({ok: true, message: '已在后台开始
   const windowEvents = {};
   let target = new Element('actions');
   body.append(target);
+  if (options.xTweet) {
+    const article = new Element('article'); article.setAttribute('data-testid', 'tweet');
+    const link = new Element('a'); link.href = 'https://x.com/author/status/123456789/video/1';
+    link.append(new Element('time'));
+    const grok = new Element('button'); grok.setAttribute('aria-label', 'Grok');
+    article.append(link, new Element('video'), grok); body.append(article);
+  }
   const reels = [];
   const attachActionBar = reel => {
     const actions = new Element(options.structure === 'legacy' ? 'div' : 'reel-action-bar-view-model');
@@ -523,7 +542,7 @@ test('滚出视口时移除旧项按钮，切到可见视频后重新定位', ()
   assert.equal(button.parentElement, site.reels[1].actions);
 });
 
-test('点击只展开三项菜单，选择后发送且等待时不重复提交', async () => {
+test('点击只展开四项菜单，选择后发送且等待时不重复提交', async () => {
   let finish;
   const site = page(() => new Promise(resolve => { finish = resolve; }));
   const button = site.button;
@@ -532,7 +551,7 @@ test('点击只展开三项菜单，选择后发送且等待时不重复提交',
   assert.equal(site.menu.hidden, false);
   assert.equal(button.attributes['aria-expanded'], 'true');
   assert.deepEqual(site.menu.children.map(item => item.children[1].textContent),
-    ['嗅探视频', '下载最佳画质', '下载最佳封面']);
+    ['嗅探视频', '下载最佳画质', '下载最佳封面', '直播 / Premiere 监控']);
   assert.equal(site.document.activeElement, site.menu.children[0]);
   const first = site.choose();
   await site.choose('download_best');
@@ -547,15 +566,15 @@ test('点击只展开三项菜单，选择后发送且等待时不重复提交',
   assert.equal(site.feedback.dataset.state, 'success');
 });
 
-test('三种菜单选项分别传递动作和当前视频，不提前嗅探', async () => {
+test('四种菜单选项分别传递动作和当前视频，不提前嗅探', async () => {
   const site = page(async () => ({ok: true}));
-  for (const action of ['sniff', 'download_best', 'download_cover']) {
+  for (const action of ['sniff', 'download_best', 'download_cover', 'monitor']) {
     await site.choose(action);
     assert.equal(site.requests.at(-1).action, action);
     assert.equal(site.requests.at(-1).url, URL_A);
   }
-  assert.equal(site.requests.length, 3);
-  assert.match(site.feedbackMessage, /封面下载/);
+  assert.equal(site.requests.length, 4);
+  assert.equal(site.feedbackMessage, '已添加到 Sookit 监控列表，结束后自动下载');
 });
 
 test('YouTube 站内导航关闭菜单，使用新链接并在离开视频页时移除按钮', async () => {
@@ -583,14 +602,14 @@ test('从首页进入视频再切换视频，页面菜单与后台按当前链�
   for (const url of ['https://www.youtube.com/watch?v=XFl4d3Ya9t4', URL_A]) {
     current = url;
     site.navigate(url);
-    for (const action of ['sniff', 'download_best', 'download_cover']) {
+    for (const action of ['sniff', 'download_best', 'download_cover', 'monitor']) {
       await site.choose(action);
       assert.equal(site.feedback.dataset.state, 'success');
       assert.equal(bridge.calls.at(-1).request.url, url);
       assert.equal(bridge.calls.at(-1).request.action, action);
     }
   }
-  assert.equal(bridge.calls.length, 6);
+  assert.equal(bridge.calls.length, 8);
 });
 
 test('切换视频后抛弃旧回执，返回同一视频也不会显示过期消息', async () => {
@@ -645,11 +664,11 @@ test('菜单支持上下键、首尾键和 Tab，定位不会超出视口', () =
   const site = page();
   const key = key => ({key, preventDefault() {}, stopPropagation() {}});
   site.button.events.keydown(key('ArrowUp'));
-  assert.equal(site.document.activeElement, site.menu.children[2]);
+  assert.equal(site.document.activeElement, site.menu.children[3]);
   site.menu.events.keydown(key('ArrowDown'));
   assert.equal(site.document.activeElement, site.menu.children[0]);
   site.menu.events.keydown(key('End'));
-  assert.equal(site.document.activeElement, site.menu.children[2]);
+  assert.equal(site.document.activeElement, site.menu.children[3]);
   site.menu.events.keydown(key('Home'));
   assert.equal(site.document.activeElement, site.menu.children[0]);
   site.rect.right = 40;
@@ -672,6 +691,90 @@ test('后台的两种下载复用来源验证且只转发动作和链接', async
     assert.equal((await bridge.send({action, url: URL_A}, {...bridge.sender, frameId: 1})).ok, false);
   }
   assert.equal(bridge.calls.length, 2);
+});
+
+test('监控菜单联动后台并显示主应用返回的重复请求回执', async () => {
+  let finish;
+  const bridge = background(() => new Promise(resolve => { finish = resolve; }));
+  const site = page(message => bridge.send(message));
+  site.button.events.click();
+  const pending = site.menu.children[3].events.click();
+  assert.equal(site.feedbackMessage, '正在添加监控…');
+  assert.equal(site.feedback.dataset.state, 'loading');
+  assert.equal(site.button.disabled, true);
+  await settle();
+  assert.equal(bridge.calls.length, 1);
+  assert.deepEqual(JSON.parse(JSON.stringify(bridge.calls[0].request)), {
+    action: 'monitor', url: URL_A,
+    video_metadata: {title: 'Sookit 测试视频', channel: 'Sookit 频道', duration: 65}
+  });
+  finish({ok: true, message: '该视频已在监控列表中'});
+  await pending;
+  assert.equal(site.feedbackMessage, '该视频已在监控列表中');
+  assert.equal(site.feedback.dataset.state, 'success');
+  assert.equal(site.button.disabled, false);
+});
+
+test('监控复用元数据清洗且保留来源、当前标签页与站点开关校验', async () => {
+  const bridge = background();
+  assert.equal((await bridge.send({action: 'monitor', url: SHORT_URL, video_metadata: {
+    title: '  标题\u0000  内容  ', channel: '频'.repeat(250), duration: -1,
+    extra: 'ignored', cover_url: 'https://evil.test/cover.jpg'
+  }})).ok, true);
+  assert.deepEqual(JSON.parse(JSON.stringify(bridge.calls[0].request)), {
+    action: 'monitor', url: URL_A, video_metadata: {title: '标题 内容', channel: '频'.repeat(200)}
+  });
+  for (const source of [{...bridge.sender, id: 'wrong'}, {...bridge.sender, frameId: 1},
+    {...bridge.sender, tab: undefined}, {...bridge.sender, url: 'https://x.com/home'}]) {
+    assert.equal((await bridge.send({action: 'monitor', url: URL_A}, source)).ok, false);
+  }
+  assert.equal((await bridge.send({action: 'monitor', url: URL_B})).ok, false);
+  assert.equal(bridge.calls.length, 1);
+  for (const getTab of [async () => ({url: URL_B}), async () => ({url: URL_A, pendingUrl: URL_B}),
+    async () => { throw new Error('No tab'); }]) {
+    const changed = background(undefined, getTab);
+    assert.equal((await changed.send({action: 'monitor', url: URL_A})).ok, false);
+    assert.equal(changed.calls.length, 0);
+  }
+  const closed = background(undefined, undefined, {youtube: false});
+  assert.match((await closed.send({action: 'monitor', url: URL_A})).error, /扩展设置中关闭/);
+  assert.equal(closed.calls.length, 0);
+});
+
+test('X 和 Twitter 的监控请求被拒，原有三项 X 动作仍可转发', async () => {
+  for (const host of ['x.com', 'www.x.com', 'twitter.com', 'www.twitter.com']) {
+    const bridge = background(undefined, async () => ({url: 'https://' + host + '/home'}));
+    const source = {...bridge.sender, url: 'https://' + host + '/home'};
+    const url = 'https://' + host + '/author/status/123456789/video/1';
+    assert.equal((await bridge.send({action: 'monitor', url}, source)).ok, false);
+    assert.equal(bridge.calls.length, 0);
+    for (const action of ['sniff', 'download_best', 'parse_gif']) {
+      assert.equal((await bridge.send({action, url}, source)).ok, true);
+      assert.equal(bridge.calls.at(-1).request.url, 'https://x.com/author/status/123456789');
+    }
+    assert.equal(bridge.calls.length, 3);
+  }
+});
+
+test('X 菜单保留嗅探、最佳画质和动图解析，键盘尾部仍为动图', async () => {
+  const bridge = background(undefined, async () => ({url: 'https://x.com/home'}));
+  const source = {...bridge.sender, url: 'https://x.com/home'};
+  const site = page(message => bridge.send(message, source), 'https://x.com/home', {xTweet: true});
+  const button = site.document.querySelectorAll('button.sookit-x-button')[0];
+  assert.ok(button);
+  const key = key => ({key, preventDefault() {}});
+  button.events.keydown(key('ArrowUp'));
+  let menu = site.document.getElementById('sookit-x-action-menu');
+  assert.deepEqual(menu.children.map(item => item.dataset.action), ['sniff', 'download_best', 'parse_gif']);
+  assert.deepEqual(menu.children.map(item => item.children[1].textContent), ['嗅探视频', '下载最佳画质', '解析动图']);
+  assert.equal(site.document.activeElement, menu.children[2]);
+  for (const action of ['sniff', 'download_best', 'parse_gif']) {
+    if (menu.hidden) { button.events.click(); menu = site.document.getElementById('sookit-x-action-menu'); }
+    await menu.children.find(item => item.dataset.action === action).events.click();
+    assert.equal(bridge.calls.at(-1).request.action, action);
+    assert.equal(site.feedback.dataset.state, 'success');
+  }
+  assert.equal(bridge.calls.length, 3);
 });
 
 test('清单声明工具栏面板、存储权限与面板资源', () => {

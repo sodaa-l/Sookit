@@ -10,7 +10,9 @@
     {id: 'download_best', label: '下载最佳画质', icon: 'M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5',
       pending: '正在解析最佳画质…', message: '最佳画质下载已加入 Sookit 任务队列'},
     {id: 'download_cover', label: '下载最佳封面', icon: 'M3 3h18v18H3ZM3 17l6-6 4 4 3-3 5 5M8 7h.01',
-      pending: '正在解析封面…', message: '封面下载已开始'}
+      pending: '正在解析封面…', message: '封面下载已开始'},
+    {id: 'monitor', label: '直播 / Premiere 监控', icon: 'M12 8v4l3 2M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z',
+      pending: '正在添加监控…', message: '已添加到 Sookit 监控列表，结束后自动下载'}
   ];
   const xActions = [
     actions[0],
@@ -325,7 +327,7 @@
     tell(action.pending || '正在发送到 Sookit…', 'loading');
     try {
       const message = {action: action.id, url};
-      if (action.id === 'download_best' || action.id === 'download_cover') {
+      if (action.id === 'download_best' || action.id === 'download_cover' || action.id === 'monitor') {
         message.video_metadata = await readVideoMetadataWhenReady(url, generation);
       }
       if (currentVideoUrl() !== url || generation !== pageGeneration) return;
