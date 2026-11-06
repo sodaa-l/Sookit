@@ -235,6 +235,7 @@ flowchart TB
 | 68 | 系统通知正文点击路由到来源页面（2026-11-02） | Toast 正文携带目标页键并经 Qt 信号转回主线程，激活窗口后切到对应顶层页；浏览器最佳画质开工/失败落到队列「进行中」、完成落到「已完成」，更新类通知落到设置；成功任务的「打开文件夹」按钮仍独立打开目录 | [68-toast-click-page-routing.md](decisions/68-toast-click-page-routing.md) |
 | 69 | 线上固定 Inno Setup 7 并保留默认防护（2026-11-05） | Release 使用官方 7.1.1 x64，固定下载地址与 SHA-256 并校验 ISCC `--version` 输出，失败终止；保留 RedirectionGuard 默认防护，预先以管理员身份启动安装器仍有上游继承限制 | [69-inno-setup-7-ci.md](decisions/69-inno-setup-7-ci.md) |
 | 70 | 浏览器桥接一键修复（2026-11-05） | 注册异常显示“修复”，点击直接注册当前布局的有效清单到 HKCU，复查通过才提示成功；文件缺失不写注册表，不提权 | [70-browser-bridge-repair.md](decisions/70-browser-bridge-repair.md) |
+| 71 | 直播监控封面平铺（2026-11-06） | 16:9 圆角封面与两行标题，信息区至少 180px；普通透明容器，无独立底板、外框或卡片悬停效果；自适应列数、常驻空态槽，按任务 ID 更新状态，封面异步释放 | [71-monitor-cards.md](decisions/71-monitor-cards.md) |
 
 ## 测试
 

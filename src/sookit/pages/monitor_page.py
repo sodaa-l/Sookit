@@ -6,19 +6,24 @@ import os
 import time
 
 from PyQt6.QtWidgets import (
-    QVBoxLayout, QHBoxLayout, QWidget, QTableWidgetItem,
-    QHeaderView, QAbstractItemView
+    QVBoxLayout, QHBoxLayout, QWidget, QFrame, QStackedWidget
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QUrl
+
+from PyQt6.QtGui import QDesktopServices
 
 import qfluentwidgets as qfw
 
-from sookit.core.functions import Functions, is_ytdlp_available, extract_youtube_id, fetch_youtube_metadata, load_download_config, DEFAULT_OUTPUT_DIR
+from sookit.core.functions import Functions, load_download_config, DEFAULT_OUTPUT_DIR
+from sookit.core.ytdlp_utils import is_ytdlp_available
+from sookit.core.youtube_utils import extract_youtube_id, fetch_youtube_metadata
 from sookit.core.youtube_utils import build_thumbnails
 from sookit.core.task_queue import TaskQueueManager, TaskType
 from sookit.core.workers import MonitorWorker
 from sookit.pages.base import PageBase
 from sookit.widgets.infobar import show_infobar
+from sookit.widgets.monitor_card import MonitorCard
+from sookit.core.utils import set_smooth_scroll_params
 from sookit.widgets.notifier import TOAST_TARGET_MONITOR, notify_result_notice
 
 
@@ -75,25 +80,43 @@ class MonitorPage(PageBase):
         layout.addLayout(settings)
 
         layout.addWidget(qfw.BodyLabel("监控列表:"))
-        self.task_table = qfw.TableWidget()
-        self.task_table.setColumnCount(3)
-        self.task_table.setHorizontalHeaderLabels(["状态", "标题 / 链接", "操作"])
-        self.task_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.task_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.task_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
-        self.task_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        self.task_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
-        # ResizeToContents 不统计 setCellWidget 的按钮，需显式固定列宽（立即开始 80 + 删除 60 + spacing）
-        self.task_table.setColumnWidth(2, 160)
-        self.task_table.setAlternatingRowColors(True)
-        self.task_table.setMinimumHeight(200)
-        layout.addWidget(self.task_table, stretch=1)
+        # 常驻展示槽：空态和卡片切换不推动上方输入区（决策 71）。
+        self.task_stack = QStackedWidget()
+        empty = QWidget()
+        empty_layout = QVBoxLayout(empty)
+        empty_layout.addStretch()
+        for text in ("还没有监控任务", "添加 YouTube 视频或频道链接，开始自动监控"):
+            label = qfw.BodyLabel(text)
+            label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            empty_layout.addWidget(label)
+        empty_layout.addStretch()
+        self.task_stack.addWidget(empty)
+
+        self.task_scroll = qfw.ScrollArea()
+        self.task_scroll.setWidgetResizable(True)
+        self.task_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.task_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.task_content = QWidget()
+        self.task_flow = qfw.AdaptiveFlowLayout(self.task_content, needAni=False, isTight=True)
+        self.task_flow.setWidgetMinimumWidth(320)
+        self.task_flow.setWidgetMaximumWidth(640)
+        self.task_flow.setHorizontalSpacing(16)
+        self.task_flow.setVerticalSpacing(24)
+        # Fluent 滚动条浮在视口内，固定留位，避免显隐造成卡片跳宽。
+        self.task_flow.setContentsMargins(6, 6, 24, 6)
+        self.task_scroll.setWidget(self.task_content)
+        self.task_scroll.enableTransparentBackground()
+        set_smooth_scroll_params(self.task_scroll)
+        self.task_stack.addWidget(self.task_scroll)
+        layout.addWidget(self.task_stack, stretch=1)
 
         self._setup_log_area(layout)
 
+        self._closing = False
         self._task_counter = 0
         self._workers = {}
-        self._task_rows = {}
+        self._task_cards = {}
+        self._sniff_workers = {}
         self._task_titles = {}
         self._task_info = {}
         self._wait_timers = {}
@@ -191,29 +214,21 @@ class MonitorPage(PageBase):
             "频道嗅探失败", url, err, target_page=TOAST_TARGET_MONITOR)
 
     def _add_single_task(self, task_id, url, title):
-        row = self.task_table.rowCount()
-        self.task_table.insertRow(row)
+        card = MonitorCard(task_id, url, title)
+        card.watch_requested.connect(self._watch_task)
+        card.start_requested.connect(self._start_waiting_task)
+        card.remove_requested.connect(self._remove_or_cancel_task)
+        self._task_cards[task_id] = card
+        self.task_flow.addWidget(card)
+        self.task_stack.setCurrentIndex(1)
 
-        self.task_table.setItem(row, 0, QTableWidgetItem("嗅探中..."))
-        self.task_table.setItem(row, 1, QTableWidgetItem(title))
-        btn_widget = QWidget()
-        btn_layout = QHBoxLayout(btn_widget)
-        btn_layout.setContentsMargins(0, 0, 0, 0)
-        btn_layout.setSpacing(4)
-        del_btn = qfw.PushButton("删除")
-        del_btn.setFixedWidth(60)
-        del_btn.clicked.connect(lambda: self._remove_task(task_id))
-        btn_layout.addWidget(del_btn)
-        self.task_table.setCellWidget(row, 2, btn_widget)
-
-        self._task_rows[task_id] = row
         self._task_titles[task_id] = title
         out_dir = self.read_path(self.out_dir) or DEFAULT_OUTPUT_DIR
         self._task_info[task_id] = {'url': url, 'out_dir': out_dir, 'title': title}
 
-        self._sniff_and_start_worker(task_id, url, out_dir, title, row)
+        self._sniff_and_start_worker(task_id, url, out_dir, title)
 
-    def _sniff_and_start_worker(self, task_id, url, out_dir, title, row):
+    def _sniff_and_start_worker(self, task_id, url, out_dir, title):
         class SniffWorker(QThread):
             done = pyqtSignal(dict)
             error = pyqtSignal(str)
@@ -235,23 +250,40 @@ class MonitorPage(PageBase):
 
         worker = SniffWorker(url)
         worker.done.connect(
-            lambda info: self._on_initial_sniff(task_id, url, out_dir, title, row, info))
+            lambda info: self._on_initial_sniff(task_id, url, out_dir, title, info))
         worker.error.connect(
-            lambda err: self._start_monitor_now(task_id, url, out_dir, title))
-        self._sniff_worker = worker
+            lambda err: self._start_waiting_task(task_id))
+        self._sniff_workers[task_id] = worker
+        worker.finished.connect(lambda: self._sniff_workers.pop(task_id, None))
         worker.start()
 
-    def _on_initial_sniff(self, task_id, url, out_dir, title, row, info):
-        # 用真实视频标题更新第 1 列（单条 URL 添加时此处 title 原本是链接），并同步元信息
+    def _watch_task(self, task_id):
+        info = self._task_info.get(task_id)
+        if info:
+            QDesktopServices.openUrl(QUrl(info['url']))
+
+    def _start_waiting_task(self, task_id):
+        info = self._task_info.get(task_id)
+        if info:
+            self._start_monitor_now(task_id, info['url'], info['out_dir'], info['title'])
+
+    def _remove_or_cancel_task(self, task_id):
+        info = self._task_info.get(task_id, {})
+        if info.get('queue_task_id'):
+            self._cancel_download(task_id)
+        else:
+            self._remove_task(task_id)
+
+    def _on_initial_sniff(self, task_id, url, out_dir, title, info):
+        # 删除后迟到的嗅探结果不能复活任务，也不能更新相邻卡片。
+        card = self._task_cards.get(task_id)
+        if card is None or self._closing:
+            return
         real_title = info.get('title') or title
-        item = self.task_table.item(row, 1)
-        if item:
-            item.setText(real_title)
-        if task_id in self._task_info:
-            self._task_info[task_id]['title'] = real_title
-            self._task_info[task_id]['duration'] = info.get('duration', '')
-        if task_id in self._task_titles:
-            self._task_titles[task_id] = real_title
+        self._task_info[task_id].update(title=real_title, duration=info.get('duration', ''))
+        self._task_titles[task_id] = real_title
+        card.set_metadata(real_title, info.get('channel') or info.get('uploader') or '',
+                          info.get('scheduled_start_time'))
 
         status = info.get('live_status', 'unknown')
         scheduled = info.get('scheduled_start_time')
@@ -269,50 +301,40 @@ class MonitorPage(PageBase):
                 init_text = f"等待中（剩余 {math.ceil(wait_secs / 60)} 分钟）"
             else:
                 init_text = f"等待中（剩余 {int(wait_secs)} 秒）"
-            self.task_table.item(row, 0).setText(init_text)
-
-            start_btn = qfw.PushButton("立即开始")
-            start_btn.setFixedWidth(80)
-            start_btn.clicked.connect(
-                lambda checked=False, tid=task_id: self._start_monitor_now(
-                    tid, self._task_info[tid]['url'],
-                    self._task_info[tid]['out_dir'],
-                    self._task_info[tid]['title']))
-            btn_widget = self.task_table.cellWidget(row, 2)
-            btn_widget.layout().insertWidget(0, start_btn)
+            card.set_status(init_text)
+            card.set_waiting(True)
 
             auto_timer = QTimer(self)
             auto_timer.setSingleShot(True)
-            auto_timer.timeout.connect(
-                lambda: self._start_monitor_now(
-                    task_id, url, out_dir, title))
+            auto_timer.timeout.connect(lambda: self._start_waiting_task(task_id))
             auto_timer.start(int(wait_secs * 1000))
             self._wait_timers[task_id] = auto_timer
 
             count_timer = QTimer(self)
             count_timer.timeout.connect(
-                lambda: self._update_countdown(task_id, row, scheduled))
+                lambda: self._update_countdown(task_id, scheduled))
             count_timer.start(1000)
             self._countdown_timers[task_id] = count_timer
         else:
-            self._start_monitor_now(task_id, url, out_dir, title)
+            self._start_waiting_task(task_id)
 
-    def _update_countdown(self, task_id, row, scheduled_time):
-        if task_id not in self._task_rows:
-            self._countdown_timers.pop(task_id, None)
+    def _update_countdown(self, task_id, scheduled_time):
+        if task_id not in self._task_cards:
+            timer = self._countdown_timers.pop(task_id, None)
+            if timer:
+                timer.stop()
             return
         remaining = scheduled_time - time.time()
         if remaining <= 0:
-            self._countdown_timers.pop(task_id, None)
+            timer = self._countdown_timers.pop(task_id, None)
+            if timer:
+                timer.stop()
             return
         if remaining > 60:
             text = f"等待中（剩余 {math.ceil(remaining / 60)} 分钟）"
         else:
             text = f"等待中（剩余 {int(remaining)} 秒）"
-        item = self.task_table.item(self._task_rows[task_id], 0)
-        if item.text() == text:
-            return
-        item.setText(text)
+        self._task_cards[task_id].set_status(text)
 
     def _start_monitor_now(self, task_id, url, out_dir, title=None):
         if task_id in self._workers:
@@ -323,24 +345,11 @@ class MonitorPage(PageBase):
         if task_id in self._countdown_timers:
             self._countdown_timers.pop(task_id).stop()
 
-        if task_id not in self._task_rows:
+        card = self._task_cards.get(task_id)
+        if card is None or self._closing:
             return
-
-        row = self._task_rows[task_id]
-
-        btn_widget = self.task_table.cellWidget(row, 2)
-        if btn_widget:
-            layout = btn_widget.layout()
-            for i in range(layout.count()):
-                item = layout.itemAt(i)
-                if item and item.widget():
-                    w = item.widget()
-                    if isinstance(w, qfw.PushButton) and w.text() == "立即开始":
-                        w.deleteLater()
-                        layout.removeWidget(w)
-                        break
-
-        self.task_table.item(row, 0).setText("监控中")
+        card.set_waiting(False)
+        card.set_status("监控中")
         interval = 30 if self.interval_combo.currentIndex() == 0 else 60
         remote = self.remote_cb.isChecked()
 
@@ -362,6 +371,8 @@ class MonitorPage(PageBase):
 
     def _on_download_ready(self, task_id, url, out_dir, format_spec, config, info=None):
         """MonitorWorker 检测到可下载时，把下载任务提交给全局任务队列"""
+        if self._closing or task_id not in self._task_cards:
+            return
         # 停止并移除该 MonitorWorker（防重复提交）
         if task_id in self._workers:
             worker = self._workers.pop(task_id)
@@ -376,27 +387,10 @@ class MonitorPage(PageBase):
             self._task_info[task_id]['duration'] = info.get('duration', '')
         if task_id in self._task_titles:
             self._task_titles[task_id] = title
-        # 同步更新表格第 1 列（显示标题而非链接）
-        if task_id in self._task_rows:
-            item = self.task_table.item(self._task_rows[task_id], 1)
-            if item:
-                item.setText(title)
-        self.task_table.item(self._task_rows[task_id], 0).setText("下载中")
-
-        # 替换操作按钮：下载阶段改为"取消"（取消队列任务）
-        btn_widget = self.task_table.cellWidget(self._task_rows[task_id], 2)
-        if btn_widget:
-            layout = btn_widget.layout()
-            for i in range(layout.count()):
-                item = layout.itemAt(i)
-                if item and item.widget() and isinstance(item.widget(), qfw.PushButton):
-                    w = item.widget()
-                    if w.text() == "删除":
-                        w.setText("取消")
-                        w.clicked.disconnect()
-                        w.clicked.connect(
-                            lambda checked=False, tid=task_id: self._cancel_download(tid))
-                        break
+        card = self._task_cards[task_id]
+        card.set_metadata(title, info.get('channel') or info.get('uploader') or '')
+        card.set_status("下载中")
+        card.set_downloading(True)
 
         # 构建完整元数据，使队列卡片能展示标题/封面/频道/时长（参考嗅探页 youtube_page.py）
         metadata = {
@@ -431,33 +425,34 @@ class MonitorPage(PageBase):
         self.log(f"[{task_id}] 已提交下载任务到队列: {title}")
 
     def _cancel_download(self, task_id):
-        """下载阶段取消：取消队列下载任务并移除监控行"""
-        info = self._task_info.get(task_id)
-        queue_id = info.get('queue_task_id') if info else None
-        if queue_id:
-            TaskQueueManager.instance().cancel_task(queue_id)
-            self.log(f"[{task_id}] 已请求取消队列下载任务")
-        # 移除监控行（内部会清映射并触发队列 cancel_task，任务已移除则安全返回）
+        """下载阶段取消：由统一移除入口取消队列任务，避免重复发送。"""
         self._remove_task(task_id)
 
     def stop_all_workers(self):
-        """停止所有监控 worker（供主窗口退出时调用）"""
+        """停止监控与倒计时，忽略退出后迟到的嗅探结果。"""
+        self._closing = True
+        for timers in (self._wait_timers, self._countdown_timers):
+            for timer in timers.values():
+                timer.stop()
+            timers.clear()
+        for card in self._task_cards.values():
+            card.dispose()
         for task_id, worker in list(self._workers.items()):
             worker.stop()
             worker.wait(2000)
             del self._workers[task_id]
 
     def _update_task_status(self, task_id, status):
-        if task_id in self._task_rows:
-            row = self._task_rows[task_id]
-            self.task_table.item(row, 0).setText(status)
+        card = self._task_cards.get(task_id)
+        if card:
+            card.set_status(status)
 
     def _on_monitor_done(self, task_id, success):
         """MonitorWorker 结束（现在仅用于轮询阶段的异常终止）"""
         if not success:
-            if task_id in self._task_rows:
-                row = self._task_rows[task_id]
-                self.task_table.item(row, 0).setText("失败")
+            if task_id not in self._task_cards:
+                return
+            self._task_cards[task_id].set_status("失败")
             show_infobar(self, "error", title="监控任务失败",
                      content=f"任务 [{task_id}] 执行失败")
         self._workers.pop(task_id, None)
@@ -478,26 +473,15 @@ class MonitorPage(PageBase):
             self.log(msg)
 
     def _on_queue_task_completed(self, task):
-        """队列下载完成：同步监控表格状态并触发封面下载"""
+        """队列下载完成：同步监控卡片状态并触发封面下载"""
         tid = self._monitor_id_by_queue(task.task_id)
         if tid is None:
             return
-        if tid in self._task_rows:
-            self.task_table.item(self._task_rows[tid], 0).setText("已完成")
-            # 操作按钮由"取消"恢复为"删除"
-            btn_widget = self.task_table.cellWidget(self._task_rows[tid], 2)
-            if btn_widget:
-                layout = btn_widget.layout()
-                for i in range(layout.count()):
-                    item = layout.itemAt(i)
-                    if item and item.widget() and isinstance(item.widget(), qfw.PushButton):
-                        w = item.widget()
-                        if w.text() == "取消":
-                            w.setText("删除")
-                            w.clicked.disconnect()
-                            w.clicked.connect(
-                                lambda checked=False, t=tid: self._remove_task(t))
-                            break
+        card = self._task_cards.get(tid)
+        if card:
+            card.set_status("已完成")
+            card.set_downloading(False)
+        self._task_info[tid].pop('queue_task_id', None)
         info = self._task_info.get(tid)
         if info:
             self._download_best_thumbnail(tid, info['url'], info['out_dir'], info['title'])
@@ -515,22 +499,10 @@ class MonitorPage(PageBase):
         TaskQueueManager.instance().remove_failed_task(task.task_id)
         if tid is None:
             return
-        if tid in self._task_rows:
-            self.task_table.item(self._task_rows[tid], 0).setText("等待重试")
-            # 操作按钮由"取消"恢复为"删除"
-            btn_widget = self.task_table.cellWidget(self._task_rows[tid], 2)
-            if btn_widget:
-                layout = btn_widget.layout()
-                for i in range(layout.count()):
-                    item = layout.itemAt(i)
-                    if item and item.widget() and isinstance(item.widget(), qfw.PushButton):
-                        w = item.widget()
-                        if w.text() == "取消":
-                            w.setText("删除")
-                            w.clicked.disconnect()
-                            w.clicked.connect(
-                                lambda checked=False, t=tid: self._remove_task(t))
-                            break
+        card = self._task_cards.get(tid)
+        if card:
+            card.set_status("等待重试")
+            card.set_downloading(False)
         # 重启 MonitorWorker 继续轮询（等待一个 interval 再重新检测）
         info = self._task_info.get(tid)
         if not info:
@@ -618,13 +590,13 @@ class MonitorPage(PageBase):
         queue_id = info.get('queue_task_id') if info else None
         if queue_id:
             TaskQueueManager.instance().cancel_task(queue_id)
-        if task_id in self._task_rows:
-            row = self._task_rows[task_id]
-            self.task_table.removeRow(row)
-            del self._task_rows[task_id]
-            for tid, r in list(self._task_rows.items()):
-                if r > row:
-                    self._task_rows[tid] = r - 1
+        card = self._task_cards.pop(task_id, None)
+        if card:
+            card.dispose()
+            self.task_flow.removeWidget(card)
+            card.hide()
+            card.deleteLater()
+        self.task_stack.setCurrentIndex(1 if self._task_cards else 0)
         self._task_titles.pop(task_id, None)
         self._task_info.pop(task_id, None)
         self.log(f"[{task_id}] 已移除")
