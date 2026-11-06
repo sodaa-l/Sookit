@@ -91,6 +91,22 @@ class MonitorCardTests(unittest.TestCase):
         self.assertFalse(card.start_btn.isVisible())
         self.assertEqual(card.status_label.text(), "监控中")
 
+    def test_download_preserves_channel_and_schedule_from_initial_sniff(self):
+        card = self.add("a")
+        self.upcoming("a")
+        scheduled_text = card.time_label.text()
+        self.page._on_download_ready("a", "url", "dir", "best", {}, {"title": "下载标题"})
+        self.assertEqual(card.channel_label.text(), "频道：测试频道")
+        self.assertEqual(card.time_label.text(), scheduled_text)
+        self.assertEqual(self.manager.add_task.call_args.kwargs["metadata"]["channel"], "测试频道")
+
+    def test_download_uses_new_uploader_when_available(self):
+        card = self.add("a")
+        self.upcoming("a")
+        self.page._on_download_ready("a", "url", "dir", "best", {}, {"uploader": "新频道"})
+        self.assertEqual(card.channel_label.text(), "频道：新频道")
+        self.assertEqual(self.manager.add_task.call_args.kwargs["metadata"]["channel"], "新频道")
+
     def test_download_cancel_only_cancels_own_queue_task(self):
         card = self.add("a")
         self.add("b")

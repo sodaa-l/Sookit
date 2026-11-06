@@ -79,7 +79,6 @@ class MonitorPage(PageBase):
         settings.addStretch()
         layout.addLayout(settings)
 
-        layout.addWidget(qfw.BodyLabel("监控列表:"))
         # 常驻展示槽：空态和卡片切换不推动上方输入区（决策 71）。
         self.task_stack = QStackedWidget()
         empty = QWidget()
@@ -280,10 +279,13 @@ class MonitorPage(PageBase):
         if card is None or self._closing:
             return
         real_title = info.get('title') or title
-        self._task_info[task_id].update(title=real_title, duration=info.get('duration', ''))
+        channel = info.get('channel') or info.get('uploader') or ''
+        scheduled = info.get('scheduled_start_time')
+        self._task_info[task_id].update(
+            title=real_title, duration=info.get('duration', ''),
+            channel=channel, scheduled_start_time=scheduled)
         self._task_titles[task_id] = real_title
-        card.set_metadata(real_title, info.get('channel') or info.get('uploader') or '',
-                          info.get('scheduled_start_time'))
+        card.set_metadata(real_title, channel, scheduled)
 
         status = info.get('live_status', 'unknown')
         scheduled = info.get('scheduled_start_time')
@@ -388,14 +390,18 @@ class MonitorPage(PageBase):
         if task_id in self._task_titles:
             self._task_titles[task_id] = title
         card = self._task_cards[task_id]
-        card.set_metadata(title, info.get('channel') or info.get('uploader') or '')
+        task_info = self._task_info[task_id]
+        channel = info.get('channel') or info.get('uploader') or task_info.get('channel', '')
+        scheduled = info.get('scheduled_start_time') or task_info.get('scheduled_start_time')
+        task_info.update(channel=channel, scheduled_start_time=scheduled)
+        card.set_metadata(title, channel, scheduled)
         card.set_status("下载中")
         card.set_downloading(True)
 
         # 构建完整元数据，使队列卡片能展示标题/封面/频道/时长（参考嗅探页 youtube_page.py）
         metadata = {
             'title': title,
-            'channel': info.get('channel', ''),
+            'channel': channel,
             'duration': info.get('duration', ''),
             'cover_url': '',
             'url': url,

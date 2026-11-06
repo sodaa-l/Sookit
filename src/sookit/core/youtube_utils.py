@@ -252,6 +252,7 @@ def fetch_youtube_metadata(video_id):
 
     return {
         'title': vd.get('title', ''),
+        'channel': vd.get('author') or mfr.get('ownerChannelName') or '',
         'live_status': live_status,
         'scheduled_start_time': scheduled_ts,
         'is_live': live_details.get('isLiveNow', False),

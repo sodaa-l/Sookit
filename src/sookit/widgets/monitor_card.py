@@ -112,7 +112,7 @@ class MonitorCard(QWidget):
             font=QFont("Microsoft YaHei", 12, QFont.Weight.Bold))
         meta_font = QFont("Microsoft YaHei", 10)
         self.channel_label = ElidedLabel(
-            "频道待获取", max_lines=1, parent=self._info, font=meta_font)
+            "频道：待获取", max_lines=1, parent=self._info, font=meta_font)
         self.status_label = ElidedLabel(
             "正在获取直播信息…", max_lines=2, parent=self._info, font=meta_font)
         self.time_label = ElidedLabel(
@@ -148,7 +148,7 @@ class MonitorCard(QWidget):
 
     def set_metadata(self, title, channel="", scheduled=None):
         self.title_label.setText(title or self.url)
-        self.channel_label.setText(channel or "频道待获取")
+        self.channel_label.setText(f"频道：{channel or '待获取'}")
         if isinstance(scheduled, (int, float)):
             try:
                 scheduled = datetime.fromtimestamp(scheduled)
