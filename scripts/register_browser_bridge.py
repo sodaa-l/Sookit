@@ -17,7 +17,10 @@ from sookit.core.browser_protocol import EXTENSION_ORIGIN, HOST_NAME
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--unregister', action='store_true')
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument('--unregister', action='store_true')
+    mode.add_argument('--build-only', action='store_true',
+                      help='只重建开发桥接及启动配置，不写注册表')
     args = parser.parse_args()
     if os.name != 'nt':
         parser.error('此注册脚本仅支持 Windows Chrome')
@@ -64,6 +67,9 @@ def main():
                 'path': str(executable), 'type': 'stdio', 'allowed_origins': [EXTENSION_ORIGIN]}
     directory.mkdir(parents=True, exist_ok=True)
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding='utf-8')
+    if args.build_only:
+        print(f'本机桥接已重建：{manifest_path}')
+        return
     with winreg.CreateKey(winreg.HKEY_CURRENT_USER, key) as handle:
         winreg.SetValueEx(handle, '', 0, winreg.REG_SZ, str(manifest_path))
     print(f'本机桥接已注册：{manifest_path}')

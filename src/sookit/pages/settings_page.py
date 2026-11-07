@@ -343,12 +343,35 @@ class _ChromeLogo(QWidget):
         renderer.render(painter, QRectF(self.rect()))
 
 
+_browser_repair_threads = set()
+
+
+class _BrowserRepairThread(QThread):
+    """只运行修复业务；生命周期独立于设置页，允许页面先销毁。"""
+
+    def __init__(self):
+        super().__init__()
+        self.error = None
+
+    def run(self):
+        try:
+            repair_browser_registration()
+        except Exception as exc:
+            self.error = str(exc) or type(exc).__name__
+
+
+def _release_browser_repair_thread(thread):
+    _browser_repair_threads.discard(thread)
+    thread.deleteLater()
+
+
 class SettingsPage(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._version_threads = []
         self._version_workers = []
         self._update_thread = None
+        self._browser_repair_thread = None
         self._yt_current_ver = ""
         self._yt_update_checked = False
         self._yt_new_version_bar = None  # 「yt-dlp 有新版本」常驻 InfoBar（更新成功后关闭）
@@ -983,28 +1006,40 @@ class SettingsPage(QWidget):
         self.browser_components_details.setVisible(not result.get("can_repair", False))
 
     def _repair_browser_components(self):
-        """点击即修复当前用户注册，复查通过后再报告成功。"""
+        """后台修复，保留线程至 finished；期间也防止直接调用重复启动。"""
+        if self._browser_repair_thread is not None:
+            return
         self.browser_components_repair_button.setEnabled(False)
         self.browser_components_refresh_button.setEnabled(False)
         self.browser_components_repair_button.setText("修复中…")
-        error = None
-        try:
-            repair_browser_registration()
-        except Exception as exc:
-            error = str(exc)
-        finally:
-            self._refresh_browser_components()
-            self.browser_components_repair_button.setText("修复")
-            self.browser_components_repair_button.setEnabled(True)
-            self.browser_components_refresh_button.setEnabled(True)
+        thread = _BrowserRepairThread()
+        self._browser_repair_thread = thread
+        # 不以页面为 parent，也不让清理闭包捕获页面。页面删除时 Qt 会断开绑定槽，
+        # 模块级引用继续保护正在运行的线程，直到 finished 后释放。
+        _browser_repair_threads.add(thread)
+        thread.finished.connect(self._on_browser_repair_finished)
+        thread.finished.connect(lambda: _release_browser_repair_thread(thread))
+        thread.start()
+
+    @pyqtSlot()
+    def _on_browser_repair_finished(self):
+        thread = self._browser_repair_thread
+        error = thread.error
+        self._browser_repair_thread = None
+        self._refresh_browser_components()
+        self.browser_components_repair_button.setText("修复")
+        self.browser_components_repair_button.setEnabled(True)
+        self.browser_components_refresh_button.setEnabled(True)
 
         if error is None and self._browser_components_result.get("ok"):
             show_infobar(self, "success", title="修复成功", content="浏览器桥接已修复。")
         else:
-            if error:
-                self.browser_components_status.setToolTip(error)
-            show_infobar(self, "error", title="修复失败",
-                         content="请重试，仍无法修复时请重新安装 Sookit。")
+            reason = error or "\n".join(self._browser_components_result.get("issues", []))
+            reason = reason or "请重试，仍无法修复时请重新安装 Sookit。"
+            self.browser_components_status.setToolTip(reason)
+            self.browser_components_details.setText(reason)
+            self.browser_components_details.setVisible(True)
+            show_infobar(self, "error", title="修复失败", content=reason)
 
     # ========== 安装引导与本机组件诊断 ==========
 

@@ -148,6 +148,12 @@ def main():
         import msvcrt
         msvcrt.setmode(sys.stdin.fileno(), os.O_BINARY)
         msvcrt.setmode(sys.stdout.fileno(), os.O_BINARY)
+    # 本机只读诊断：不连接 GUI、不读取配置、不执行网页动作。
+    if sys.argv[1:] == ['--bridge-capabilities']:
+        sys.stdout.buffer.write(encode_message({
+            'actions': sorted(BROWSER_ACTIONS | HOST_CONTROL_ACTIONS)}))
+        sys.stdout.buffer.flush()
+        return
     try:
         if len(sys.argv) < 2 or sys.argv[1] != EXTENSION_ORIGIN:
             raise ValueError('仅允许 Sookit Chrome 扩展连接')

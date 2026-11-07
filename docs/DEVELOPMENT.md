@@ -239,6 +239,8 @@ flowchart TB
 
 | 72 | 浏览器统一直播 / Premiere 监控入口（2026-11-06） | YouTube 菜单新增 monitor，不区分内容类型；按视频 ID 去重，沿用监控设置及结束后下载，窗口不抢焦点；HTTP 降级不凭开始时间判断结束，旧 host 需更新 | [72-browser-monitor.md](decisions/72-browser-monitor.md) |
 
+| 73 | 浏览器旧桥接能力检测与后台重建 | 诊断实际 host 支持的动作；源码版后台重建后复查再写 HKCU，安装版旧程序引导更新/重装；修复失败展示具体原因 | [73-browser-host-rebuild.md](decisions/73-browser-host-rebuild.md) |
+
 ## 测试
 
 已安装项目依赖及 yt-dlp / FFmpeg 后，运行离线回归（临时本地 HTTP、真实外部工具与隔离的 Qt 队列，不访问测试平台）：
