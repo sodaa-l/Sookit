@@ -169,7 +169,7 @@ class MonitorWorker(QThread):
                     self.status_signal.emit(self.task_id, '直播中')
 
                 elif status == 'is_upcoming':
-                    self.log_signal.emit(f"[{self.task_id}] Premiere 尚未开始，{self.interval}秒后重试")
+                    self.log_signal.emit(f"[{self.task_id}] 直播 / Premiere 尚未开始，{self.interval}秒后重试")
                     self.status_signal.emit(self.task_id, '等待中')
 
                 else:

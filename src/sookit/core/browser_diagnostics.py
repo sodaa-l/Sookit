@@ -5,8 +5,12 @@ import json
 import os
 from pathlib import Path
 import sys
+import subprocess
 
-from sookit.core.browser_protocol import EXTENSION_ID, EXTENSION_ORIGIN, HOST_NAME
+from sookit.core.browser_protocol import (
+    BROWSER_ACTIONS, HOST_CONTROL_ACTIONS, EXTENSION_ID, EXTENSION_ORIGIN, HOST_NAME,
+    decode_message,
+)
 from sookit.paths import PROJECT_ROOT
 
 REGISTRY_KEY = rf'Software\Google\Chrome\NativeMessagingHosts\{HOST_NAME}'
@@ -275,8 +279,41 @@ def _local_component_issues(extension_dir: Path, manifest_path: Path, *, frozen:
     return issues
 
 
+def _host_capability_issues(host: Path) -> list[str]:
+    """探测已冻结的实际程序；旧 host 拒绝诊断参数，不会冷启动 GUI。"""
+    try:
+        process = subprocess.run(
+            [str(host), '--bridge-capabilities'], input=b'', capture_output=True,
+            timeout=3, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+        response = decode_message(process.stdout)
+        actions = response.get('actions')
+        if (process.returncode == 0 and isinstance(actions, list)
+                and all(isinstance(action, str) for action in actions)
+                and (BROWSER_ACTIONS | HOST_CONTROL_ACTIONS).issubset(actions)):
+            return []
+        return ['桥接程序过旧或不兼容，缺少当前浏览器动作支持']
+    except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
+        return [f'无法验证桥接程序兼容性，需更新桥接：{exc}']
+
+
+def _rebuild_source_host(root: Path) -> None:
+    script = root / 'scripts' / 'register_browser_bridge.py'
+    if not script.is_file():
+        raise RuntimeError('缺少开发桥接构建脚本，请恢复源码后重试')
+    try:
+        process = subprocess.run(
+            [sys.executable, str(script), '--build-only'], cwd=str(root),
+            capture_output=True, timeout=300,
+            creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError(f'重建桥接失败：{exc}') from exc
+    if process.returncode:
+        detail = (process.stderr or process.stdout).decode('utf-8', errors='replace')[-2000:]
+        raise RuntimeError(f'重建桥接失败，请确认当前开发环境已安装 PyInstaller：{detail}')
+
+
 def repair_browser_registration(*, frozen=None, executable=None, project_root=None) -> None:
-    """将当前布局的有效清单注册到 HKCU，不提权、不修改 HKLM 或安装文件。"""
+    """源码桥接过旧时先重建，校验通过后注册 HKCU；安装版不改安装文件。"""
     runtime_frozen = getattr(sys, 'frozen', False) if frozen is None else frozen
     extension_dir = get_extension_dir(
         frozen=runtime_frozen, executable=executable, project_root=project_root)
@@ -285,6 +322,18 @@ def repair_browser_registration(*, frozen=None, executable=None, project_root=No
     issues = _local_component_issues(extension_dir, manifest_path, frozen=bool(runtime_frozen))
     if issues:
         raise RuntimeError("当前组件文件不完整，无法修复注册：" + "；".join(issues))
+
+    host = _expected_host_executable(manifest_path, frozen=bool(runtime_frozen))
+    compatibility = _host_capability_issues(host)
+    if compatibility:
+        if runtime_frozen:
+            raise RuntimeError('当前安装版的桥接程序过旧或不可用，请更新或重新安装 Sookit')
+        root = Path(project_root or PROJECT_ROOT).resolve()
+        _rebuild_source_host(root)
+        issues = _local_component_issues(extension_dir, manifest_path, frozen=False)
+        issues.extend(_host_capability_issues(host))
+        if issues:
+            raise RuntimeError('重建后桥接校验失败：' + '；'.join(issues))
 
     import winreg
 
@@ -308,7 +357,10 @@ def diagnose_browser_components(*, registry_entries=None, frozen=None, executabl
     expected_host = _expected_host_executable(expected_manifest, frozen=bool(runtime_frozen))
     local_issues = _local_component_issues(
         extension_dir, expected_manifest, frozen=bool(runtime_frozen))
-    issues = list(local_issues)
+    compatibility = [] if local_issues else _host_capability_issues(expected_host)
+    issues = list(local_issues) + compatibility
+    if compatibility and runtime_frozen:
+        issues.append('请更新或重新安装 Sookit，以恢复匹配的桥接程序')
 
     try:
         entries = read_registry_entries() if registry_entries is None else registry_entries
@@ -366,7 +418,7 @@ def diagnose_browser_components(*, registry_entries=None, frozen=None, executabl
 
     return {
         'ok': not issues,
-        'can_repair': bool(issues) and not local_issues,
+        'can_repair': bool(issues) and not local_issues and not (runtime_frozen and compatibility),
         'issues': issues,
         'extension_dir': str(extension_dir),
         'expected_manifest': str(expected_manifest),

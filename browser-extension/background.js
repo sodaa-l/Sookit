@@ -1,6 +1,6 @@
 /* 页面脚本只传递视频链接和受限展示信息；本机调用始终经过扩展后台。 */
 const HOST = 'com.sookit.browser';
-const ACTIONS = new Set(['sniff', 'download_best', 'download_cover', 'parse_gif']);
+const ACTIONS = new Set(['sniff', 'download_best', 'download_cover', 'parse_gif', 'monitor']);
 // 面板只走两个控制动作；status 只探测不启动，launch 是用户显式点「启动 Sookit」。
 const CONTROL_OPS = new Set(['status', 'launch']);
 const SITES_KEY = 'sookitSites';
@@ -41,7 +41,7 @@ function xStatusUrl(value) {
 
 function requestUrl(action, value) {
   if (action === 'parse_gif') return xStatusUrl(value);
-  if (action === 'download_cover') return videoUrl(value);
+  if (action === 'download_cover' || action === 'monitor') return videoUrl(value);
   try {
     return videoUrl(value);
   } catch (youtubeError) {
@@ -199,7 +199,7 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
       if (currentStatusUrl && currentStatusUrl !== url) throw new Error('页面已切换，请重试');
     }
     const nativeMessage = {action: message.action, url};
-    if (message.action === 'download_best' || message.action === 'download_cover') {
+    if (message.action === 'download_best' || message.action === 'download_cover' || message.action === 'monitor') {
       const metadata = videoMetadata(message.video_metadata);
       if (metadata) nativeMessage.video_metadata = metadata;
     }

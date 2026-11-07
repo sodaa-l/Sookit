@@ -6,7 +6,6 @@ YouTube 视频 ID 提取、缩略图构建、元数据获取
 import json
 import re
 import subprocess
-import time
 import urllib.request
 
 from sookit.core.utils import get_certifi_ssl_context
@@ -224,20 +223,18 @@ def fetch_youtube_metadata(video_id):
     mfr = microformat.get('playerMicroformatRenderer') or {}
     live_details = mfr.get('liveBroadcastDetails') or {}
 
-    if live_details:
-        if live_details.get('isLiveNow', False):
-            live_status = 'is_live'
-        else:
-            start_time = live_details.get('startTimestamp', '')
-            if start_time:
-                try:
-                    from datetime import datetime
-                    st = datetime.fromisoformat(start_time.replace('Z', '+00:00')).timestamp()
-                    live_status = 'was_live' if st < time.time() else 'is_upcoming'
-                except Exception:
-                    live_status = 'is_upcoming'
-            else:
-                live_status = 'is_upcoming'
+    playability = player.get('playabilityStatus') or {}
+    if live_details.get('isLiveNow') or vd.get('isLive'):
+        live_status = 'is_live'
+    elif live_details.get('endTimestamp'):
+        live_status = 'was_live'
+    elif vd.get('isUpcoming') or playability.get('status') == 'LIVE_STREAM_OFFLINE':
+        live_status = 'is_upcoming'
+    elif live_details:
+        # 开始时间已过也可能只是延迟开播；没有结束证据时继续等待。
+        live_status = 'is_upcoming'
+    elif vd.get('isLiveContent'):
+        live_status = 'unknown'
     else:
         live_status = 'not_live'
 
@@ -255,5 +252,5 @@ def fetch_youtube_metadata(video_id):
         'channel': vd.get('author') or mfr.get('ownerChannelName') or '',
         'live_status': live_status,
         'scheduled_start_time': scheduled_ts,
-        'is_live': live_details.get('isLiveNow', False),
+        'is_live': live_status == 'is_live',
     }

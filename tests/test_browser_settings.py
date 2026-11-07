@@ -171,6 +171,10 @@ class RequestGateTests(unittest.TestCase):
 
 class BrowserDiagnosticsTests(unittest.TestCase):
     def setUp(self):
+        # 布局测试使用占位 exe；能力协议另有独立测试。
+        capabilities = patch('sookit.core.browser_diagnostics._host_capability_issues', return_value=[])
+        self._capability_issues = capabilities.start()
+        self.addCleanup(capabilities.stop)
         self._temp = tempfile.TemporaryDirectory()
         self.root = Path(self._temp.name)
 
@@ -547,11 +551,28 @@ class BrowserSettingsUiTests(unittest.TestCase):
         page = SettingsPage()
 
         def cleanup_page():
-            page.deleteLater()
-            QApplication.sendPostedEvents(page, QEvent.Type.DeferredDelete)
+            from PyQt6 import sip
+            if not sip.isdeleted(page):
+                page.deleteLater()
+                QApplication.sendPostedEvents(page, QEvent.Type.DeferredDelete)
 
         self.addCleanup(cleanup_page)
         return page
+
+    def _wait_until(self, predicate, timeout=3000):
+        from time import monotonic
+        from PyQt6.QtTest import QTest
+
+        deadline = monotonic() + timeout / 1000
+        while not predicate() and monotonic() < deadline:
+            QTest.qWait(10)
+        self.assertTrue(predicate(), "异步操作未及时完成")
+
+    def _wait_for_repair(self, page):
+        from sookit.pages import settings_page
+
+        self._wait_until(lambda: page._browser_repair_thread is None
+                         and not settings_page._browser_repair_threads)
 
     def test_registration_problem_shows_direct_repair_and_success_hides_it(self):
         page = self._page()
@@ -566,6 +587,7 @@ class BrowserSettingsUiTests(unittest.TestCase):
                       return_value={'ok': True, 'issues': []}) as diagnose, \
                 patch('sookit.pages.settings_page.show_infobar') as info:
             page.browser_components_repair_button.click()
+            self._wait_for_repair(page)
         repair.assert_called_once_with()
         diagnose.assert_called_once_with()
         self.assertEqual(info.call_args.args[1], 'success')
@@ -575,7 +597,8 @@ class BrowserSettingsUiTests(unittest.TestCase):
     def test_repair_failure_or_unsuccessful_recheck_never_reports_success(self):
         page = self._page()
         broken = {'ok': False, 'can_repair': True, 'issues': ['registration invalid']}
-        for error in (PermissionError('access denied'), None):
+        for error in (PermissionError('access denied'),
+                      RuntimeError('安装版旧程序需重新安装 Sookit'), None):
             with self.subTest(error=error):
                 with patch('sookit.pages.settings_page.repair_browser_registration',
                            side_effect=error), \
@@ -583,11 +606,120 @@ class BrowserSettingsUiTests(unittest.TestCase):
                               return_value=broken), \
                         patch('sookit.pages.settings_page.show_infobar') as info:
                     page._repair_browser_components()
+                    self._wait_for_repair(page)
                 self.assertEqual(info.call_args.args[1], 'error')
+                reason = str(error) if error else broken['issues'][0]
+                self.assertIn(reason, info.call_args.kwargs['content'])
+                self.assertIn(reason, page.browser_components_details.text())
+                self.assertFalse(page.browser_components_details.isHidden())
                 self.assertFalse(page.browser_components_repair_button.isHidden())
                 self.assertTrue(page.browser_components_repair_button.isEnabled())
                 self.assertTrue(page.browser_components_refresh_button.isEnabled())
                 self.assertEqual(page.browser_components_repair_button.text(), '修复')
+
+    def test_long_repair_keeps_ui_responsive_and_ignores_duplicate_clicks(self):
+        from threading import Event, get_ident
+
+        page = self._page()
+        entered, release = Event(), Event()
+        main_thread = get_ident()
+        repair_threads, callback_threads, ticks = [], [], []
+
+        def repair_job():
+            repair_threads.append(get_ident())
+            entered.set()
+            if not release.wait(5):
+                raise TimeoutError('测试未释放修复任务')
+
+        def diagnose():
+            callback_threads.append(get_ident())
+            return {'ok': True, 'issues': []}
+
+        timer = QTimer()
+        timer.setSingleShot(True)
+        timer.timeout.connect(lambda: ticks.append(get_ident()))
+        with (
+            patch('sookit.pages.settings_page.repair_browser_registration',
+                  side_effect=repair_job) as repair,
+            patch('sookit.pages.settings_page.diagnose_browser_components',
+                  side_effect=diagnose) as check,
+            patch('sookit.pages.settings_page.show_infobar') as info,
+        ):
+            try:
+                page.browser_components_repair_button.click()
+                timer.start(0)
+                self._wait_until(lambda: entered.is_set() and bool(ticks))
+                self.assertNotEqual(repair_threads, [main_thread])
+                self.assertEqual(ticks, [main_thread])
+                self.assertFalse(page.browser_components_repair_button.isEnabled())
+                self.assertFalse(page.browser_components_refresh_button.isEnabled())
+                self.assertEqual(page.browser_components_repair_button.text(), '修复中…')
+                page.browser_components_repair_button.click()
+                page._repair_browser_components()
+                repair.assert_called_once_with()
+                check.assert_not_called()
+                info.assert_not_called()
+            finally:
+                release.set()
+                self._wait_for_repair(page)
+            self.assertEqual(callback_threads, [main_thread])
+            self.assertEqual(info.call_args.args[1], 'success')
+            self.assertTrue(page.browser_components_refresh_button.isEnabled())
+
+    def test_failed_repair_can_retry_and_succeed(self):
+        page = self._page()
+        broken = {'ok': False, 'can_repair': True, 'issues': ['旧 host']}
+        with (
+            patch('sookit.pages.settings_page.repair_browser_registration',
+                  side_effect=[RuntimeError('重建 host 失败'), None]) as repair,
+            patch('sookit.pages.settings_page.diagnose_browser_components',
+                  side_effect=[broken, {'ok': True, 'issues': []}]),
+            patch('sookit.pages.settings_page.show_infobar') as info,
+        ):
+            page._repair_browser_components()
+            self._wait_for_repair(page)
+            self.assertEqual(info.call_args.args[1], 'error')
+            self.assertTrue(page.browser_components_repair_button.isEnabled())
+            page.browser_components_repair_button.click()
+            self._wait_for_repair(page)
+            self.assertEqual(repair.call_count, 2)
+            self.assertEqual(info.call_args.args[1], 'success')
+            self.assertTrue(page.browser_components_details.isHidden())
+
+    def test_deleting_page_during_repair_preserves_thread_and_skips_ui_callback(self):
+        from threading import Event
+        from PyQt6 import sip
+        from sookit.pages import settings_page
+
+        page = self._page()
+        entered, release = Event(), Event()
+
+        def repair_job():
+            entered.set()
+            if not release.wait(5):
+                raise TimeoutError('测试未释放修复任务')
+
+        with (
+            patch('sookit.pages.settings_page.repair_browser_registration',
+                  side_effect=repair_job),
+            patch('sookit.pages.settings_page.diagnose_browser_components') as check,
+            patch('sookit.pages.settings_page.show_infobar') as info,
+        ):
+            try:
+                page._repair_browser_components()
+                self._wait_until(entered.is_set)
+                thread = page._browser_repair_thread
+                page.deleteLater()
+                QApplication.sendPostedEvents(page, QEvent.Type.DeferredDelete)
+                self.assertTrue(sip.isdeleted(page))
+                self.assertIsNone(thread.parent())
+                self.assertTrue(thread.isRunning())
+                self.assertIn(thread, settings_page._browser_repair_threads)
+            finally:
+                release.set()
+                self._wait_until(lambda: not settings_page._browser_repair_threads)
+            check.assert_not_called()
+            info.assert_not_called()
 
     def test_missing_components_do_not_offer_registration_repair(self):
         page = self._page()

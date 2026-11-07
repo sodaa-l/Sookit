@@ -52,13 +52,23 @@ class ProtocolTests(unittest.TestCase):
                     normalize_video_url(url)
 
     def test_only_allowed_actions_and_url_forwarded(self):
-        for action in ('sniff', 'download_best', 'download_cover'):
+        for action in ('sniff', 'download_best', 'download_cover', 'monitor'):
             request = {'action': action, 'url': URL}
             self.assertEqual(validate_request(dict(request, command='evil')), request)
         for value in ([], {}, {'action': 'exec', 'url': URL},
                       {'action': [], 'url': URL}, {'action': None, 'url': URL}):
             with self.assertRaises(ValueError):
                 validate_request(value)
+
+    def test_monitor_only_accepts_youtube_and_cleans_display_metadata(self):
+        request = validate_request({'action': 'monitor', 'url': 'https://youtu.be/Yb9H5vhWyHg?t=10',
+                                    'video_metadata': {'title': '  首播\n标题  ', 'channel': '  频道  ',
+                                                       'live_status': 'was_live', 'command': 'evil'}})
+        self.assertEqual(request, {'action': 'monitor', 'url': URL,
+                                   'video_metadata': {'title': '首播 标题', 'channel': '频道'}})
+        for url in ('https://x.com/user/status/123', 'https://www.youtube.com/@test'):
+            with self.assertRaises(ValueError):
+                validate_request({'action': 'monitor', 'url': url})
 
     def test_utf8_frames_and_invalid_lengths(self):
         value = {'ok': False, 'error': '正在嗅探，请稍后'}

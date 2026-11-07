@@ -63,6 +63,40 @@ class MonitorCardTests(unittest.TestCase):
         self.flush()
         return info
 
+    def test_browser_monitor_uses_current_directory_and_preserves_input(self):
+        self.page.url_input.setText('正在输入的另一个链接')
+        self.page.out_dir.setText('D:/browser-monitor')
+        response = self.page.monitor_from_browser('https://youtu.be/abcdefghijk?t=30',
+                                                 {'title': '网页标题', 'channel': '网页频道'})
+        self.assertTrue(response['ok'])
+        tid = response['task_id']
+        self.assertEqual(self.page._task_info[tid]['out_dir'], os.path.normpath('D:/browser-monitor'))
+        self.assertEqual(self.page._task_info[tid]['url'], 'https://www.youtube.com/watch?v=abcdefghijk')
+        self.assertEqual(self.page.url_input.text(), '正在输入的另一个链接')
+        self.page._on_initial_sniff(tid, 'url', 'old', 'fallback', {'live_status': 'is_live'})
+        self.assertEqual(self.page._task_cards[tid].title_label.text(), '网页标题')
+        self.assertEqual(self.page._task_cards[tid].channel_label.text(), '频道：网页频道')
+        self.manager.add_task.assert_not_called()
+
+    def test_browser_monitor_deduplicates_existing_manual_url_and_can_readd_after_remove(self):
+        self.add('manual')
+        response = self.page.monitor_from_browser('https://www.youtube.com/live/abcdefghijk',
+                                                 {'title': '不能覆盖已有标题'})
+        self.assertTrue(response['duplicate'])
+        self.assertEqual(response['task_id'], 'manual')
+        self.assertEqual(len(self.page._task_cards), 1)
+        self.assertEqual(self.page._task_cards['manual'].title_label.text(), 'manual')
+        self.page._remove_task('manual')
+        self.assertTrue(self.page.monitor_from_browser('https://youtu.be/abcdefghijk')['ok'])
+
+    def test_browser_monitor_rejects_invalid_url_missing_tool_and_shutdown(self):
+        self.assertFalse(self.page.monitor_from_browser('https://x.com/user/status/123')['ok'])
+        with patch('sookit.pages.monitor_page.is_ytdlp_available', return_value=False):
+            self.assertFalse(self.page.monitor_from_browser('https://youtu.be/abcdefghijk')['ok'])
+        self.page.stop_all_workers()
+        self.assertFalse(self.page.monitor_from_browser('https://youtu.be/abcdefghijk')['ok'])
+        self.assertFalse(self.page._task_cards)
+
     def test_deleted_task_late_result_cannot_update_neighbour(self):
         self.add("a")
         b = self.add("b")
