@@ -4,4 +4,4 @@ Sookit - 基于 PyQt6 + QFluentWidgets 的 Windows 桌面工具
 """
 
 APP_NAME = "Sookit"
-APP_VERSION = "build.261105.1"
+APP_VERSION = "build.261107.1"
