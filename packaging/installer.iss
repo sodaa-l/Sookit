@@ -154,6 +154,12 @@ begin
   Result := (not IsUpgradeInstall()) or FileExists(ExpandConstant('{app}\') + RelPath);
 end;
 
+procedure InitializeWizard();
+begin
+  // 给任务列表增加少量 DPI 感知内边距，避免复选框左边框被裁切。
+  WizardForm.TasksList.Offset := WizardForm.TasksList.Offset + ScaleX(2);
+end;
+
 function InitializeSetup(): Boolean;
 begin
   gUpgradeProbe := -1;
